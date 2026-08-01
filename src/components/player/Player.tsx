@@ -1,0 +1,1114 @@
+"use client";
+
+import { useEffect, useRef, useState, useCallback } from "react";
+import Hls from "hls.js";
+import SubtitleOverlay from "./SubtitleOverlay";
+import type { StreamSource, Subtitle } from "@/types/anime";
+
+interface PlayerProps {
+  animeTitle: string;
+  episodeNumber: number;
+  anilistId?: number;
+}
+
+const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
+
+/** Build a proxy URL that adds required headers upstream */
+function proxyUrl(rawUrl: string, headers?: Record<string, string>): string {
+  const referer =
+    headers?.["Referer"] || headers?.["referer"] || "https://megaplay.buzz/";
+  const origin =
+    headers?.["Origin"] || headers?.["origin"] || "https://megaplay.buzz";
+  const params = new URLSearchParams({ url: rawUrl, referer, origin });
+  return `/api/proxy?${params}`;
+}
+
+function formatTime(t: number): string {
+  if (!isFinite(t) || t < 0) return "0:00";
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = Math.floor(t % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchIdRef = useRef(0);
+  const failoverQueueRef = useRef<string[]>([]);
+  const workingServersRef = useRef<{ server: string; sources: StreamSource[]; subtitles: Subtitle[]; headers: Record<string, string> }[]>([]);
+
+  // Stream state
+  const [sources, setSources] = useState<StreamSource[]>([]);
+  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
+  const [streamHeaders, setStreamHeaders] = useState<Record<string, string> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [streamError, setStreamError] = useState(false);
+
+  // Playback state
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+
+  // Audio type (sub / dub)
+  const [audioType, setAudioType] = useState<"sub" | "dub">("sub");
+  const [dubAvailable, setDubAvailable] = useState(false);
+
+  // Server / session state
+  const [activeServer, setActiveServer] = useState<string | null>(null);
+  const [availableServers, setAvailableServers] = useState<string[]>([]);
+  const [showServerPicker, setShowServerPicker] = useState(false);
+
+  // Quality / speed state
+  const [currentQuality, setCurrentQuality] = useState<string>("auto");
+  const [showQualityPicker, setShowQualityPicker] = useState(false);
+  const [hlsLevels, setHlsLevels] = useState<{ index: number; height: number; name: string }[]>([]);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [showSpeedPicker, setShowSpeedPicker] = useState(false);
+
+  // Subtitle state
+  const [activeSubtitle, setActiveSubtitle] = useState<string | null>(null);
+  const [showSubPicker, setShowSubPicker] = useState(false);
+
+  // OpenSubtitles state
+  const [osResults, setOsResults] = useState<
+    { file_id: number; language: string; release: string; hearing_impaired: boolean; ai_translated: boolean }[]
+  >([]);
+  const [osLoading, setOsLoading] = useState(false);
+  const [osError, setOsError] = useState<string | null>(null);
+  const [osSearched, setOsSearched] = useState(false);
+
+  // Refs for keyboard handler (stable across renders)
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
+  const spaceDownRef = useRef(0);
+  const spaceWasPlayingRef = useRef(false);
+
+  // Derived
+  const availableQualities = hlsLevels.length > 0
+    ? ["auto", ...hlsLevels.map((l) => l.name)]
+    : Array.from(new Set(sources.map((s) => s.quality).filter(Boolean)));
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  // ─── Destroy HLS ────────────────────────────────────────
+  const destroyHls = useCallback(() => {
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+  }, []);
+
+  // ─── Load HLS stream ────────────────────────────────────
+  const loadHls = useCallback(
+    (srcs: StreamSource[], headers: Record<string, string> | null, autoPlay: boolean) => {
+      const video = videoRef.current;
+      if (!video || srcs.length === 0) return;
+
+      destroyHls();
+
+      // Pick the source matching selected quality, or fallback
+      let selected = srcs.find((s) => s.quality === currentQuality);
+      if (!selected) {
+        selected =
+          srcs.find((s) => s.quality === "1080p") ||
+          srcs.find((s) => s.quality === "720p") ||
+          srcs.find((s) => s.quality === "480p") ||
+          srcs[0];
+      }
+      if (!selected) return;
+
+      if (selected.isM3U8 && Hls.isSupported()) {
+        const loadUrl = headers ? proxyUrl(selected.url, headers) : selected.url;
+
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        hls.loadSource(loadUrl);
+        hls.attachMedia(video);
+        hlsRef.current = hls;
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setStreamError(false);
+          if (autoPlay) {
+            video.play().catch(() => {});
+          }
+          // Expose HLS internal quality levels
+          if (hls.levels?.length) {
+            const levels = hls.levels.map((l, i) => ({
+              index: i,
+              height: l.height || 0,
+              name: l.height ? `${l.height}p` : `Level ${i}`,
+            }));
+            setHlsLevels(levels);
+            setCurrentQuality("auto");
+          }
+        });
+
+        // Track auto-selected level for display
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+          if (hls.currentLevel === -1 && hls.levels?.[data.level]) {
+            const h = hls.levels[data.level].height;
+            if (h) setCurrentQuality(`${h}p`);
+          }
+        });
+
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (data.fatal) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                hls.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                hls.recoverMediaError();
+                break;
+              default:
+                setStreamError(true);
+                break;
+            }
+          }
+        });
+      } else {
+        // Direct play for non-m3u8
+        video.src = selected.url;
+        if (autoPlay) {
+          video.play().catch(() => {});
+        }
+      }
+    },
+    [destroyHls, currentQuality]
+  );
+
+  // ─── Fetch stream with server fallback ──────────────────
+  const fetchStream = useCallback(
+    async (type: "sub" | "dub") => {
+      const fid = ++fetchIdRef.current;
+      setLoading(true);
+      setStreamError(false);
+
+      try {
+        for (const server of SERVERS) {
+          if (fid !== fetchIdRef.current) return;
+
+          const params = new URLSearchParams({
+            title: animeTitle,
+            episode: String(episodeNumber),
+            type,
+            server,
+          });
+          if (anilistId) params.set("anilistId", String(anilistId));
+
+          const res = await fetch(`/api/stream?${params}`);
+          if (!res.ok) continue;
+
+          const data = await res.json();
+          if (fid !== fetchIdRef.current) return;
+
+          if (data.sources?.length > 0) {
+            setSources(data.sources);
+            setSubtitles(data.subtitles || []);
+            setStreamHeaders(data.headers || null);
+            setStreamError(false);
+            loadHls(data.sources, data.headers || null, true);
+            return;
+          }
+        }
+
+        // If we exhausted all servers with no success
+        if (fid === fetchIdRef.current) {
+          setStreamError(true);
+        }
+      } catch {
+        if (fid === fetchIdRef.current) setStreamError(true);
+      } finally {
+        if (fid === fetchIdRef.current) setLoading(false);
+      }
+    },
+    [animeTitle, episodeNumber, anilistId, loadHls]
+  );
+
+  // ─── Probe a specific server for a given type ──────────
+  const probeServer = useCallback(
+    async (server: string, type: "sub" | "dub"): Promise<{
+      sources: StreamSource[];
+      subtitles: Subtitle[];
+      headers: Record<string, string>;
+    } | null> => {
+      try {
+        const params = new URLSearchParams({
+          title: animeTitle,
+          episode: String(episodeNumber),
+          type,
+          server,
+          strict: "true",
+        });
+        if (anilistId) params.set("anilistId", String(anilistId));
+        const res = await fetch(`/api/stream?${params}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (data.sources?.length > 0) {
+          return {
+            sources: data.sources,
+            subtitles: data.subtitles || [],
+            headers: data.headers || {},
+          };
+        }
+      } catch { /* skip */ }
+      return null;
+    },
+    [animeTitle, episodeNumber, anilistId]
+  );
+
+  // ─── Auto-detect all working servers ──────────────────
+  const discoverServers = useCallback(
+    async (type: "sub" | "dub"): Promise<{ server: string; data: NonNullable<Awaited<ReturnType<typeof probeServer>>> }[]> => {
+      const results = await Promise.all(
+        SERVERS.map(async (s) => {
+          const data = await probeServer(s, type);
+          return data ? { server: s, data } : null;
+        })
+      );
+      return results.filter(Boolean) as any;
+    },
+    [probeServer]
+  );
+
+  // ─── Load stream by type ────────────────────────────────
+  const loadByType = useCallback(
+    async (type: "sub" | "dub", serverOverride?: string) => {
+      setAudioType(type);
+      setLoading(true);
+      setStreamError(false);
+
+      // Get all working servers for this type
+      const working = await discoverServers(type);
+      if (working.length > 0) {
+        setAvailableServers(working.map((w) => w.server));
+        // Use provided server, or prefer current active, or first working
+        const target = serverOverride
+          ? working.find((w) => w.server === serverOverride) ?? working[0]
+          : activeServer
+            ? working.find((w) => w.server === activeServer) ?? working[0]
+            : working[0];
+        setActiveServer(target.server);
+        setSources(target.data.sources);
+        setSubtitles(target.data.subtitles);
+        setStreamHeaders(target.data.headers);
+        // Populate failover queue with the other working servers
+        workingServersRef.current = working.map((w) => ({
+          server: w.server,
+          sources: w.data.sources,
+          subtitles: w.data.subtitles,
+          headers: w.data.headers,
+        }));
+        failoverQueueRef.current = working
+          .filter((w) => w.server !== target.server)
+          .map((w) => w.server);
+        setLoading(false);
+        loadHls(target.data.sources, target.data.headers, false);
+      } else {
+        setLoading(false);
+        setStreamError(true);
+      }
+    },
+    [discoverServers, loadHls, activeServer]
+  );
+
+  // ─── Auto-detect sub & dub availability on mount ────────
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const [subServers, dubServers] = await Promise.all([
+        discoverServers("sub"),
+        discoverServers("dub"),
+      ]);
+
+      if (cancelled) return;
+
+      // Record available servers
+      const allSub = subServers.map((s) => s.server);
+      const allDub = dubServers.map((s) => s.server);
+
+      if (allDub.length > 0) setDubAvailable(true);
+
+      // Prefer sub with the best server
+      const preferSub = subServers.length > 0;
+      const chosen = preferSub ? subServers[0] : dubServers[0];
+
+      if (chosen) {
+        setActiveServer(chosen.server);
+        setAvailableServers(chosen.server ? allSub.concat(preferSub ? [] : []) : allDub);
+        setSources(chosen.data.sources);
+        setSubtitles(chosen.data.subtitles);
+        setStreamHeaders(chosen.data.headers);
+        setAudioType(preferSub ? "sub" : "dub");
+        setLoading(false);
+        loadHls(chosen.data.sources, chosen.data.headers, false);
+      } else {
+        setLoading(false);
+        setStreamError(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      destroyHls();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animeTitle, episodeNumber]);
+
+  // ─── Auto-set initial subtitle track ────────────────────
+  useEffect(() => {
+    if (subtitles.length > 0) {
+      const en = subtitles.find((s) => s.lang.toLowerCase().includes("en"));
+      setActiveSubtitle(en ? en.url : subtitles[0].url);
+    } else {
+      setActiveSubtitle(null);
+    }
+  }, [subtitles]);
+
+  // ─── OpenSubtitles search ──────────────────────────────
+  const searchOpenSubtitles = useCallback(async () => {
+    if (osLoading || osSearched) return;
+
+    setOsLoading(true);
+    setOsError(null);
+    setOsSearched(true);
+
+    try {
+      const params = new URLSearchParams({
+        query: animeTitle,
+        season_number: String(episodeNumber),
+        episode_number: String(episodeNumber),
+        languages: "en",
+      });
+
+      const res = await fetch(`/api/opensubtitles?${params}`);
+      if (!res.ok) {
+        setOsError("Search failed");
+        return;
+      }
+      const data = await res.json();
+      setOsResults(data.results ?? []);
+      if (data.results?.length === 0) {
+        setOsError("No subtitles found");
+      }
+    } catch {
+      setOsError("Search failed");
+    } finally {
+      setOsLoading(false);
+    }
+  }, [animeTitle, episodeNumber, osLoading, osSearched]);
+
+  // ─── Select an OpenSubtitles subtitle ──────────────────
+  const selectOSSubtitle = useCallback(async (fileId: number) => {
+    try {
+      const res = await fetch(`/api/opensubtitles?file_id=${fileId}&sub_format=vtt`);
+      if (!res.ok) return;
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      // Revoke previous OS blob URL if any
+      if (activeSubtitle?.startsWith("blob:")) {
+        URL.revokeObjectURL(activeSubtitle);
+      }
+
+      setActiveSubtitle(url);
+      setShowSubPicker(false);
+    } catch {
+      // silently fail — user can retry
+    }
+  }, [activeSubtitle]);
+
+  // ─── Controls auto-hide ────────────────────────────────
+  const resetControlsTimer = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => {
+      if (playing) setShowControls(false);
+    }, 3000);
+  }, [playing]);
+
+  useEffect(() => {
+    resetControlsTimer();
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [playing, resetControlsTimer]);
+
+  // ─── Handlers ──────────────────────────────────────────
+  const handleTimeUpdate = () => {
+    if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+  };
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) setDuration(videoRef.current.duration);
+  };
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play().catch(() => {});
+      videoRef.current.playbackRate = playbackRateRef.current;
+      setPlaying(true);
+    } else {
+      videoRef.current.pause();
+      setPlaying(false);
+    }
+  };
+
+  const handleVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value);
+    if (videoRef.current) {
+      videoRef.current.volume = v;
+      videoRef.current.muted = v === 0;
+      setVolume(v);
+      setMuted(v === 0);
+    }
+  };
+
+  const toggleMute = () => {
+    if (!videoRef.current) return;
+    videoRef.current.muted = !videoRef.current.muted;
+    setMuted(videoRef.current.muted);
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const t = parseFloat(e.target.value);
+    if (videoRef.current) {
+      videoRef.current.currentTime = t;
+      setCurrentTime(t);
+    }
+  };
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+      setIsFullscreen(false);
+    } else {
+      containerRef.current.requestFullscreen();
+      setIsFullscreen(true);
+    }
+  };
+
+  const changeQuality = (q: string) => {
+    setCurrentQuality(q);
+    setShowQualityPicker(false);
+
+    if (q === "auto" && hlsRef.current) {
+      hlsRef.current.currentLevel = -1;
+      return;
+    }
+
+    // If an HLS level was selected, switch via hls.currentLevel
+    if (hlsLevels.length > 0 && hlsRef.current) {
+      const level = hlsLevels.find((l) => l.name === q);
+      if (level) {
+        hlsRef.current.currentLevel = level.index;
+        return;
+      }
+    }
+
+    // Fallback: reload source with matching quality
+    if (sources.length > 0) {
+      loadHls(sources, streamHeaders, playing);
+    }
+  };
+
+  const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+
+  const changeSpeed = (rate: number) => {
+    setPlaybackRate(rate);
+    setShowSpeedPicker(false);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = rate;
+    }
+  };
+
+  // ─── Switch sub ↔ dub ─────────────────────────────────
+  const switchAudioType = useCallback(
+    (type: "sub" | "dub") => {
+      if (type === audioType) return;
+      destroyHls();
+      loadByType(type);
+    },
+    [audioType, destroyHls, loadByType]
+  );
+
+  const handleMouseMove = () => {
+    resetControlsTimer();
+  };
+
+  // ─── Auto-failover: try next server when stream errors ─────
+  useEffect(() => {
+    if (streamError && failoverQueueRef.current.length > 0 && !loading) {
+      const nextServer = failoverQueueRef.current.shift()!;
+      const cached = workingServersRef.current.find((w) => w.server === nextServer);
+      if (cached) {
+        setActiveServer(cached.server);
+        setSources(cached.sources);
+        setSubtitles(cached.subtitles);
+        setStreamHeaders(cached.headers);
+        destroyHls();
+        setStreamError(false);
+        loadHls(cached.sources, cached.headers, true);
+      }
+    }
+  }, [streamError, loading, destroyHls, loadHls]);
+
+  // ─── Keyboard shortcuts ──────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept when user is typing in an input/select/textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+
+      const video = videoRef.current;
+      if (!video) return;
+
+      switch (e.key) {
+        case ' ':
+          e.preventDefault();
+          if (!video.paused) {
+            // Hold Space for 2x while playing — no toggle
+            video.playbackRate = 2;
+          } else {
+            video.play().catch(() => {});
+            setPlaying(true);
+          }
+          resetControlsTimer();
+          break;
+        case 'k':
+          e.preventDefault();
+          if (video.paused) {
+            video.play().catch(() => {});
+            setPlaying(true);
+          } else {
+            video.pause();
+            setPlaying(false);
+          }
+          resetControlsTimer();
+          break;
+        case 'f':
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case 'm':
+          e.preventDefault();
+          video.muted = !video.muted;
+          setMuted(video.muted);
+          resetControlsTimer();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          video.currentTime = Math.max(0, video.currentTime - 10);
+          setCurrentTime(video.currentTime);
+          resetControlsTimer();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
+          setCurrentTime(video.currentTime);
+          resetControlsTimer();
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          { const nv = Math.min(1, video.volume + 0.1);
+          video.volume = nv;
+          video.muted = false;
+          setVolume(nv);
+          setMuted(false); }
+          resetControlsTimer();
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          { const nv = Math.max(0, video.volume - 0.1);
+          video.volume = nv;
+          video.muted = nv === 0;
+          setVolume(nv);
+          setMuted(nv === 0); }
+          resetControlsTimer();
+          break;
+        case ',':
+          if (!e.shiftKey) break;
+          e.preventDefault();
+          { const i = SPEED_PRESETS.indexOf(playbackRateRef.current);
+          const prev = i > 0 ? SPEED_PRESETS[i - 1] : SPEED_PRESETS[0];
+          video.playbackRate = prev;
+          setPlaybackRate(prev); }
+          resetControlsTimer();
+          break;
+        case '.':
+          if (!e.shiftKey) break;
+          e.preventDefault();
+          { const i = SPEED_PRESETS.indexOf(playbackRateRef.current);
+          const next = i < SPEED_PRESETS.length - 1 ? SPEED_PRESETS[i + 1] : SPEED_PRESETS[SPEED_PRESETS.length - 1];
+          video.playbackRate = next;
+          setPlaybackRate(next); }
+          resetControlsTimer();
+          break;
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      const video = videoRef.current;
+      if (!video) return;
+      // Restore selected playback rate on Space release (2x → normal)
+      video.playbackRate = playbackRateRef.current;
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative w-full aspect-video bg-black overflow-hidden group outline-none"
+      tabIndex={0}
+      onMouseMove={handleMouseMove}
+    >
+      {/* Video element */}
+      <video
+        ref={videoRef}
+        className="w-full h-full object-contain"
+        onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={handleLoadedMetadata}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        playsInline
+        crossOrigin="anonymous"
+        onClick={togglePlay}
+      />
+
+{/* Loading overlay — simple terminal progress bar */}
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10 pointer-events-none">
+          <div className="flex flex-col items-center gap-4 w-80">
+            <div className="w-full h-2 bg-[#0a0a0f] border border-[var(--accent)]/30 relative overflow-hidden">
+              <div className="absolute inset-y-0 left-0 h-full bg-[var(--accent)] animate-loading-bar" />
+            </div>
+            <div className="font-mono text-[10px] text-[var(--accent)]/50 tracking-[0.2em]">
+              [ {animeTitle?.substring(0, 20) || "STREAM"} ]
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subtitle overlay */}
+      {activeSubtitle && !loading && (
+        <SubtitleOverlay
+          subtitleUrl={activeSubtitle}
+          currentTime={currentTime}
+          headers={streamHeaders || undefined}
+        />
+      )}
+
+      {/* Center play overlay when paused */}
+      {!playing && sources.length > 0 && !loading && (
+        <div
+          className="absolute inset-0 flex items-center justify-center z-10"
+          onClick={togglePlay}
+        >
+          <div className="w-16 h-16 flex items-center justify-center bg-[var(--accent)]/10 border border-[var(--accent)]/30 transition-transform hover:scale-110 rounded-none">
+            <svg className="w-8 h-8 text-[var(--accent)] ml-1" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {streamError && !loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10">
+          <div className="text-center max-w-sm">
+            <p className="text-[#9a9aa0] text-sm mb-2">Stream unavailable</p>
+            <p className="text-[#6b6b70] text-xs mb-4">
+              No working sources found. Try a different episode or check back later.
+            </p>
+            <button
+              onClick={() => { destroyHls(); loadByType(audioType); }}
+              className="text-xs px-4 py-2 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+        {/* Controls overlay (bottom) */}
+      <div
+        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-12 pb-3 px-3 transition-opacity duration-300 z-20 ${
+          showControls ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Progress bar */}
+        <div className="mb-2 group/bar h-4 flex items-center -mt-1">
+          <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.1}
+            value={currentTime}
+            onChange={handleSeek}
+            className="w-full appearance-none cursor-pointer
+                       transition-all duration-200
+                       h-1 group-hover/bar:h-1.5
+                       [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
+                       [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none
+                       [&::-webkit-slider-thumb]:shadow-md
+                       [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:duration-150
+                       [&::-webkit-slider-thumb]:hover:scale-125"
+            style={{
+              background: `linear-gradient(to right, rgba(var(--accent-rgb),0.9) ${progress}%, rgba(var(--accent-rgb),0.2) ${progress}%, rgba(255,255,255,0.1) ${progress}%)`,
+            }}
+          />
+        </div>
+
+        {/* Controls row */}
+        <div className="flex items-center justify-between">
+          {/* Left group: play, volume, time */}
+          <div className="flex items-center gap-3">
+            {/* Play/Pause */}
+            <button onClick={togglePlay} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-8 h-8">
+              {playing ? (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+            </button>
+
+            {/* Volume */}
+            <div className="flex items-center gap-1 group/vol">
+              <button onClick={toggleMute} className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-8 h-8">
+                {muted || volume === 0 ? (
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.5v7a4.47 4.47 0 002.5-3.5zm2.5 0A7.5 7.5 0 0014 5.5v2a5.5 5.5 0 010 11v2a7.5 7.5 0 005-7z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                  </svg>
+                )}
+              </button>
+              <div className="overflow-hidden w-0 group-hover/vol:w-20 transition-all duration-200 h-8 flex items-center">
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={muted ? 0 : volume}
+                  onChange={handleVolume}
+                  className="w-20 h-1 appearance-none cursor-pointer
+                             [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5
+                             [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none"
+                  style={{
+                    background: `linear-gradient(to right, rgba(var(--accent-rgb),0.5) ${(muted ? 0 : volume) * 100}%, rgba(255,255,255,0.1) ${(muted ? 0 : volume) * 100}%)`,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Time */}
+            <span className="text-xs text-[var(--accent)]/50 tabular-nums font-mono select-none leading-none">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+          </div>
+
+          {/* Right group: sub/dub, quality, CC, fullscreen */}
+          <div className="flex items-center gap-1.5 h-8">
+            {/* Sub / Dub segmented toggle */}
+            {dubAvailable && (
+              <div className="flex items-center bg-black/40 border border-[var(--accent)]/20 overflow-hidden rounded-none">
+                <button
+                  onClick={() => switchAudioType("sub")}
+                  className={`px-3 text-[11px] font-semibold tracking-wide transition-colors h-7 ${
+                    audioType === "sub"
+                      ? "bg-[var(--accent)] text-black"
+                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  SUB
+                </button>
+                <div className="w-px h-4 bg-[var(--accent)]/20" />
+                <button
+                  onClick={() => switchAudioType("dub")}
+                  className={`px-3 text-[11px] font-semibold tracking-wide transition-colors h-7 ${
+                    audioType === "dub"
+                      ? "bg-[var(--accent)] text-black"
+                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  DUB
+                </button>
+              </div>
+            )}
+
+            {/* Server/Session picker */}
+            {availableServers.length > 0 && (
+              <div className="relative h-full flex items-center gap-1">
+                <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden sm:inline">Srv</span>
+                <button
+                  onClick={() => { setShowServerPicker(!showServerPicker); setShowQualityPicker(false); setShowSubPicker(false); }}
+                  className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
+                >
+                  {activeServer || "Auto"}
+                </button>
+                {showServerPicker && (
+                  <div className="absolute right-0 bottom-full mb-1 w-40 bg-[#131318] border border-[var(--accent)]/20 shadow-xl z-50 backdrop-blur-sm py-0.5 rounded-none">
+                    <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">Server</div>
+                    {availableServers.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => { setActiveServer(s); setShowServerPicker(false); loadByType(audioType, s); }}
+                        className={`w-full text-left px-3 py-1.5 text-xs transition-colors rounded-none ${
+                          activeServer === s
+                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Quality picker */}
+            {availableQualities.length > 0 && (
+              <div className="relative h-full flex items-center">
+                <button
+                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowSpeedPicker(false); setShowSubPicker(false); }}
+                  className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
+                >
+                  <svg className="w-3 h-3 opacity-60" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" />
+                  </svg>
+                  {currentQuality === "auto" ? "Auto" : currentQuality}
+                  <svg className="w-3 h-3 opacity-50" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M7 10l5 5 5-5z" />
+                  </svg>
+                </button>
+                {showQualityPicker && (
+                  <div className="absolute right-0 bottom-full mb-1.5 w-32 bg-[#131318] border border-[var(--accent)]/20 shadow-xl overflow-hidden z-50 backdrop-blur-sm rounded-none">
+                    <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
+                      Quality
+                    </div>
+                    {availableQualities.map((q) => (
+                      <button
+                        key={q}
+                        onClick={() => changeQuality(q)}
+                        className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
+                          // Highlight if it's the current quality, or if auto is active and this is the first item
+                          q === currentQuality
+                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                        }`}
+                      >
+                        {q === "auto" ? "Auto" : q}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Speed selector */}
+            <div className="relative h-full flex items-center">
+              <button
+                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowQualityPicker(false); setShowSubPicker(false); }}
+                className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
+              >
+                <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                {playbackRate}x
+                <svg className="w-3 h-3 opacity-50" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M7 10l5 5 5-5z" />
+                </svg>
+              </button>
+              {showSpeedPicker && (
+                <div className="absolute right-0 bottom-full mb-1.5 w-28 bg-[#131318] border border-[var(--accent)]/20 shadow-xl overflow-hidden z-50 backdrop-blur-sm rounded-none">
+                  <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
+                    Speed
+                  </div>
+                  {SPEED_PRESETS.map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => changeSpeed(r)}
+                      className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
+                        playbackRate === r
+                          ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                          : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                      }`}
+                    >
+                      {r}x
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Subtitle toggle + picker */}
+            <div className="relative h-full flex items-center">
+              <button
+                onClick={() => { setShowSubPicker(!showSubPicker); setShowQualityPicker(false); setShowSpeedPicker(false); }}
+                className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
+                  activeSubtitle
+                    ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
+                    : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
+                }`}
+              >
+                <svg className="w-3 h-3 opacity-80" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z" />
+                </svg>
+                CC
+              </button>
+              {showSubPicker && (
+                <div className="absolute right-0 bottom-full mb-1.5 w-52 bg-[#131318] border border-[var(--accent)]/20 shadow-xl z-50 max-h-80 overflow-y-auto backdrop-blur-sm rounded-none">
+                  <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
+                    Subtitles
+                  </div>
+                  <button
+                    onClick={() => { setActiveSubtitle(null); setShowSubPicker(false); }}
+                    className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
+                      !activeSubtitle
+                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                        : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                    }`}
+                  >
+                    Off
+                  </button>
+                  {subtitles.map((sub) => (
+                    <button
+                      key={sub.url}
+                      onClick={() => { setActiveSubtitle(sub.url); setShowSubPicker(false); }}
+                      className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
+                        activeSubtitle === sub.url
+                          ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                          : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                      }`}
+                    >
+                      {sub.lang}
+                    </button>
+                  ))}
+                  {subtitles.length > 0 && <div className="border-t border-[var(--accent)]/20 mx-2 my-0.5" />}
+                  {!osSearched && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); searchOpenSubtitles(); }}
+                      disabled={osLoading}
+                      className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                      {osLoading ? "Searching..." : "Search OpenSubtitles"}
+                    </button>
+                  )}
+
+                  {/* OS loading */}
+                  {osLoading && (
+                    <div className="px-2.5 py-2 text-xs text-[var(--accent)]/50 italic">
+                      Searching...
+                    </div>
+                  )}
+
+                  {/* OS error */}
+                  {osError && osResults.length === 0 && (
+                    <div className="px-2.5 py-2 text-xs text-[var(--accent)]/50 italic">
+                      {osError}
+                    </div>
+                  )}
+
+                  {/* OS results */}
+                  {osResults.length > 0 && (
+                    <>
+                      <div className="px-2.5 pt-1 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
+                        OpenSubtitles
+                      </div>
+                      {osResults.slice(0, 15).map((sub, idx) => (
+                        <button
+                          key={`os-${sub.file_id}-${idx}`}
+                          onClick={() => { selectOSSubtitle(sub.file_id); }}
+                          className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/70 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors truncate"
+                          title={`${sub.language} — ${sub.release}`}
+                        >
+                          {sub.language.toUpperCase()}
+                          {sub.hearing_impaired ? " \u00B7 HI" : ""}
+                          {sub.ai_translated ? " \u00B7 AI" : ""}
+                          <span className="text-[var(--accent)]/30 ml-1">
+                            {sub.release.substring(0, 20)}
+                          </span>
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {/* Re-search link */}
+                  {osSearched && (
+                    <div className="border-t border-[var(--accent)]/20 mx-2 my-0.5" />
+                  )}
+                  {osSearched && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setOsSearched(false); setOsResults([]); setOsError(null); }}
+                      className="w-full text-left px-2.5 py-1 text-[11px] text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors"
+                    >
+                      Search again
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Fullscreen */}
+            <button onClick={toggleFullscreen} className="w-8 h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors">
+              {isFullscreen ? (
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Top info bar */}
+      <div
+        className={`absolute top-0 left-0 right-0 p-3 flex items-center gap-3 transition-opacity duration-300 z-20 bg-gradient-to-b from-black/70 to-transparent ${
+          showControls ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
+      >
+        <span className="text-xs text-[#9a9aa0] truncate max-w-[60%]">
+          {animeTitle}
+        </span>
+        <span className="text-xs text-[var(--accent)]/50 flex-shrink-0 font-mono font-bold">
+          EP {String(episodeNumber).padStart(2, "0")}
+        </span>
+      </div>
+    </div>
+  );
+}
