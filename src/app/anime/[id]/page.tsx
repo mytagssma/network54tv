@@ -134,14 +134,14 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
           </div>
 
           {episodes.length > 0 ? (
-            <div className="grid gap-2">
+            <div className="grid gap-2 sm:gap-3">
               {episodes.map((episode) => {
                 const isAvailable = episode.available !== false;
                 return isAvailable ? (
                   <Link
                     key={`${episode.id}-${episode.number}`}
                     href={`/anime/${animeId}/watch/${episode.number}`}
-                    className="flex items-center gap-4 bg-[#131318] hover:bg-[#1a1a20] border-l-2 border-[var(--accent)]/30 hover:border-l-[var(--accent)] p-4 transition-all group rounded-none"
+                    className="flex items-center gap-3 sm:gap-4 bg-[#131318] hover:bg-[#1a1a20] border-l-2 border-[var(--accent)]/30 hover:border-l-[var(--accent)] p-3 sm:p-4 transition-all group rounded-none"
                   >
                     <span className="text-[var(--accent)]/50 font-mono text-sm w-8 text-right shrink-0 font-bold">
                       {String(episode.number).padStart(2, "0")}
@@ -168,7 +168,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
                 ) : (
                   <div
                     key={`${episode.id}-${episode.number}`}
-                    className="flex items-center gap-4 bg-[#131318] border-l-2 border-[#6b6b70]/30 p-4 rounded-none opacity-50 cursor-not-allowed"
+                    className="flex items-center gap-3 sm:gap-4 bg-[#131318] border-l-2 border-[#6b6b70]/30 p-3 sm:p-4 rounded-none opacity-50 cursor-not-allowed"
                   >
                     <span className="text-[#6b6b70] font-mono text-sm w-8 text-right shrink-0 font-bold">
                       {String(episode.number).padStart(2, "0")}

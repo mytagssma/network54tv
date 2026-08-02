@@ -143,9 +143,9 @@ export default function Home() {
             // Browse Anime
           </h1>
           <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-            {/* Search row */}
-            <div className="flex gap-2">
-              <div className="relative flex-1">
+            {/* Search row - stacked on mobile, inline on desktop */}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1 w-full sm:w-auto">
                 <svg
                   className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-decorative)]"
                   fill="none"
@@ -164,28 +164,12 @@ export default function Home() {
                   className="w-full bg-[var(--panel)] border border-[var(--accent)]/30 pl-10 pr-4 py-2.5 text-white placeholder-[var(--text-decorative)] focus:outline-none focus:border-[var(--accent)] focus:accent-shadow-sm transition-all font-mono text-sm rounded-none"
                 />
               </div>
-              <button
-                type="submit"
-                disabled={loading}
-                className="bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-black px-6 py-2.5 font-bold uppercase tracking-wider text-sm transition-all accent-shadow-md rounded-none flex items-center gap-2"
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  aria-hidden="true"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                {loading ? "Searching..." : "Search"}
-              </button>
-              {hasSearched && (
+              {/* Buttons row - stacked on mobile, inline on desktop */}
+              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                 <button
-                  type="button"
-                  onClick={handleClear}
-                  className="bg-transparent hover:bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30 px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center gap-1.5"
+                  type="submit"
+                  disabled={loading}
+                  className="bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-black px-6 py-2.5 font-bold uppercase tracking-wider text-sm transition-all accent-shadow-md rounded-none flex items-center justify-center gap-2"
                 >
                   <svg
                     className="w-4 h-4"
@@ -195,45 +179,64 @@ export default function Home() {
                     strokeWidth={2}
                     aria-hidden="true"
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                   </svg>
-                  Clear
+                  {loading ? "Searching..." : "Search"}
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowFilters(!showFilters)}
-                className={`px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center gap-1.5 ${
-                  showFilters || hasActiveFilters
-                    ? "bg-[var(--accent)] text-black"
-                    : "bg-transparent text-[var(--accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/10"
-                }`}
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  aria-hidden="true"
+                {hasSearched && (
+                  <button
+                    type="button"
+                    onClick={handleClear}
+                    className="bg-transparent hover:bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30 px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    Clear
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={`px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 ${
+                    showFilters || hasActiveFilters
+                      ? "bg-[var(--accent)] text-black"
+                      : "bg-transparent text-[var(--accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/10"
+                  }`}
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-                </svg>
-                Filters
-                {hasActiveFilters && <span className="text-[10px]">(active)</span>}
-                {showFilters && (
                   <svg
-                    className="w-3 h-3"
+                    className="w-4 h-4"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
                     strokeWidth={2}
                     aria-hidden="true"
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
                   </svg>
-                )}
-              </button>
+                  Filters
+                  {hasActiveFilters && <span className="text-[10px]">(active)</span>}
+                  {showFilters && (
+                    <svg
+                      className="w-3 h-3"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
 
             {/* Filter row (collapsible) */}

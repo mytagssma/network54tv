@@ -125,7 +125,7 @@ export default async function WatchPage({ params }: Props) {
           <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider mb-3">
             Episodes
           </h2>
-          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-1.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
             {episodes.map((ep) => {
               const isAvailable = ep.available !== false;
               const isCurrent = ep.number === episodeNumber;
@@ -134,7 +134,7 @@ export default async function WatchPage({ params }: Props) {
                   <Link
                     key={ep.number}
                     href={`/anime/${animeId}/watch/${ep.number}`}
-                    className={`text-center py-2 text-xs font-mono border transition-all duration-200 rounded-none ${
+                    className={`text-center py-3 text-xs sm:py-2 font-mono border transition-all duration-200 rounded-none min-h-[44px] flex items-center justify-center ${
                       isCurrent
                         ? "bg-[var(--accent)] border-[var(--accent)] text-black font-bold"
                         : "border-[var(--accent)]/10 text-[var(--accent)]/50 hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
@@ -147,7 +147,7 @@ export default async function WatchPage({ params }: Props) {
               return (
                 <div
                   key={ep.number}
-                  className="text-center py-2 text-xs font-mono border border-[#6b6b70]/10 text-[#6b6b70] rounded-none opacity-50 cursor-not-allowed"
+                  className="text-center py-3 text-xs sm:py-2 font-mono border border-[#6b6b70]/10 text-[#6b6b70] rounded-none opacity-50 cursor-not-allowed min-h-[44px] flex items-center justify-center"
                 >
                   {String(ep.number).padStart(2, "0")}
                 </div>
