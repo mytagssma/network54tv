@@ -487,7 +487,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
 
   const togglePlay = () => {
     if (!videoRef.current) return;
-    if (longPressRef.current) return; // skip toggle after hold-to-2x
     if (videoRef.current.paused) {
       videoRef.current.play().catch(() => {});
       videoRef.current.playbackRate = playbackRateRef.current;
@@ -797,20 +796,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
           currentTime={currentTime}
           headers={streamHeaders || undefined}
         />
-      )}
-
-      {/* Center play overlay when paused */}
-      {!playing && sources.length > 0 && !loading && (
-        <div
-          className="absolute inset-0 flex items-center justify-center z-10"
-          onClick={togglePlay}
-        >
-          <div className="w-16 h-16 flex items-center justify-center bg-[var(--accent)]/10 border border-[var(--accent)]/30 transition-transform hover:scale-110 rounded-none">
-            <svg className="w-8 h-8 text-[var(--accent)] ml-1" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
-        </div>
       )}
 
       {/* Error overlay */}
