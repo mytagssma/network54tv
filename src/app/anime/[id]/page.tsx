@@ -134,7 +134,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
           </div>
 
           {episodes.length > 0 ? (
-            <div className="grid gap-2 sm:gap-3">
+            <div className="grid gap-2 sm:gap-3 max-h-[60vh] sm:max-h-none overflow-y-auto">
               {episodes.map((episode) => {
                 const isAvailable = episode.available !== false;
                 return isAvailable ? (

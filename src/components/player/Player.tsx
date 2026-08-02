@@ -773,6 +773,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onContextMenu={(e) => e.preventDefault()}
       />
 
 {/* Loading overlay — simple terminal progress bar */}
