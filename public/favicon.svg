@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" fill="#0a0a0f" rx="0"/>
+  <!-- N: blocky geometric with thick diagonal -->
+  <path d="M3 5h4v12L19 5h5l-9 11L25 27h-5L11 16V27H3V5z" fill="var(--accent, #e8ff00)"/>
+  <!-- 5: blocky horizontal bars -->
+  <path d="M19 9h7v3h-6v3h5a2 2 0 010 4h-1v3h-5v-3h-1l1-2h6a4 4 0 000-8z" fill="var(--accent, #e8ff00)"/>
+  <!-- 4: simple blocky -->
+  <path d="M25 19h2v8h4v2h-6V19z" fill="var(--accent, #e8ff00)"/>
+</svg>
