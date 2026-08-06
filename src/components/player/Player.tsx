@@ -334,45 +334,53 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
     [discoverServers, loadHls, activeServer]
   );
 
-  // ─── Auto-detect sub & dub availability on mount ────────
+  // ─── Auto-load sub & detect dub on mount ────────
+  // Use fetchStream (sequential server fallback) instead of probing all servers in parallel
   useEffect(() => {
     let cancelled = false;
+    const fid = ++fetchIdRef.current;
 
+    // Load sub first via sequential server fallback
+    setLoading(true);
+    setStreamError(false);
+    fetchStream("sub");
+
+    // After sub loads, discover available servers + probe dub in background
     (async () => {
-      const [subServers, dubServers] = await Promise.all([
-        discoverServers("sub"),
-        discoverServers("dub"),
-      ]);
+      // Wait for sub to finish loading first
+      await new Promise((r) => setTimeout(r, 2000));
+      if (cancelled || fid !== fetchIdRef.current) return;
 
-      if (cancelled) return;
+      // Discover working servers for sub (populates server picker)
+      const subWorking: string[] = [];
+      for (const server of SERVERS) {
+        const data = await probeServer(server, "sub");
+        if (data) {
+          subWorking.push(server);
+          if (!cancelled && fid === fetchIdRef.current) {
+            setActiveServer(server);
+            setAvailableServers([...subWorking]);
+          }
+        }
+      }
 
-      // Record available servers
-      const allSub = subServers.map((s) => s.server);
-      const allDub = dubServers.map((s) => s.server);
-
-      if (allDub.length > 0) setDubAvailable(true);
-
-      // Prefer sub with the best server
-      const preferSub = subServers.length > 0;
-      const chosen = preferSub ? subServers[0] : dubServers[0];
-
-      if (chosen) {
-        setActiveServer(chosen.server);
-        setAvailableServers(chosen.server ? allSub.concat(preferSub ? [] : []) : allDub);
-        setSources(chosen.data.sources);
-        setSubtitles(chosen.data.subtitles);
-        setStreamHeaders(chosen.data.headers);
-        setAudioType(preferSub ? "sub" : "dub");
-        setLoading(false);
-        loadHls(chosen.data.sources, chosen.data.headers, false);
-      } else {
-        setLoading(false);
-        setStreamError(true);
+      // Probe for dub availability
+      let dubFound = false;
+      for (const server of SERVERS) {
+        const data = await probeServer(server, "dub");
+        if (data) {
+          dubFound = true;
+          break;
+        }
+      }
+      if (!cancelled && fid === fetchIdRef.current && dubFound) {
+        setDubAvailable(true);
       }
     })();
 
     return () => {
       cancelled = true;
+      fetchIdRef.current++;
       destroyHls();
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     };
@@ -834,16 +842,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
             onChange={handleSeek}
             className="w-full appearance-none cursor-pointer
                        transition-all duration-200
-                       h-1 group-hover/bar:h-1.5
+                       group-hover/bar:h-1.5
                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
-                       [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none
+                       [&::-webkit-slider-thumb]:-mt-[4px] [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none
                        [&::-webkit-slider-thumb]:shadow-md
                        [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:duration-150
                        [&::-webkit-slider-thumb]:hover:scale-125
                        [&::-webkit-slider-runnable-track]:h-1 [&::-webkit-slider-runnable-track]:rounded-none
                        [&::-moz-range-track]:h-1 [&::-moz-range-track]:rounded-none
                        [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3
-                       [&::-moz-range-thumb]:bg-[var(--accent)] [&::-moz-range-thumb]:rounded-none
+                       [&::-moz-range-thumb]:-mt-[4px] [&::-moz-range-thumb]:bg-[var(--accent)] [&::-moz-range-thumb]:rounded-none
                        [&::-moz-range-thumb]:border-none"
             style={{
               background: `linear-gradient(to right, rgba(var(--accent-rgb),0.9) ${progress}%, rgba(var(--accent-rgb),0.2) ${progress}%, rgba(255,255,255,0.1) ${progress}%)`,
