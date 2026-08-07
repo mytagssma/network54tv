@@ -349,7 +349,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
   // Use fetchStream (sequential server fallback) instead of probing all servers in parallel
   useEffect(() => {
     let cancelled = false;
-    const fid = ++fetchIdRef.current;
 
     // Load sub first via sequential server fallback
     setLoading(true);
@@ -360,7 +359,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
     (async () => {
       // Wait for sub to finish loading first
       await new Promise((r) => setTimeout(r, 2000));
-      if (cancelled || fid !== fetchIdRef.current) return;
+      if (cancelled) return;
 
       // Discover working servers for sub (populates server picker)
       const subWorking: string[] = [];
@@ -368,7 +367,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
         const data = await probeServer(server, "sub");
         if (data) {
           subWorking.push(server);
-          if (!cancelled && fid === fetchIdRef.current) {
+          if (!cancelled) {
             setActiveServer(server);
             setAvailableServers([...subWorking]);
           }
@@ -384,14 +383,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
           break;
         }
       }
-      if (!cancelled && fid === fetchIdRef.current && dubFound) {
+      if (!cancelled && dubFound) {
         setDubAvailable(true);
       }
     })();
 
     return () => {
       cancelled = true;
-      fetchIdRef.current++;
       destroyHls();
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     };
@@ -935,7 +933,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
               <button onClick={toggleMute} className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-11 h-11 sm:w-8 sm:h-8">
                 {muted || volume === 0 ? (
                   <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.5v7a4.47 4.47 0 002.5-3.5zm2.5 0A7.5 7.5 0 0014 5.5v2a5.5 5.5 0 010 11v2a7.5 7.5 0 005-7z" />
+                    <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
                   </svg>
                 ) : (
                   <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
