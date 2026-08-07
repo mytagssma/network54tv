@@ -229,7 +229,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             server,
           });
           if (anilistId) params.set("anilistId", String(anilistId));
-          if (malId) params.set("malId", String(malId));
 
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
@@ -241,8 +240,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             setSources(data.sources);
             setSubtitles(data.subtitles || []);
             setStreamHeaders(data.headers || null);
-            setIntroSegment(data.intro || null);
-            setOutroSegment(data.outro || null);
             setStreamError(false);
             loadHls(data.sources, data.headers || null, true);
             return;
@@ -399,6 +396,29 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [animeTitle, episodeNumber]);
+
+  // ─── Fetch AniSkip timestamps independently (non-blocking) ──
+  useEffect(() => {
+    if (!malId || !episodeNumber) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const params = new URLSearchParams({ malId: String(malId), episode: String(episodeNumber) });
+        const res = await fetch(`/api/skip-times?${params}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setIntroSegment(data.intro || null);
+          setOutroSegment(data.outro || null);
+        }
+      } catch {
+        // No skip data available — that's fine
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [malId, episodeNumber]);
 
   // ─── Auto-set initial subtitle track ────────────────────
   useEffect(() => {
