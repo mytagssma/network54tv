@@ -10,8 +10,8 @@
   <rect x="19" y="8" width="10" height="4" fill="#e8ff00"/>
   <rect x="25" y="8" width="4" height="7" fill="#e8ff00"/>
   <rect x="19" y="14" width="10" height="4" fill="#e8ff00"/>
-  <!-- 4: vertical + horizontal crossbar + diagonal -->
-  <rect x="20" y="18" width="4" height="11" fill="#e8ff00"/>
-  <rect x="19" y="22" width="11" height="4" fill="#e8ff00"/>
-  <polygon points="19,22 23,22 30,18 26,18" fill="#e8ff00"/>
+  <!-- 4: left vertical + right vertical (short) + horizontal crossbar -->
+  <rect x="19" y="18" width="4" height="11" fill="#e8ff00"/>
+  <rect x="26" y="18" width="4" height="8" fill="#e8ff00"/>
+  <rect x="19" y="23" width="11" height="4" fill="#e8ff00"/>
 </svg>
