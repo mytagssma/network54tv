@@ -95,9 +95,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
   // Auto-play next episode
   const [autoPlayNext, setAutoPlayNext] = useState(false);
 
-  // Skip intro / outro
-  const INTRO_DURATION = 90; // seconds — configurable later
-  const OUTRO_DURATION = 90; // seconds — configurable later
+  // Skip intro / outro — buttons visible in time windows, user clicks when ready
+  const SKIP_FORWARD_SECONDS = 90; // how far to jump when Skip Intro is clicked
+  const OUTRO_WINDOW = 120; // show Skip Outro in last 2 minutes
   const [autoSkipEnabled, setAutoSkipEnabled] = useState(false);
 
   // OpenSubtitles state
@@ -121,8 +121,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
     ? ["auto", ...hlsLevels.map((l) => l.name)]
     : Array.from(new Set(sources.map((s) => s.quality).filter(Boolean)));
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const inIntro = currentTime < INTRO_DURATION && duration > 0;
-  const inOutro = duration > 0 && currentTime > duration - OUTRO_DURATION && currentTime < duration;
+  const inIntro = currentTime < SKIP_FORWARD_SECONDS && duration > 0;
+  const inOutro = duration > 0 && currentTime > duration - OUTRO_WINDOW && currentTime < duration;
 
   // ─── Destroy HLS ────────────────────────────────────────
   const destroyHls = useCallback(() => {
@@ -651,7 +651,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
   useEffect(() => {
     if (!autoSkipEnabled || !videoRef.current) return;
     if (inIntro && videoRef.current) {
-      videoRef.current.currentTime = INTRO_DURATION;
+      videoRef.current.currentTime += SKIP_FORWARD_SECONDS;
     } else if (inOutro && videoRef.current) {
       videoRef.current.currentTime = duration;
     }
@@ -853,7 +853,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
         <div className="absolute bottom-16 left-0 right-0 flex justify-center gap-3 z-30 px-3">
           {inIntro && (
             <button
-              onClick={() => { if (videoRef.current) videoRef.current.currentTime = INTRO_DURATION; }}
+              onClick={() => { if (videoRef.current) videoRef.current.currentTime += SKIP_FORWARD_SECONDS; }}
               className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
