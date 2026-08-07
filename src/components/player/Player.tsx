@@ -10,6 +10,7 @@ interface PlayerProps {
   animeTitle: string;
   episodeNumber: number;
   anilistId?: number;
+  malId?: number;
   nextEpisodeNumber?: number;
 }
 
@@ -34,7 +35,7 @@ function formatTime(t: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export default function Player({ animeTitle, episodeNumber, anilistId, nextEpisodeNumber }: PlayerProps) {
+export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber }: PlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -95,9 +96,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
   // Auto-play next episode
   const [autoPlayNext, setAutoPlayNext] = useState(false);
 
-  // Skip intro / outro — buttons visible in time windows, user clicks when ready
-  const SKIP_FORWARD_SECONDS = 90; // how far to jump when Skip Intro is clicked
-  const OUTRO_WINDOW = 120; // show Skip Outro in last 2 minutes
+  // Skip intro / outro — from AniSkip per-episode timestamps
+  const [introSegment, setIntroSegment] = useState<{ start: number; end: number } | null>(null);
+  const [outroSegment, setOutroSegment] = useState<{ start: number; end: number } | null>(null);
   const [autoSkipEnabled, setAutoSkipEnabled] = useState(false);
 
   // OpenSubtitles state
@@ -121,8 +122,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
     ? ["auto", ...hlsLevels.map((l) => l.name)]
     : Array.from(new Set(sources.map((s) => s.quality).filter(Boolean)));
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const inIntro = currentTime < SKIP_FORWARD_SECONDS && duration > 0;
-  const inOutro = duration > 0 && currentTime > duration - OUTRO_WINDOW && currentTime < duration;
+  const inIntro = !!introSegment && currentTime >= introSegment.start && currentTime < introSegment.end && duration > 0;
+  const inOutro = !!outroSegment && currentTime >= outroSegment.start && currentTime < outroSegment.end && duration > 0;
 
   // ─── Destroy HLS ────────────────────────────────────────
   const destroyHls = useCallback(() => {
@@ -228,6 +229,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
             server,
           });
           if (anilistId) params.set("anilistId", String(anilistId));
+          if (malId) params.set("malId", String(malId));
 
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
@@ -239,6 +241,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
             setSources(data.sources);
             setSubtitles(data.subtitles || []);
             setStreamHeaders(data.headers || null);
+            setIntroSegment(data.intro || null);
+            setOutroSegment(data.outro || null);
             setStreamError(false);
             loadHls(data.sources, data.headers || null, true);
             return;
@@ -650,12 +654,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
   // ─── Auto-skip intro/outro ─────────────────────────────
   useEffect(() => {
     if (!autoSkipEnabled || !videoRef.current) return;
-    if (inIntro && videoRef.current) {
-      videoRef.current.currentTime += SKIP_FORWARD_SECONDS;
-    } else if (inOutro && videoRef.current) {
-      videoRef.current.currentTime = duration;
+    if (inIntro && introSegment && videoRef.current) {
+      videoRef.current.currentTime = introSegment.end;
+    } else if (inOutro && outroSegment && videoRef.current) {
+      videoRef.current.currentTime = outroSegment.end;
     }
-  }, [autoSkipEnabled, inIntro, inOutro, duration]);
+  }, [autoSkipEnabled, inIntro, inOutro, introSegment, outroSegment]);
 
   // ─── Keyboard shortcuts ──────────────────────────────
   useEffect(() => {
@@ -848,12 +852,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
         </div>
       )}
 
-      {/* Skip intro/outro buttons */}
+      {/* Skip intro/outro buttons — only shown when AniSkip timestamps exist */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
         <div className="absolute bottom-16 left-0 right-0 flex justify-center gap-3 z-30 px-3">
-          {inIntro && (
+          {inIntro && introSegment && (
             <button
-              onClick={() => { if (videoRef.current) videoRef.current.currentTime += SKIP_FORWARD_SECONDS; }}
+              onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
               className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -862,9 +866,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, nextEpiso
               Skip Intro
             </button>
           )}
-          {inOutro && (
+          {inOutro && outroSegment && (
             <button
-              onClick={() => { if (videoRef.current) videoRef.current.currentTime = duration; }}
+              onClick={() => { if (videoRef.current) videoRef.current.currentTime = outroSegment.end; }}
               className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               Skip Outro

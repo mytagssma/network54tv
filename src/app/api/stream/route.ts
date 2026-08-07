@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
   const type = (searchParams.get("type") || "sub") as "sub" | "dub";
   const server = searchParams.get("server") || undefined;
   const anilistIdParam = searchParams.get("anilistId");
+  const malIdParam = searchParams.get("malId");
 
   if (!title || !episode) {
     return NextResponse.json({ error: "Missing title or episode" }, { status: 400 });
@@ -21,22 +22,23 @@ export async function GET(req: NextRequest) {
   }
 
   const anilistId = anilistIdParam ? parseInt(anilistIdParam, 10) : undefined;
+  const malId = malIdParam ? parseInt(malIdParam, 10) : undefined;
   const strict = searchParams.get("strict") === "true";
 
   try {
     // Try exact type first, then fallback through all providers
-    let result = await getStreamingSources(title, episodeNumber, type, server, anilistId);
+    let result = await getStreamingSources(title, episodeNumber, type, server, anilistId, malId);
 
     if (!strict) {
       // If specific type fails (e.g. sub for a dub-only episode), try the other type
       if (!result) {
         const otherType = type === "sub" ? "dub" : "sub";
-        result = await getStreamingSources(title, episodeNumber, otherType, server, anilistId);
+        result = await getStreamingSources(title, episodeNumber, otherType, server, anilistId, malId);
       }
 
       // Ultimate fallback: try everything
       if (!result) {
-        result = await getStreamingSourcesFallback(title, episodeNumber, anilistId);
+        result = await getStreamingSourcesFallback(title, episodeNumber, anilistId, malId);
       }
     }
 
@@ -53,6 +55,8 @@ export async function GET(req: NextRequest) {
       subtitles: result.subtitles,
       headers: result.headers || {},
       providerId: result.providerId,
+      intro: result.intro || null,
+      outro: result.outro || null,
     });
   } catch (e: any) {
     return NextResponse.json(

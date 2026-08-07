@@ -30,6 +30,8 @@ interface StreamResult {
   subtitles: Subtitle[];
   headers?: Record<string, string>;
   providerId: string;
+  intro?: { start: number; end: number };
+  outro?: { start: number; end: number };
 }
 
 // ─── Caching ──────────────────────────────────────────────────────────
@@ -205,6 +207,39 @@ const PROVIDERS: ProviderDef[] = [
     },
   },
 ];
+
+// ─── AniSkip ─────────────────────────────────────────────────────────
+
+/** Fetch per-episode intro/outro timestamps from AniSkip (free, no key) */
+async function fetchAniSkipTimes(
+  malId: number,
+  episodeNumber: number
+): Promise<{ intro?: { start: number; end: number }; outro?: { start: number; end: number } }> {
+  try {
+    const url = `https://api.aniskip.com/v2/skip-times/${malId}/${episodeNumber}?types[]=op&types[]=ed&types[]=mixed-op&types[]=mixed-ed`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return {};
+    const json = await res.json();
+    if (!json.found || !json.results) return {};
+
+    let intro: { start: number; end: number } | undefined;
+    let outro: { start: number; end: number } | undefined;
+
+    for (const item of json.results) {
+      const start = Math.round(item.interval.startTime);
+      const end = Math.round(item.interval.endTime);
+      if ((item.skipType === "op" || item.skipType === "mixed-op") && !intro) {
+        intro = { start, end };
+      } else if ((item.skipType === "ed" || item.skipType === "mixed-ed") && !outro) {
+        outro = { start, end };
+      }
+    }
+
+    return { intro, outro };
+  } catch {
+    return {};
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -431,9 +466,10 @@ export async function getStreamingSources(
   episodeNumber: number,
   type: "sub" | "dub" = "sub",
   server?: string,
-  anilistId?: number
+  anilistId?: number,
+  malId?: number
 ): Promise<
-  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string }
+  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
   | null
 > {
   // ── Phase 1: Try providers in order ──
@@ -447,7 +483,15 @@ export async function getStreamingSources(
 
       const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
       if (result) {
-        return { ...result, providerId: provider.name };
+        // Fetch AniSkip timestamps if we have a MAL ID
+        let intro: { start: number; end: number } | undefined;
+        let outro: { start: number; end: number } | undefined;
+        if (malId) {
+          const skipTimes = await fetchAniSkipTimes(malId, episodeNumber);
+          intro = skipTimes.intro;
+          outro = skipTimes.outro;
+        }
+        return { ...result, providerId: provider.name, intro, outro };
       }
     } catch {
       continue;
@@ -461,8 +505,18 @@ export async function getStreamingSources(
       if (session) {
         const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
         if (targetEp?.id) {
-          const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
-          if (result) return { ...result, providerId: "megaplay" };
+          const result = await getMegaPlaySources(targetEp.id, type, episodeNumber, malId);
+          if (result) {
+            // Fetch AniSkip timestamps if we have a MAL ID
+            let intro: { start: number; end: number } | undefined;
+            let outro: { start: number; end: number } | undefined;
+            if (malId) {
+              const skipTimes = await fetchAniSkipTimes(malId, episodeNumber);
+              intro = skipTimes.intro;
+              outro = skipTimes.outro;
+            }
+            return { ...result, providerId: "megaplay", intro, outro };
+          }
         }
       }
     } catch {
@@ -479,17 +533,18 @@ export async function getStreamingSources(
 export async function getStreamingSourcesFallback(
   animeTitle: string,
   episodeNumber: number,
-  anilistId?: number
+  anilistId?: number,
+  malId?: number
 ): Promise<
-  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string }
+  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
   | null
 > {
   // Try sub first
-  const subResult = await getStreamingSources(animeTitle, episodeNumber, "sub", undefined, anilistId);
+  const subResult = await getStreamingSources(animeTitle, episodeNumber, "sub", undefined, anilistId, malId);
   if (subResult) return subResult;
 
   // Try dub
-  const dubResult = await getStreamingSources(animeTitle, episodeNumber, "dub", undefined, anilistId);
+  const dubResult = await getStreamingSources(animeTitle, episodeNumber, "dub", undefined, anilistId, malId);
   if (dubResult) return dubResult;
 
   return null;

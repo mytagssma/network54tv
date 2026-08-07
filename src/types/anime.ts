@@ -114,6 +114,7 @@ export interface AnifySourcesResponse {
 // App-level types
 export interface Anime {
   id: number;
+  idMal?: number;
   title: string;
   englishTitle?: string;
   nativeTitle?: string;

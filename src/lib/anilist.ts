@@ -59,6 +59,7 @@ const DETAIL_QUERY = `
 query ($id: Int) {
   Media(id: $id, type: ANIME) {
     id
+    idMal
     title { romaji english native }
     coverImage { large extraLarge color }
     bannerImage
@@ -174,6 +175,7 @@ query ($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int) {
 function anilistMediaToAnime(media: any): Anime {
   return {
     id: media.id,
+    idMal: media.idMal || undefined,
     title: media.title?.english || media.title?.romaji || "Unknown",
     englishTitle: media.title?.english,
     nativeTitle: media.title?.native,
