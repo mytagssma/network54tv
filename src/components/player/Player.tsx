@@ -353,30 +353,65 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // Load sub first via sequential server fallback
     setLoading(true);
     setStreamError(false);
-    fetchStream("sub");
 
-    // Immediately start discovering servers + probing dub in parallel (no delay)
     (async () => {
-      // Discover working servers for sub (populates server picker) — in parallel
-      const subPromises = SERVERS.map(async (server) => {
-        const data = await probeServer(server, "sub");
-        return data ? server : null;
-      });
-      const subResults = await Promise.all(subPromises);
-      const subWorking = subResults.filter(Boolean) as string[];
-      if (!cancelled && subWorking.length > 0) {
-        setActiveServer(subWorking[0]);
-        setAvailableServers(subWorking);
+      // Fetch sub stream — try servers sequentially until one works
+      for (const server of SERVERS) {
+        if (cancelled) return;
+        try {
+          const params = new URLSearchParams({
+            title: animeTitle,
+            episode: String(episodeNumber),
+            type: "sub",
+            server,
+            strict: "true",
+          });
+          if (anilistId) params.set("anilistId", String(anilistId));
+          const res = await fetch(`/api/stream?${params}`);
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (cancelled) return;
+
+          if (data.sources?.length > 0) {
+            setSources(data.sources);
+            setSubtitles(data.subtitles || []);
+            setStreamHeaders(data.headers || null);
+            setActiveServer(server);
+            setAvailableServers([server]);
+            setStreamError(false);
+            loadHls(data.sources, data.headers || null, true);
+            setLoading(false);
+
+            // Now discover remaining sub servers + probe dub in background
+            const otherServers = SERVERS.filter((s) => s !== server);
+            const subExtras = await Promise.all(
+              otherServers.map(async (s) => {
+                const d = await probeServer(s, "sub");
+                return d ? s : null;
+              })
+            );
+            const allSub = [server, ...subExtras.filter(Boolean)] as string[];
+            if (!cancelled) setAvailableServers(allSub);
+
+            // Probe dub availability — only after sub is loaded
+            const dubResults = await Promise.all(
+              SERVERS.map(async (s) => {
+                const d = await probeServer(s, "dub");
+                return !!d;
+              })
+            );
+            if (!cancelled && dubResults.some(Boolean)) {
+              setDubAvailable(true);
+            }
+            return;
+          }
+        } catch { /* continue to next server */ }
       }
 
-      // Probe for dub availability — in parallel
-      const dubPromises = SERVERS.map(async (server) => {
-        const data = await probeServer(server, "dub");
-        return !!data;
-      });
-      const dubResults = await Promise.all(dubPromises);
-      if (!cancelled && dubResults.some(Boolean)) {
-        setDubAvailable(true);
+      // All sub servers failed
+      if (!cancelled) {
+        setStreamError(true);
+        setLoading(false);
       }
     })();
 
