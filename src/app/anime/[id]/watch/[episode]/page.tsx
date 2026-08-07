@@ -63,7 +63,7 @@ export default async function WatchPage({ params }: Props) {
       </h1>
 
       {/* Player */}
-      <Player animeTitle={anime.title} episodeNumber={episodeNumber} anilistId={animeId} />
+      <Player animeTitle={anime.title} episodeNumber={episodeNumber} anilistId={animeId} nextEpisodeNumber={nextEp?.number} />
 
       {/* Episode navigation */}
       <div className="flex items-center justify-between mt-4">

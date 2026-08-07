@@ -10,6 +10,7 @@ interface PlayerProps {
   animeTitle: string;
   episodeNumber: number;
   anilistId?: number;
+  nextEpisodeNumber?: number;
 }
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
@@ -33,7 +34,7 @@ function formatTime(t: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerProps) {
+export default function Player({ animeTitle, episodeNumber, anilistId, nextEpisodeNumber }: PlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -91,6 +92,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
   // Settings menu (mobile)
   const [showSettings, setShowSettings] = useState(false);
 
+  // Auto-play next episode
+  const [autoPlayNext, setAutoPlayNext] = useState(false);
+
+  // Skip intro / outro
+  const INTRO_DURATION = 90; // seconds — configurable later
+  const OUTRO_DURATION = 90; // seconds — configurable later
+  const [autoSkipEnabled, setAutoSkipEnabled] = useState(false);
+
   // OpenSubtitles state
   const [osResults, setOsResults] = useState<
     { file_id: number; language: string; release: string; hearing_impaired: boolean; ai_translated: boolean }[]
@@ -112,6 +121,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
     ? ["auto", ...hlsLevels.map((l) => l.name)]
     : Array.from(new Set(sources.map((s) => s.quality).filter(Boolean)));
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const inIntro = currentTime < INTRO_DURATION && duration > 0;
+  const inOutro = duration > 0 && currentTime > duration - OUTRO_DURATION && currentTime < duration;
 
   // ─── Destroy HLS ────────────────────────────────────────
   const destroyHls = useCallback(() => {
@@ -638,6 +649,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
     }
   }, [streamError, loading, destroyHls, loadHls]);
 
+  // ─── Auto-skip intro/outro ─────────────────────────────
+  useEffect(() => {
+    if (!autoSkipEnabled || !videoRef.current) return;
+    if (inIntro && videoRef.current) {
+      videoRef.current.currentTime = INTRO_DURATION;
+    } else if (inOutro && videoRef.current) {
+      videoRef.current.currentTime = duration;
+    }
+  }, [autoSkipEnabled, inIntro, inOutro, duration]);
+
   // ─── Keyboard shortcuts ──────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -773,7 +794,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
         onLoadedMetadata={handleLoadedMetadata}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          if (autoPlayNext && nextEpisodeNumber) {
+            window.location.href = `/anime/${anilistId}/watch/${nextEpisodeNumber}`;
+          }
+        }}
         playsInline
         crossOrigin="anonymous"
         onClick={togglePlay}
@@ -821,6 +847,34 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
               Retry
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Skip intro/outro buttons */}
+      {!loading && sources.length > 0 && (inIntro || inOutro) && (
+        <div className="absolute bottom-16 left-0 right-0 flex justify-center gap-3 z-30 px-3">
+          {inIntro && (
+            <button
+              onClick={() => { if (videoRef.current) videoRef.current.currentTime = INTRO_DURATION; }}
+              className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+              Skip Intro
+            </button>
+          )}
+          {inOutro && (
+            <button
+              onClick={() => { if (videoRef.current) videoRef.current.currentTime = duration; }}
+              className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+            >
+              Skip Outro
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
         </div>
       )}
 
@@ -1082,6 +1136,36 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
                 </div>
               )}
             </div>
+
+            {/* Auto-play next episode toggle */}
+            <button
+              onClick={() => setAutoPlayNext(!autoPlayNext)}
+              className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
+                autoPlayNext
+                  ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
+                  : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
+              }`}
+            >
+              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              AUTO
+            </button>
+
+            {/* Auto-skip toggle */}
+            <button
+              onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
+              className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
+                autoSkipEnabled
+                  ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
+                  : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
+              }`}
+            >
+              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" />
+              </svg>
+              SKIP
+            </button>
             </div>
 
             {/* Settings gear (mobile only) */}
@@ -1206,6 +1290,36 @@ export default function Player({ animeTitle, episodeNumber, anilistId }: PlayerP
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Auto-Play section */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Play</div>
+                <button
+                  onClick={() => setAutoPlayNext(!autoPlayNext)}
+                  className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
+                    autoPlayNext
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                      : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                  }`}
+                >
+                  {autoPlayNext ? "ON — Next episode plays automatically" : "OFF"}
+                </button>
+              </div>
+
+              {/* Auto-Skip section */}
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Skip</div>
+                <button
+                  onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
+                  className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
+                    autoSkipEnabled
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                      : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                  }`}
+                >
+                  {autoSkipEnabled ? "ON — Auto-skips intro/outro" : "OFF"}
+                </button>
               </div>
 
               {/* Subtitles section */}
