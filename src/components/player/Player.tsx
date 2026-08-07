@@ -347,7 +347,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   );
 
   // ─── Auto-load sub & detect dub on mount ────────
-  // Use fetchStream (sequential server fallback) instead of probing all servers in parallel
   useEffect(() => {
     let cancelled = false;
 
@@ -356,35 +355,27 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setStreamError(false);
     fetchStream("sub");
 
-    // After sub loads, discover available servers + probe dub in background
+    // Immediately start discovering servers + probing dub in parallel (no delay)
     (async () => {
-      // Wait for sub to finish loading first
-      await new Promise((r) => setTimeout(r, 2000));
-      if (cancelled) return;
-
-      // Discover working servers for sub (populates server picker)
-      const subWorking: string[] = [];
-      for (const server of SERVERS) {
+      // Discover working servers for sub (populates server picker) — in parallel
+      const subPromises = SERVERS.map(async (server) => {
         const data = await probeServer(server, "sub");
-        if (data) {
-          subWorking.push(server);
-          if (!cancelled) {
-            setActiveServer(server);
-            setAvailableServers([...subWorking]);
-          }
-        }
+        return data ? server : null;
+      });
+      const subResults = await Promise.all(subPromises);
+      const subWorking = subResults.filter(Boolean) as string[];
+      if (!cancelled && subWorking.length > 0) {
+        setActiveServer(subWorking[0]);
+        setAvailableServers(subWorking);
       }
 
-      // Probe for dub availability
-      let dubFound = false;
-      for (const server of SERVERS) {
+      // Probe for dub availability — in parallel
+      const dubPromises = SERVERS.map(async (server) => {
         const data = await probeServer(server, "dub");
-        if (data) {
-          dubFound = true;
-          break;
-        }
-      }
-      if (!cancelled && dubFound) {
+        return !!data;
+      });
+      const dubResults = await Promise.all(dubPromises);
+      if (!cancelled && dubResults.some(Boolean)) {
         setDubAvailable(true);
       }
     })();
@@ -908,7 +899,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         onClick={(e) => e.stopPropagation()}
       >
         {/* Progress bar */}
-        <div className="mb-2 group/bar h-4 flex items-center -mt-1">
+        <div className="mb-2 group/bar h-4 flex items-center">
           <input
             type="range"
             min={0}
@@ -916,8 +907,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             step={0.1}
             value={currentTime}
             onChange={handleSeek}
-            className="w-full appearance-none cursor-pointer
-                       transition-all duration-200
+            className="w-full h-1 appearance-none cursor-pointer relative z-10
                        group-hover/bar:h-1.5
                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
                        [&::-webkit-slider-thumb]:-mt-[4px] [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none
