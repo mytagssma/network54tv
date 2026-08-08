@@ -107,7 +107,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [osError, setOsError] = useState<string | null>(null);
   const [osSearched, setOsSearched] = useState(false);
 
-  // Refs for keyboard handler (stable across renders)
+  // Refs for keyboard handler and callbacks (stable across renders)
   const playingRef = useRef(playing);
   playingRef.current = playing;
   const playbackRateRef = useRef(playbackRate);
@@ -162,10 +162,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           startLevel: -1,
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
-          backBufferLength: 0,
+          backBufferLength: 30,
           startFragPrefetch: true,
           testBandwidth: true,
-          maxBufferSize: 10 * 1024 * 1024,
+          maxBufferSize: 30 * 1024 * 1024,
         });
         hls.loadSource(loadUrl);
         hls.attachMedia(video);
@@ -534,9 +534,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setShowControls(true);
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     controlsTimerRef.current = setTimeout(() => {
-      if (playing) setShowControls(false);
+      if (playingRef.current) setShowControls(false);
     }, 3000);
-  }, [playing]);
+  }, []);
 
   useEffect(() => {
     resetControlsTimer();
