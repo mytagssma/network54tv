@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import Hls from "hls.js";
 import SubtitleOverlay from "./SubtitleOverlay";
 import SubtitlePickerContent from "./SubtitlePickerContent";
+import { proxyUrl } from "@/lib/utils";
 import type { StreamSource, Subtitle } from "@/types/anime";
 
 interface PlayerProps {
@@ -16,15 +18,7 @@ interface PlayerProps {
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
 
-/** Build a proxy URL that adds required headers upstream */
-function proxyUrl(rawUrl: string, headers?: Record<string, string>): string {
-  const referer =
-    headers?.["Referer"] || headers?.["referer"] || "https://megaplay.buzz/";
-  const origin =
-    headers?.["Origin"] || headers?.["origin"] || "https://megaplay.buzz";
-  const params = new URLSearchParams({ url: rawUrl, referer, origin });
-  return `/api/proxy?${params}`;
-}
+const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
 function formatTime(t: number): string {
   if (!isFinite(t) || t < 0) return "0:00";
@@ -36,6 +30,7 @@ function formatTime(t: number): string {
 }
 
 export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber }: PlayerProps) {
+  const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -45,6 +40,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const workingServersRef = useRef<{ server: string; sources: StreamSource[]; subtitles: Subtitle[]; headers: Record<string, string> }[]>([]);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressRef = useRef(false);
+  const activeServerRef = useRef<string | null>(null);
+  const currentQualityRef = useRef("auto");
 
   // Refs for close-on-outside-click
   const settingsPanelRef = useRef<HTMLDivElement>(null);
@@ -142,7 +139,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       destroyHls();
 
       // Pick the source matching selected quality, or fallback
-      let selected = srcs.find((s) => s.quality === currentQuality);
+      let selected = srcs.find((s) => s.quality === currentQualityRef.current);
       if (!selected) {
         selected =
           srcs.find((s) => s.quality === "1080p") ||
@@ -174,6 +171,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             }));
             setHlsLevels(levels);
             setCurrentQuality("auto");
+            currentQualityRef.current = "auto";
           }
         });
 
@@ -181,7 +179,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
           if (hls.currentLevel === -1 && hls.levels?.[data.level]) {
             const h = hls.levels[data.level].height;
-            if (h) setCurrentQuality(`${h}p`);
+            if (h) {
+              setCurrentQuality(`${h}p`);
+              currentQualityRef.current = `${h}p`;
+            }
           }
         });
 
@@ -208,7 +209,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
       }
     },
-    [destroyHls, currentQuality]
+    [destroyHls]
   );
 
   // ─── Fetch stream with server fallback ──────────────────
@@ -319,10 +320,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         // Use provided server, or prefer current active, or first working
         const target = serverOverride
           ? working.find((w) => w.server === serverOverride) ?? working[0]
-          : activeServer
-            ? working.find((w) => w.server === activeServer) ?? working[0]
+          : activeServerRef.current
+            ? working.find((w) => w.server === activeServerRef.current) ?? working[0]
             : working[0];
         setActiveServer(target.server);
+        activeServerRef.current = target.server;
         setSources(target.data.sources);
         setSubtitles(target.data.subtitles);
         setStreamHeaders(target.data.headers);
@@ -343,7 +345,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         setStreamError(true);
       }
     },
-    [discoverServers, loadHls, activeServer]
+    [discoverServers, loadHls]
   );
 
   // ─── Auto-load sub & detect dub on mount ────────
@@ -353,6 +355,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // Load sub first via sequential server fallback
     setLoading(true);
     setStreamError(false);
+    setDubAvailable(false);
 
     (async () => {
       // Fetch sub stream — try servers sequentially until one works
@@ -377,6 +380,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             setSubtitles(data.subtitles || []);
             setStreamHeaders(data.headers || null);
             setActiveServer(server);
+            activeServerRef.current = server;
             setAvailableServers([server]);
             setStreamError(false);
             loadHls(data.sources, data.headers || null, true);
@@ -611,6 +615,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   const changeQuality = (q: string) => {
     setCurrentQuality(q);
+    currentQualityRef.current = q;
     setShowQualityPicker(false);
 
     if (q === "auto" && hlsRef.current) {
@@ -632,8 +637,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       loadHls(sources, streamHeaders, playing);
     }
   };
-
-  const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
   const changeSpeed = (rate: number) => {
     setPlaybackRate(rate);
@@ -687,6 +690,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       const cached = workingServersRef.current.find((w) => w.server === nextServer);
       if (cached) {
         setActiveServer(cached.server);
+        activeServerRef.current = cached.server;
         setSources(cached.sources);
         setSubtitles(cached.subtitles);
         setStreamHeaders(cached.headers);
@@ -845,7 +849,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         onEnded={() => {
           setPlaying(false);
           if (autoPlayNext && nextEpisodeNumber) {
-            window.location.href = `/anime/${anilistId}/watch/${nextEpisodeNumber}`;
+            router.push(`/anime/${anilistId}/watch/${nextEpisodeNumber}`);
           }
         }}
         playsInline
@@ -1061,7 +1065,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     {availableServers.map((s) => (
                       <button
                         key={s}
-                        onClick={() => { setActiveServer(s); setShowServerPicker(false); loadByType(audioType, s); }}
+                        onClick={() => { setActiveServer(s); activeServerRef.current = s; setShowServerPicker(false); loadByType(audioType, s); }}
                         className={`w-full text-left px-3 py-1.5 text-xs transition-colors rounded-none ${
                           activeServer === s
                             ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
@@ -1283,7 +1287,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     {availableServers.map((s) => (
                       <button
                         key={s}
-                        onClick={() => { setActiveServer(s); setShowSettings(false); loadByType(audioType, s); }}
+                        onClick={() => { setActiveServer(s); activeServerRef.current = s; setShowSettings(false); loadByType(audioType, s); }}
                         className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
                           activeServer === s
                             ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"

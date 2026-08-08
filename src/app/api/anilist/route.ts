@@ -5,6 +5,7 @@ const ANILIST_API = "https://graphql.anilist.co";
 // Simple in-memory cache with TTL
 const cache = new Map<string, { data: any; expires: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const ANILIST_CACHE_MAX = 500;
 
 function getCacheKey(query: string, variables: Record<string, any>): string {
   return `${query}::${JSON.stringify(variables)}`;
@@ -61,6 +62,10 @@ export async function POST(req: NextRequest) {
 
     // Cache successful response
     cache.set(cacheKey, { data: json.data, expires: Date.now() + CACHE_TTL });
+    if (cache.size > ANILIST_CACHE_MAX) {
+      const firstKey = cache.keys().next().value;
+      if (firstKey) cache.delete(firstKey);
+    }
 
     return NextResponse.json({ data: json.data });
   } catch (e: any) {

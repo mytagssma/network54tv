@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, Fragment } from "react";
+import { proxyUrl } from "@/lib/utils";
 
 interface SubtitleOverlayProps {
   subtitleUrl: string;
@@ -12,16 +13,6 @@ interface Cue {
   start: number;
   end: number;
   text: string;
-}
-
-/** Build a proxy URL that adds required headers upstream (same as player) */
-function proxyUrl(rawUrl: string, headers?: Record<string, string>): string {
-  const referer =
-    headers?.["Referer"] || headers?.["referer"] || "https://megaplay.buzz/";
-  const origin =
-    headers?.["Origin"] || headers?.["origin"] || "https://megaplay.buzz";
-  const params = new URLSearchParams({ url: rawUrl, referer, origin });
-  return `/api/proxy?${params}`;
 }
 
 export default function SubtitleOverlay({

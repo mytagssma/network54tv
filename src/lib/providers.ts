@@ -37,6 +37,7 @@ interface StreamResult {
 // ─── Caching ──────────────────────────────────────────────────────────
 
 const sessionCache = new Map<string, ProviderSession>();
+const SESSION_CACHE_MAX = 200;
 
 function cacheKey(provider: string, title: string): string {
   return `${provider}::${normalize(title)}`;
@@ -98,6 +99,10 @@ async function getSessionForProvider(
 
     const session: ProviderSession = { providerId: providerName, animeId: id, episodes };
     sessionCache.set(key, session);
+    if (sessionCache.size > SESSION_CACHE_MAX) {
+      const firstKey = sessionCache.keys().next().value;
+      if (firstKey) sessionCache.delete(firstKey);
+    }
     return session;
   } catch {
     return null;
@@ -306,6 +311,7 @@ export async function getMegaPlaySources(
 // ─── Episode Availability Filter & Cache ─────────────────────────────
 
 const availabilityCache = new Map<string, Episode[]>();
+const AVAILABILITY_CACHE_MAX = 200;
 
 function getAvailabilityCacheKey(title: string, anilistId?: number, providerName?: string): string {
   return `${providerName || "auto"}::${anilistId || ""}:${normalize(title)}`;
@@ -325,11 +331,11 @@ function isEpisodeAvailable(ep: Episode): boolean {
   return true;
 }
 
-async function filterAvailableEpisodes(
+function filterAvailableEpisodes(
   episodes: Episode[],
-  animeTitle: string,
-  anilistId?: number
-): Promise<Episode[]> {
+  _animeTitle: string,
+  _anilistId?: number
+): Episode[] {
   return episodes.map((ep) => ({
     ...ep,
     available: isEpisodeAvailable(ep),
@@ -452,8 +458,12 @@ export async function getEpisodes(
 
   if (candidateEpisodes.length === 0) return [];
 
-  const availableEpisodes = await filterAvailableEpisodes(candidateEpisodes, animeTitle, anilistId);
+  const availableEpisodes = filterAvailableEpisodes(candidateEpisodes, animeTitle, anilistId);
   availabilityCache.set(cacheKey, availableEpisodes);
+  if (availabilityCache.size > AVAILABILITY_CACHE_MAX) {
+    const firstKey = availabilityCache.keys().next().value;
+    if (firstKey) availabilityCache.delete(firstKey);
+  }
   return availableEpisodes;
 }
 

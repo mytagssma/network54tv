@@ -28,6 +28,32 @@ export async function GET(req: NextRequest) {
 
   try {
     const decodedUrl = decodeURIComponent(encodedUrl);
+
+    // SSRF protection: validate URL scheme and block private/internal hosts
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(decodedUrl);
+    } catch {
+      return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
+    }
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      return NextResponse.json({ error: "Only http/https URLs allowed" }, { status: 400 });
+    }
+    const hostname = parsedUrl.hostname;
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname.startsWith("192.168.") ||
+      hostname.startsWith("10.") ||
+      hostname.startsWith("172.") ||
+      hostname === "169.254.169.254" ||
+      hostname.endsWith(".local") ||
+      hostname.endsWith(".internal")
+    ) {
+      return NextResponse.json({ error: "Internal URLs not allowed" }, { status: 403 });
+    }
+
     const requestHeaders: Record<string, string> = {
       Referer: referer,
       Origin: origin,
