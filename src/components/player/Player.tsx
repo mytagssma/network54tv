@@ -337,7 +337,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           .filter((w) => w.server !== target.server)
           .map((w) => w.server);
         setLoading(false);
-        loadHls(target.data.sources, target.data.headers, false);
+        loadHls(target.data.sources, target.data.headers, true);
       } else {
         setLoading(false);
         setStreamError(true);
