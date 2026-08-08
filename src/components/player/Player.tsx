@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Hls from "hls.js";
 import SubtitleOverlay from "./SubtitleOverlay";
@@ -42,6 +42,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const longPressRef = useRef(false);
   const activeServerRef = useRef<string | null>(null);
   const currentQualityRef = useRef("auto");
+  const lastTimeUpdateRef = useRef(0);
 
   // Refs for close-on-outside-click
   const settingsPanelRef = useRef<HTMLDivElement>(null);
@@ -115,9 +116,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const spaceWasPlayingRef = useRef(false);
 
   // Derived
-  const availableQualities = hlsLevels.length > 0
-    ? ["auto", ...hlsLevels.map((l) => l.name)]
-    : Array.from(new Set(sources.map((s) => s.quality).filter(Boolean)));
+  const availableQualities = useMemo(
+    () => hlsLevels.length > 0
+      ? ["auto", ...hlsLevels.map((l) => l.name)]
+      : Array.from(new Set(sources.map((s) => s.quality).filter(Boolean))),
+    [hlsLevels, sources]
+  );
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const inIntro = !!introSegment && currentTime >= introSegment.start && currentTime < introSegment.end && duration > 0;
   const inOutro = !!outroSegment && currentTime >= outroSegment.start && currentTime < outroSegment.end && duration > 0;
@@ -152,7 +156,17 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (selected.isM3U8 && Hls.isSupported()) {
         const loadUrl = headers ? proxyUrl(selected.url, headers) : selected.url;
 
-        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          startLevel: -1,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          backBufferLength: 0,
+          startFragPrefetch: true,
+          testBandwidth: true,
+          maxBufferSize: 10 * 1024 * 1024,
+        });
         hls.loadSource(loadUrl);
         hls.attachMedia(video);
         hlsRef.current = hls;
@@ -549,9 +563,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, [showSettings, showServerPicker, showQualityPicker, showSpeedPicker, showSubPicker]);
 
   // ─── Handlers ──────────────────────────────────────────
-  const handleTimeUpdate = () => {
-    if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
-  };
+  const handleTimeUpdate = useCallback(() => {
+    const now = performance.now();
+    if (now - lastTimeUpdateRef.current >= 250) {
+      lastTimeUpdateRef.current = now;
+      if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+    }
+  }, []);
   const handleLoadedMetadata = () => {
     if (videoRef.current) setDuration(videoRef.current.duration);
   };
@@ -879,7 +897,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       {activeSubtitle && !loading && (
         <SubtitleOverlay
           subtitleUrl={activeSubtitle}
-          currentTime={currentTime}
+          videoRef={videoRef}
           headers={streamHeaders || undefined}
         />
       )}
