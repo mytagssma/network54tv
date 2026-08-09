@@ -157,15 +157,31 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         const loadUrl = headers ? proxyUrl(selected.url, headers) : selected.url;
 
         const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
+          // Startup
           startLevel: -1,
+          testBandwidth: true,
+          abrEwmaDefaultEstimate: 1_000_000,
+          startFragPrefetch: true,
+
+          // Buffer — "standard" preset from MoonTVPlus/DecoTV
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
+          maxBufferSize: 60 * 1000 * 1000,
           backBufferLength: 30,
-          startFragPrefetch: true,
-          testBandwidth: true,
-          maxBufferSize: 30 * 1024 * 1024,
+          maxBufferHole: 0.5,
+
+          // VOD: disable LL-HLS to avoid part scheduling jitter
+          lowLatencyMode: false,
+
+          // Network resilience
+          fragLoadingMaxRetry: 6,
+          manifestLoadingMaxRetry: 4,
+          levelLoadingMaxRetry: 4,
+
+          // Cap quality to player size (saves bandwidth on mobile)
+          capLevelToPlayerSize: true,
+
+          enableWorker: true,
         });
         hls.loadSource(loadUrl);
         hls.attachMedia(video);
@@ -366,10 +382,19 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   useEffect(() => {
     let cancelled = false;
 
-    // Load sub first via sequential server fallback
     setLoading(true);
     setStreamError(false);
     setDubAvailable(false);
+
+    // Start dub probes in parallel immediately (don't wait for sub)
+    const dubProbePromise = Promise.all(
+      SERVERS.map(async (s) => {
+        try {
+          const d = await probeServer(s, "dub");
+          return !!d;
+        } catch { return false; }
+      })
+    );
 
     (async () => {
       // Fetch sub stream — try servers sequentially until one works
@@ -400,7 +425,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             loadHls(data.sources, data.headers || null, true);
             setLoading(false);
 
-            // Now discover remaining sub servers + probe dub in background
+            // Discover remaining sub servers in background
             const otherServers = SERVERS.filter((s) => s !== server);
             const subExtras = await Promise.all(
               otherServers.map(async (s) => {
@@ -411,13 +436,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             const allSub = [server, ...subExtras.filter(Boolean)] as string[];
             if (!cancelled) setAvailableServers(allSub);
 
-            // Probe dub availability — only after sub is loaded
-            const dubResults = await Promise.all(
-              SERVERS.map(async (s) => {
-                const d = await probeServer(s, "dub");
-                return !!d;
-              })
-            );
+            // Check dub probe results (started at mount, should be done by now)
+            const dubResults = await dubProbePromise;
             if (!cancelled && dubResults.some(Boolean)) {
               setDubAvailable(true);
             }
@@ -426,7 +446,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         } catch { /* continue to next server */ }
       }
 
-      // All sub servers failed
+      // All sub servers failed — still check dub results
+      const dubResults = await dubProbePromise;
+      if (!cancelled && dubResults.some(Boolean)) {
+        setDubAvailable(true);
+      }
       if (!cancelled) {
         setStreamError(true);
         setLoading(false);
@@ -632,20 +656,24 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   };
 
   const changeQuality = (q: string) => {
+    setShowQualityPicker(false);
+
+    // No change needed if already at this quality
+    if (q === currentQuality) return;
+
     setCurrentQuality(q);
     currentQualityRef.current = q;
-    setShowQualityPicker(false);
 
     if (q === "auto" && hlsRef.current) {
       hlsRef.current.currentLevel = -1;
       return;
     }
 
-    // If an HLS level was selected, switch via hls.currentLevel
+    // If an HLS level was selected, use nextLevel for smooth switching (no rebuffer)
     if (hlsLevels.length > 0 && hlsRef.current) {
       const level = hlsLevels.find((l) => l.name === q);
       if (level) {
-        hlsRef.current.currentLevel = level.index;
+        hlsRef.current.nextLevel = level.index;
         return;
       }
     }
@@ -741,24 +769,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          if (!video.paused) {
-            // Hold Space for 2x while playing — no toggle
-            video.playbackRate = 2;
-          } else {
-            video.play().catch(() => {});
-            setPlaying(true);
-          }
+          togglePlay();
           resetControlsTimer();
           break;
         case 'k':
           e.preventDefault();
-          if (video.paused) {
-            video.play().catch(() => {});
-            setPlaying(true);
-          } else {
-            video.pause();
-            setPlaying(false);
-          }
+          togglePlay();
           resetControlsTimer();
           break;
         case 'f':
@@ -822,19 +838,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       }
     };
 
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
-      const video = videoRef.current;
-      if (!video) return;
-      // Restore selected playback rate on Space release (2x → normal)
-      video.playbackRate = playbackRateRef.current;
-    };
-
     document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('keyup', handleKeyUp);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('keyup', handleKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
