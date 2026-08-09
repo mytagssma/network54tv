@@ -4,6 +4,8 @@ interface SubtitlePickerContentProps {
   activeSubtitle: string | null;
   subtitles: { url: string; lang: string }[];
   onSelect: (url: string | null) => void; // null = Off
+  subtitleOffset: number;
+  onOffsetChange: (offset: number) => void;
   osSearched: boolean;
   osLoading: boolean;
   osError: string | null;
@@ -20,6 +22,8 @@ export default function SubtitlePickerContent({
   activeSubtitle,
   subtitles,
   onSelect,
+  subtitleOffset,
+  onOffsetChange,
   osSearched,
   osLoading,
   osError,
@@ -60,6 +64,37 @@ export default function SubtitlePickerContent({
         </button>
       ))}
       {subtitles.length > 0 && <div className="border-t border-[var(--accent)]/20 mx-2 my-0.5" />}
+
+      {/* Subtitle offset adjuster */}
+      {activeSubtitle && (
+        <div className="px-2.5 py-1.5 flex items-center gap-2">
+          <span className="text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-mono">Offset</span>
+          <button
+            onClick={() => onOffsetChange(Math.max(-5, subtitleOffset - 0.5))}
+            className="w-6 h-5 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 text-xs"
+          >
+            −
+          </button>
+          <span className="text-xs text-[var(--accent)] font-mono w-12 text-center tabular-nums">
+            {subtitleOffset > 0 ? "+" : ""}{subtitleOffset.toFixed(1)}s
+          </span>
+          <button
+            onClick={() => onOffsetChange(Math.min(5, subtitleOffset + 0.5))}
+            className="w-6 h-5 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 text-xs"
+          >
+            +
+          </button>
+          {subtitleOffset !== 0 && (
+            <button
+              onClick={() => onOffsetChange(0)}
+              className="text-[10px] text-[var(--accent)]/40 hover:text-[var(--accent)] transition-colors font-mono"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+      )}
+      {activeSubtitle && <div className="border-t border-[var(--accent)]/20 mx-2 my-0.5" />}
 
       {/* Download error */}
       {osDownloadError && (

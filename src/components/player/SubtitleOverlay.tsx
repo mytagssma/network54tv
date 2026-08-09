@@ -7,6 +7,7 @@ interface SubtitleOverlayProps {
   subtitleUrl: string;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   headers?: Record<string, string>;
+  offset?: number; // subtitle timing offset in seconds (positive = delayed, negative = earlier)
 }
 
 interface Cue {
@@ -188,6 +189,7 @@ export default function SubtitleOverlay({
   subtitleUrl,
   videoRef,
   headers,
+  offset = 0,
 }: SubtitleOverlayProps) {
   const [cues, setCues] = useState<Cue[]>([]);
   const [activeText, setActiveText] = useState<string[]>([]);
@@ -256,7 +258,7 @@ export default function SubtitleOverlay({
         return;
       }
 
-      const t = video.currentTime;
+      const t = video.currentTime + offset;
       // Only recompute when time actually changed (handles pause + seek)
       if (t !== lastTime) {
         lastTime = t;
@@ -274,7 +276,7 @@ export default function SubtitleOverlay({
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [cues, videoRef]);
+  }, [cues, videoRef, offset]);
 
   if (error || activeText.length === 0) return null;
 
