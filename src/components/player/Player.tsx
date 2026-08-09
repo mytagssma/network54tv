@@ -606,8 +606,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   useEffect(() => {
     if (audioType !== "dub" || hasAutoLoadedDubSubRef.current) return;
     if (!animeTitle || !episodeNumber) return;
-    // Only auto-load if no provider subs are available
-    if (subtitles.length > 0) return;
     // Only auto-load if stream is loaded
     if (loading || sources.length === 0) return;
 
@@ -647,7 +645,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         // Silent fail — user can manually search
       }
     })();
-  }, [audioType, animeTitle, episodeNumber, subtitles.length, loading, sources.length]);
+  }, [audioType, animeTitle, episodeNumber, loading, sources.length]);
 
   // ─── OpenSubtitles search ──────────────────────────────
   const searchOpenSubtitles = useCallback(async () => {
