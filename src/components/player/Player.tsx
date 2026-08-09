@@ -436,6 +436,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setStreamError(false);
     setDubAvailable(false);
     hasProviderSkipRef.current = false;
+    hasSetInitialSubRef.current = false;
 
     // Start dub probes in parallel immediately (don't wait for sub)
     const dubProbePromise = Promise.all(
@@ -570,13 +571,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
   }, [saveProgress]);
 
-  // ─── Auto-set initial subtitle track ────────────────────
+  // ─── Auto-set initial subtitle track (once per stream load) ──
+  const hasSetInitialSubRef = useRef(false);
   useEffect(() => {
+    if (hasSetInitialSubRef.current) return;
     if (subtitles.length > 0) {
+      hasSetInitialSubRef.current = true;
       const en = subtitles.find((s) => s.lang.toLowerCase().includes("en"));
       setActiveSubtitle(en ? en.url : subtitles[0].url);
-    } else {
-      setActiveSubtitle(null);
     }
   }, [subtitles]);
 

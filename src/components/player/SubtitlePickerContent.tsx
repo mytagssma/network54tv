@@ -91,7 +91,7 @@ export default function SubtitlePickerContent({
             <button
               key={`os-${sub.file_id}-${idx}`}
               onClick={() => { onSelectOpenSubtitle(sub.file_id); }}
-              className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/70 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors truncate"
+              className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/90 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors truncate"
               title={`${sub.language} — ${sub.release}`}
             >
               {sub.language.toUpperCase()}
