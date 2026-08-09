@@ -125,6 +125,7 @@ query ($airingAt_greater: Int, $airingAt_lesser: Int, $page: Int, $perPage: Int)
       episode
       media {
         id
+        isAdult
         title { romaji english native }
         coverImage { large extraLarge color }
         bannerImage
@@ -340,7 +341,7 @@ export async function getRecentlyAired(
   const seen = new Set<number>();
   const unique: any[] = [];
   for (const s of schedules) {
-    if (s?.media?.id && !seen.has(s.media.id)) {
+    if (s?.media?.id && !seen.has(s.media.id) && !s.media.isAdult) {
       seen.add(s.media.id);
       unique.push(s.media);
     }
@@ -436,7 +437,7 @@ export async function getRecentlyAiredClient(
   const seen = new Set<number>();
   const unique: any[] = [];
   for (const s of schedules) {
-    if (s?.media?.id && !seen.has(s.media.id)) {
+    if (s?.media?.id && !seen.has(s.media.id) && !s.media.isAdult) {
       seen.add(s.media.id);
       unique.push(s.media);
     }
