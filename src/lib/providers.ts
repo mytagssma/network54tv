@@ -469,20 +469,58 @@ export async function getEpisodes(
 
 /**
  * Fetch streaming sources for a specific episode by chaining through all providers.
- * Tries sub first, then dub, for each provider before moving to the next.
+ * If `preferredProvider` is given, that provider is tried FIRST using its own episode mapping,
+ * preventing cross-provider episode number mismatches.
  */
 export async function getStreamingSources(
   animeTitle: string,
   episodeNumber: number,
   type: "sub" | "dub" = "sub",
   server?: string,
-  anilistId?: number
+  anilistId?: number,
+  preferredProvider?: string
 ): Promise<
   { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string }
   | null
 > {
-  // ── Phase 1: Try providers in order ──
+  // ── Phase 1: Try the preferred provider first (matches episode list source) ──
+  if (preferredProvider) {
+    // Try megaplay if preferred
+    if (preferredProvider === "megaplay" && anilistId) {
+      try {
+        const session = await getMegaPlaySession(anilistId, animeTitle);
+        if (session) {
+          const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
+          if (targetEp?.id) {
+            const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
+            if (result) return { ...result, providerId: "megaplay" };
+          }
+        }
+      } catch { /* fall through */ }
+    }
+
+    // Try the named provider from PROVIDERS list
+    for (const provider of PROVIDERS) {
+      if (provider.name !== preferredProvider) continue;
+      try {
+        const session = await provider.getSession(animeTitle);
+        if (!session) continue;
+
+        const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
+        if (!targetEp?.id) continue;
+
+        const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
+        if (result) return { ...result, providerId: provider.name };
+      } catch { /* fall through */ }
+      break;
+    }
+  }
+
+  // ── Phase 2: Try all providers in order ──
   for (const provider of PROVIDERS) {
+    // Skip if already tried as preferred
+    if (preferredProvider && provider.name === preferredProvider) continue;
+
     try {
       const session = await provider.getSession(animeTitle);
       if (!session) continue;
@@ -499,8 +537,8 @@ export async function getStreamingSources(
     }
   }
 
-  // ── Phase 2: Try megaplay directly with AniList ID (if provided) ──
-  if (anilistId) {
+  // ── Phase 3: Try megaplay directly with AniList ID (if not already tried) ──
+  if (anilistId && preferredProvider !== "megaplay") {
     try {
       const session = await getMegaPlaySession(anilistId, animeTitle);
       if (session) {

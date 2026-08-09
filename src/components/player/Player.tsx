@@ -14,6 +14,7 @@ interface PlayerProps {
   anilistId?: number;
   malId?: number;
   nextEpisodeNumber?: number;
+  providerId?: string;
 }
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
@@ -29,7 +30,7 @@ function formatTime(t: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber }: PlayerProps) {
+export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId }: PlayerProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -260,6 +261,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             server,
           });
           if (anilistId) params.set("anilistId", String(anilistId));
+          if (providerId) params.set("providerId", providerId);
 
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
@@ -306,6 +308,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           strict: "true",
         });
         if (anilistId) params.set("anilistId", String(anilistId));
+        if (providerId) params.set("providerId", providerId);
         const res = await fetch(`/api/stream?${params}`);
         if (!res.ok) return null;
         const data = await res.json();
@@ -409,6 +412,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             strict: "true",
           });
           if (anilistId) params.set("anilistId", String(anilistId));
+          if (providerId) params.set("providerId", providerId);
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
           const data = await res.json();
@@ -463,7 +467,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [animeTitle, episodeNumber]);
+  }, [animeTitle, episodeNumber, providerId]);
 
   // ─── Fetch AniSkip timestamps independently (non-blocking) ──
   useEffect(() => {

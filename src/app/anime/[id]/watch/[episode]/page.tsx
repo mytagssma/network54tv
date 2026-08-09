@@ -21,6 +21,10 @@ export default async function WatchPage({ params }: Props) {
 
   const episodes = await getEpisodes(anime.title, animeId);
 
+  // Find current episode's providerId for consistent stream fetching
+  const currentEp = episodes.find((ep) => ep.number === episodeNumber);
+  const episodeProviderId = currentEp?.providerId;
+
   // Filter available episodes for navigation
   const availableEpisodes = episodes.filter((ep) => ep.available !== false);
   const currentEpIndex = availableEpisodes.findIndex(
@@ -63,7 +67,7 @@ export default async function WatchPage({ params }: Props) {
       </h1>
 
       {/* Player */}
-      <Player animeTitle={anime.title} episodeNumber={episodeNumber} anilistId={animeId} malId={anime.idMal} nextEpisodeNumber={nextEp?.number} />
+      <Player animeTitle={anime.title} episodeNumber={episodeNumber} anilistId={animeId} malId={anime.idMal} nextEpisodeNumber={nextEp?.number} providerId={episodeProviderId} />
 
       {/* Episode navigation */}
       <div className="flex items-center justify-between mt-4">

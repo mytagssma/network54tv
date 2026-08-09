@@ -14,6 +14,7 @@ export async function GET(req: NextRequest) {
   const type = (searchParams.get("type") || "sub") as "sub" | "dub";
   const server = searchParams.get("server") || undefined;
   const anilistIdParam = searchParams.get("anilistId");
+  const providerId = searchParams.get("providerId") || undefined;
 
   if (!title || !episode) {
     return NextResponse.json({ error: "Missing title or episode" }, { status: 400 });
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
   const strict = searchParams.get("strict") === "true";
 
   // Check stream cache (skip cache for non-strict fallback requests)
-  const cacheKey = `${title}::${episodeNumber}::${type}::${server || "any"}::${strict}`;
+  const cacheKey = `${title}::${episodeNumber}::${type}::${server || "any"}::${strict}::${providerId || "any"}`;
   if (streamCache.has(cacheKey)) {
     const cached = streamCache.get(cacheKey)!;
     if (cached.expires > Date.now()) {
@@ -39,13 +40,13 @@ export async function GET(req: NextRequest) {
 
   try {
     // Try exact type first, then fallback through all providers
-    let result = await getStreamingSources(title, episodeNumber, type, server, anilistId);
+    let result = await getStreamingSources(title, episodeNumber, type, server, anilistId, providerId);
 
     if (!strict) {
       // If specific type fails (e.g. sub for a dub-only episode), try the other type
       if (!result) {
         const otherType = type === "sub" ? "dub" : "sub";
-        result = await getStreamingSources(title, episodeNumber, otherType, server, anilistId);
+        result = await getStreamingSources(title, episodeNumber, otherType, server, anilistId, providerId);
       }
 
       // Ultimate fallback: try everything
