@@ -1599,7 +1599,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 {availableServers.map((s) => (
                   <button
                     key={s}
-                    onClick={() => { setActiveServer(s); activeServerRef.current = s; setShowSettings(false); loadByType(audioType, s); }}
+                    onClick={() => { setActiveServer(s); activeServerRef.current = s; loadByType(audioType, s); }}
                     className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
                       activeServer === s
                         ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
@@ -1621,7 +1621,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 {availableQualities.map((q) => (
                   <button
                     key={q}
-                    onClick={() => { changeQuality(q); setShowSettings(false); }}
+                    onClick={() => { changeQuality(q); }}
                     className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
                       q === currentQuality
                         ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
@@ -1642,7 +1642,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               {SPEED_PRESETS.map((r) => (
                 <button
                   key={r}
-                  onClick={() => { changeSpeed(r); setShowSettings(false); }}
+                   onClick={() => { changeSpeed(r); }}
                   className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
                     playbackRate === r
                       ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
@@ -1690,7 +1690,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             <SubtitlePickerContent
                activeSubtitle={activeSubtitle}
                subtitles={subtitles}
-               onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSettings(false); }}
+               onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); }}
                subtitleOffset={subtitleOffset}
                onOffsetChange={setSubtitleOffset}
                subtitleSize={subtitleSize}
