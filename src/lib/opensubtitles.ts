@@ -88,6 +88,7 @@ export async function searchSubtitles(params: {
   season_number?: number;
   episode_number?: number;
   languages?: string;
+  page?: number;
 }): Promise<OSSearchResult[]> {
   const apiKey = process.env.OPENSUBTITLES_API_KEY;
   if (!apiKey) throw new Error("OPENSUBTITLES_API_KEY not set");
@@ -99,6 +100,7 @@ export async function searchSubtitles(params: {
   if (params.season_number) sp.set("season_number", String(params.season_number));
   if (params.episode_number) sp.set("episode_number", String(params.episode_number));
   if (params.languages) sp.set("languages", params.languages);
+  if (params.page && params.page > 1) sp.set("page", String(params.page));
 
   // Sort params alphabetically per API requirement
   sp.sort();

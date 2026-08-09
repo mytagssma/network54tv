@@ -1,5 +1,7 @@
 "use client";
 
+import { useState, useMemo } from "react";
+
 interface SubtitlePickerContentProps {
   activeSubtitle: string | null;
   subtitles: { url: string; lang: string }[];
@@ -10,9 +12,12 @@ interface SubtitlePickerContentProps {
   osLoading: boolean;
   osError: string | null;
   osResults: { file_id: number; language: string; release: string; hearing_impaired: boolean; ai_translated: boolean }[];
-  onSearchOpenSubtitles: () => void;
+  osPage: number;
+  osFilterQuery: string;
+  onSearchOpenSubtitles: (page?: number) => void;
+  onFilterChange: (query: string) => void;
   onSelectOpenSubtitle: (fileId: number) => void;
-  onResetOpenSubtitles: () => void; // resets osSearched/osResults/osError for "Search again"
+  onResetOpenSubtitles: () => void;
   activeOSSubtitleId?: number | null;
   osDownloadError?: string | null;
   onClearDownloadError?: () => void;
@@ -28,13 +33,27 @@ export default function SubtitlePickerContent({
   osLoading,
   osError,
   osResults,
+  osPage,
+  osFilterQuery,
   onSearchOpenSubtitles,
+  onFilterChange,
   onSelectOpenSubtitle,
   onResetOpenSubtitles,
   activeOSSubtitleId,
   osDownloadError,
   onClearDownloadError,
 }: SubtitlePickerContentProps) {
+  // Filter OS results by release name / language
+  const filteredOS = useMemo(() => {
+    if (!osFilterQuery.trim()) return osResults;
+    const q = osFilterQuery.toLowerCase();
+    return osResults.filter(
+      (s) =>
+        s.release.toLowerCase().includes(q) ||
+        s.language.toLowerCase().includes(q)
+    );
+  }, [osResults, osFilterQuery]);
+
   return (
     <>
       <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
@@ -105,7 +124,7 @@ export default function SubtitlePickerContent({
 
       {!osSearched && (
         <button
-          onClick={(e) => { e.stopPropagation(); onSearchOpenSubtitles(); }}
+          onClick={(e) => { e.stopPropagation(); onSearchOpenSubtitles(1); }}
           disabled={osLoading}
           className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors disabled:opacity-50 flex items-center gap-1.5"
         >
@@ -133,33 +152,70 @@ export default function SubtitlePickerContent({
       {/* OS results */}
       {osResults.length > 0 && (
         <>
-          <div className="px-2.5 pt-1 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
-            OpenSubtitles
+          <div className="px-2.5 pt-1 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono flex items-center justify-between">
+            <span>OpenSubtitles</span>
+            <span className="text-[var(--accent)]/20 normal-case">{osResults.length} found</span>
           </div>
-          {osResults.slice(0, 15).map((sub, idx) => {
-            const isActive = activeOSSubtitleId === sub.file_id;
-            return (
-              <button
-                key={`os-${sub.file_id}-${idx}`}
-                onClick={() => { onSelectOpenSubtitle(sub.file_id); }}
-                className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors truncate rounded-none ${
-                  isActive
-                    ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                    : "text-[var(--accent)]/80 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10"
-                }`}
-                title={`${sub.language} — ${sub.release}`}
-              >
-                {idx === 0 && !isActive && <span className="text-[var(--accent)] mr-1">&#9733;</span>}
-                {isActive && <span className="text-[var(--accent)] mr-1">&#10003;</span>}
-              {sub.language.toUpperCase()}
-              {sub.hearing_impaired ? " \u00B7 HI" : ""}
-              {sub.ai_translated ? " \u00B7 AI" : ""}
-                <span className="text-[var(--accent)]/30 ml-1 text-[10px]">
-                  {sub.release.length > 25 ? sub.release.substring(0, 25) + "\u2026" : sub.release}
-                </span>
-              </button>
-            );
-          })}
+
+          {/* Filter input */}
+          <div className="px-2.5 py-1">
+            <input
+              type="text"
+              placeholder="Filter subtitles..."
+              value={osFilterQuery}
+              onChange={(e) => onFilterChange(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full bg-black/30 border border-[var(--accent)]/20 text-[var(--accent)] text-[11px] px-2 py-1 placeholder:text-[var(--accent)]/20 focus:outline-none focus:border-[var(--accent)]/50 transition-colors rounded-none font-mono"
+            />
+          </div>
+
+          {/* Filtered results */}
+          {filteredOS.length === 0 && osFilterQuery && (
+            <div className="px-2.5 py-1.5 text-[11px] text-[var(--accent)]/30 italic">
+              No matches for &ldquo;{osFilterQuery}&rdquo;
+            </div>
+          )}
+
+          <div className="max-h-48 overflow-y-auto">
+            {filteredOS.map((sub, idx) => {
+              const isActive = activeOSSubtitleId === sub.file_id;
+              const realIdx = osResults.indexOf(sub);
+              return (
+                <button
+                  key={`os-${sub.file_id}-${idx}`}
+                  onClick={() => { onSelectOpenSubtitle(sub.file_id); }}
+                  className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors truncate rounded-none ${
+                    isActive
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                      : "text-[var(--accent)]/80 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                  }`}
+                  title={`${sub.language} — ${sub.release}`}
+                >
+                  {realIdx === 0 && !isActive && <span className="text-[var(--accent)] mr-1">&#9733;</span>}
+                  {isActive && <span className="text-[var(--accent)] mr-1">&#10003;</span>}
+                  {sub.language.toUpperCase()}
+                  {sub.hearing_impaired ? " \u00B7 HI" : ""}
+                  {sub.ai_translated ? " \u00B7 AI" : ""}
+                  <span className="text-[var(--accent)]/30 ml-1 text-[10px]">
+                    {sub.release.length > 25 ? sub.release.substring(0, 25) + "\u2026" : sub.release}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Load more */}
+          {!osLoading && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSearchOpenSubtitles(osPage + 1); }}
+              className="w-full text-left px-2.5 py-1.5 text-[11px] text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors flex items-center gap-1"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              Load more
+            </button>
+          )}
         </>
       )}
 

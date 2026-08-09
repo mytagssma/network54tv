@@ -46,6 +46,7 @@ export async function GET(request: NextRequest) {
   const seasonNumber = searchParams.get("season_number");
   const episodeNumber = searchParams.get("episode_number");
   const languages = searchParams.get("languages") ?? "en";
+  const page = parseInt(searchParams.get("page") ?? "1", 10);
 
   // Need at least one search criterion
   if (!query && !imdbId && !parentImdbId) {
@@ -63,9 +64,10 @@ export async function GET(request: NextRequest) {
       season_number: seasonNumber ? parseInt(seasonNumber, 10) : undefined,
       episode_number: episodeNumber ? parseInt(episodeNumber, 10) : undefined,
       languages,
+      page,
     });
 
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, page });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Search failed";
     return NextResponse.json({ error: message }, { status: 502 });

@@ -110,6 +110,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [osLoading, setOsLoading] = useState(false);
   const [osError, setOsError] = useState<string | null>(null);
   const [osSearched, setOsSearched] = useState(false);
+  const [osPage, setOsPage] = useState(1);
+  const [osFilterQuery, setOsFilterQuery] = useState("");
   const [activeOSSubtitleId, setActiveOSSubtitleId] = useState<number | null>(null);
   const [osDownloadError, setOsDownloadError] = useState<string | null>(null);
   const failedOSIdsRef = useRef(new Set<number>()); // track failed downloads
@@ -456,6 +458,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     failedOSIdsRef.current.clear();
     hasAutoLoadedDubSubRef.current = false;
     setSubtitleOffset(0);
+    setOsPage(1);
+    setOsFilterQuery("");
 
     // Check saved progress for audio type preference
     const saved = restoreProgress();
@@ -660,12 +664,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, [audioType, animeTitle, episodeNumber, loading, sources.length]);
 
   // ─── OpenSubtitles search ──────────────────────────────
-  const searchOpenSubtitles = useCallback(async () => {
-    if (osLoading || osSearched) return;
+  const searchOpenSubtitles = useCallback(async (page = 1) => {
+    if (osLoading) return;
 
     setOsLoading(true);
     setOsError(null);
-    setOsSearched(true);
+    if (page === 1) setOsSearched(true);
 
     try {
       const params = new URLSearchParams({
@@ -673,6 +677,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         season_number: "1",
         episode_number: String(episodeNumber),
         languages: "en",
+        page: String(page),
       });
 
       const res = await fetch(`/api/opensubtitles?${params}`);
@@ -681,8 +686,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         return;
       }
       const data = await res.json();
-      setOsResults(data.results ?? []);
-      if (data.results?.length === 0) {
+      const newResults = data.results ?? [];
+
+      if (page === 1) {
+        setOsResults(newResults);
+      } else {
+        setOsResults((prev) => [...prev, ...newResults]);
+      }
+      setOsPage(page);
+
+      if (newResults.length === 0 && page === 1) {
         setOsError("No subtitles found");
       }
     } catch {
@@ -690,7 +703,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     } finally {
       setOsLoading(false);
     }
-  }, [animeTitle, episodeNumber, osLoading, osSearched]);
+  }, [animeTitle, episodeNumber, osLoading]);
 
   // ─── Select an OpenSubtitles subtitle ──────────────────
   const selectOSSubtitle = useCallback(async (fileId: number) => {
@@ -1433,9 +1446,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     osLoading={osLoading}
                     osError={osError}
                     osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
-                    onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
+                    osPage={osPage}
+                    osFilterQuery={osFilterQuery}
+                    onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
+                    onFilterChange={setOsFilterQuery}
                     onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-                    onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
+                    onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); setOsPage(1); setOsFilterQuery(""); failedOSIdsRef.current.clear(); }}
                     activeOSSubtitleId={activeOSSubtitleId}
                     osDownloadError={osDownloadError}
                     onClearDownloadError={() => setOsDownloadError(null)}
@@ -1641,7 +1657,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                    osLoading={osLoading}
                    osError={osError}
                    osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
-                   onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
+                   osPage={osPage}
+                   osFilterQuery={osFilterQuery}
+                   onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
+                   onFilterChange={setOsFilterQuery}
                    onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
                    onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
                    activeOSSubtitleId={activeOSSubtitleId}
