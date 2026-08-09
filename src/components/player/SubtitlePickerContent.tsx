@@ -116,8 +116,9 @@ export default function SubtitlePickerContent({
               >
                 {idx === 0 && !isActive && <span className="text-[var(--accent)] mr-1">&#9733;</span>}
                 {isActive && <span className="text-[var(--accent)] mr-1">&#10003;</span>}
-                {sub.language.toUpperCase()}
-                {sub.hearing_impaired ? " \u00B7 HI" : ""}
+              {sub.language.toUpperCase()}
+              {sub.hearing_impaired ? " \u00B7 HI" : ""}
+              {sub.ai_translated ? " \u00B7 AI" : ""}
                 <span className="text-[var(--accent)]/30 ml-1 text-[10px]">
                   {sub.release.length > 25 ? sub.release.substring(0, 25) + "\u2026" : sub.release}
                 </span>

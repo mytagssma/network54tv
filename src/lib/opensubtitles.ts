@@ -132,10 +132,8 @@ export async function searchSubtitles(params: {
     }));
   });
 
-  // Filter out AI-translated (usually low quality) and sort by popularity
-  return results
-    .filter((r) => !r.ai_translated)
-    .sort((a, b) => b.download_count - a.download_count);
+  // Sort by popularity — include AI-translated (useful for dub viewers)
+  return results.sort((a, b) => b.download_count - a.download_count);
 }
 
 // ─── SRT → VTT converter ──────────────────────────────────────────────────
