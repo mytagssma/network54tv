@@ -138,6 +138,31 @@ export async function searchSubtitles(params: {
     .sort((a, b) => b.download_count - a.download_count);
 }
 
+// ─── SRT → VTT converter ──────────────────────────────────────────────────
+
+function srtToVtt(srt: string): string {
+  // Strip BOM, normalize line endings
+  let s = srt.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  // Add WEBVTT header
+  let vtt = "WEBVTT\n\n";
+  // Split into cue blocks
+  const blocks = s.split(/\n\n+/);
+  for (const block of blocks) {
+    const lines = block.trim().split("\n");
+    if (lines.length < 2) continue;
+    // Find the timestamp line (contains -->)
+    const tsIdx = lines.findIndex((l) => l.includes("-->"));
+    if (tsIdx < 0) continue;
+    // Convert comma to dot in timestamps: 00:00:10,890 → 00:00:10.890
+    const timestamp = lines[tsIdx].replace(/,/g, ".");
+    const text = lines.slice(tsIdx + 1).join("\n");
+    // Strip HTML tags commonly found in SRT but not valid in VTT
+    const cleanText = text.replace(/\{\\[^}]+\}/g, "").replace(/<\/?[^>]+>/g, "");
+    vtt += timestamp + "\n" + cleanText + "\n\n";
+  }
+  return vtt;
+}
+
 // ─── Download ────────────────────────────────────────────────────────────
 
 export async function downloadSubtitle(
@@ -147,7 +172,7 @@ export async function downloadSubtitle(
   const { token, baseUrl } = await ensureToken();
   const apiKey = process.env.OPENSUBTITLES_API_KEY!;
 
-  // 1. Get signed download link
+  // 1. Get signed download link — always request SRT (API ignores VTT format)
   const dlRes = await fetch(`${baseUrl}/download`, {
     method: "POST",
     headers: {
@@ -156,7 +181,7 @@ export async function downloadSubtitle(
       "Content-Type": "application/json",
       "User-Agent": UA,
     },
-    body: JSON.stringify({ file_id: fileId, sub_format: subFormat }),
+    body: JSON.stringify({ file_id: fileId, sub_format: "srt" }),
   });
 
   if (!dlRes.ok) {
@@ -179,16 +204,16 @@ export async function downloadSubtitle(
     throw new Error(`Subtitle file fetch failed (${fileRes.status})`);
   }
 
-  const content = await fileRes.text();
+  const srtContent = await fileRes.text();
 
-  // Validate VTT has actual cues (not empty/broken)
-  const hasCues = /\d{2}:\d{2}:\d{2}\.\d{3}\s*-->/.test(content);
-  if (subFormat === "vtt" && !hasCues) {
-    throw new Error("Downloaded subtitle file has no timing cues");
-  }
-  if (subFormat === "srt" && !/\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s*-->/.test(content)) {
-    throw new Error("Downloaded subtitle file has no timing cues");
+  // Validate SRT has actual timing cues
+  if (!/\d{2}:\d{2}:\d{2},\d{3}\s*-->/.test(srtContent)) {
+    throw new Error("Downloaded subtitle has no timing cues");
   }
 
-  return { content, fileName };
+  // 3. Convert to requested format
+  if (subFormat === "vtt") {
+    return { content: srtToVtt(srtContent), fileName };
+  }
+  return { content: srtContent, fileName };
 }
