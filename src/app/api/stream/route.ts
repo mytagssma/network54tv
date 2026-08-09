@@ -63,12 +63,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const responseData = {
+    const responseData: Record<string, any> = {
       sources: result.sources,
       subtitles: result.subtitles,
       headers: result.headers || {},
       providerId: result.providerId,
     };
+    // Include skip times from provider source data if available
+    if (result.intro) responseData.intro = result.intro;
+    if (result.outro) responseData.outro = result.outro;
     // Cache successful result
     streamCache.set(cacheKey, { data: responseData, expires: Date.now() + STREAM_CACHE_TTL });
     if (streamCache.size > STREAM_CACHE_MAX) {

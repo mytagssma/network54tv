@@ -115,6 +115,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   playbackRateRef.current = playbackRate;
   const spaceDownRef = useRef(0);
   const spaceWasPlayingRef = useRef(false);
+  const hasProviderSkipRef = useRef(false); // tracks if provider supplied skip times
 
   // Derived
   const availableQualities = useMemo(
@@ -388,6 +389,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setLoading(true);
     setStreamError(false);
     setDubAvailable(false);
+    hasProviderSkipRef.current = false;
 
     // Start dub probes in parallel immediately (don't wait for sub)
     const dubProbePromise = Promise.all(
@@ -428,6 +430,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             setStreamError(false);
             loadHls(data.sources, data.headers || null, true);
             setLoading(false);
+
+            // Use provider skip times if available (more accurate than AniSkip)
+            if (data.intro || data.outro) {
+              hasProviderSkipRef.current = true;
+              if (data.intro && !introSegment) setIntroSegment(data.intro);
+              if (data.outro && !outroSegment) setOutroSegment(data.outro);
+            }
 
             // Discover remaining sub servers in background
             const otherServers = SERVERS.filter((s) => s !== server);
@@ -481,8 +490,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!cancelled) {
-          setIntroSegment(data.intro || null);
-          setOutroSegment(data.outro || null);
+          // Only use AniSkip as fallback — provider skip times are preferred
+          if (!hasProviderSkipRef.current) {
+            if (data.intro) setIntroSegment(data.intro);
+            if (data.outro) setOutroSegment(data.outro);
+          }
         }
       } catch {
         // No skip data available — that's fine
@@ -513,7 +525,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     try {
       const params = new URLSearchParams({
         query: animeTitle,
-        season_number: String(episodeNumber),
+        season_number: "1",
         episode_number: String(episodeNumber),
         languages: "en",
       });

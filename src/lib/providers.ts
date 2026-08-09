@@ -270,11 +270,32 @@ function toStreamResult(
       lang: s.lang || "Unknown",
     }));
 
+  // Extract intro/outro skip times from provider source data
+  let intro: { start: number; end: number } | undefined;
+  let outro: { start: number; end: number } | undefined;
+
+  if (data.intro && typeof data.intro === "object") {
+    const s = Number(data.intro.start);
+    const e = Number(data.intro.end);
+    if (isFinite(s) && isFinite(e) && e > s) {
+      intro = { start: Math.round(s), end: Math.round(e) };
+    }
+  }
+  if (data.outro && typeof data.outro === "object") {
+    const s = Number(data.outro.start);
+    const e = Number(data.outro.end);
+    if (isFinite(s) && isFinite(e) && e > s) {
+      outro = { start: Math.round(s), end: Math.round(e) };
+    }
+  }
+
   return {
     sources,
     subtitles,
     headers: (data.headers || {}) as Record<string, string>,
     providerId,
+    intro,
+    outro,
   };
 }
 
@@ -480,7 +501,7 @@ export async function getStreamingSources(
   anilistId?: number,
   preferredProvider?: string
 ): Promise<
-  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string }
+  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
   | null
 > {
   // ── Phase 1: Try the preferred provider first (matches episode list source) ──
@@ -564,7 +585,7 @@ export async function getStreamingSourcesFallback(
   episodeNumber: number,
   anilistId?: number
 ): Promise<
-  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string }
+  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
   | null
 > {
   // Try sub first
