@@ -141,10 +141,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         muted: video.muted,
         subtitle: activeSubtitle,
         autoSkip: autoSkipEnabled,
+        audioType,
         ts: Date.now(),
       }));
     } catch {}
-  }, [storageKey, activeSubtitle, autoSkipEnabled]);
+  }, [storageKey, activeSubtitle, autoSkipEnabled, audioType]);
 
   const restoreProgress = useCallback(() => {
     try {
@@ -440,6 +441,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     hasProviderSkipRef.current = false;
     hasSetInitialSubRef.current = false;
 
+    // Check saved progress for audio type preference
+    const saved = restoreProgress();
+    const preferredType: "sub" | "dub" = saved?.audioType === "dub" ? "dub" : "sub";
+
     // Start dub probes in parallel immediately (don't wait for sub)
     const dubProbePromise = Promise.all(
       SERVERS.map(async (s) => {
@@ -451,14 +456,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     );
 
     (async () => {
-      // Fetch sub stream — try servers sequentially until one works
+      // Fetch preferred stream type — try servers sequentially until one works
       for (const server of SERVERS) {
         if (cancelled) return;
         try {
           const params = new URLSearchParams({
             title: animeTitle,
             episode: String(episodeNumber),
-            type: "sub",
+            type: preferredType,
             server,
             strict: "true",
           });
@@ -477,6 +482,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             activeServerRef.current = server;
             setAvailableServers([server]);
             setStreamError(false);
+            setAudioType(preferredType);
             loadHls(data.sources, data.headers || null, true);
             setLoading(false);
 
