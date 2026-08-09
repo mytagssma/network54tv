@@ -118,12 +118,12 @@ export async function searchSubtitles(params: {
   }
 
   const data = await res.json();
-  return ((data.data ?? []) as any[]).flatMap((item: any) => {
+  const results = ((data.data ?? []) as any[]).flatMap((item: any) => {
     const files = item.attributes?.files ?? [];
     return files.map((f: any) => ({
       file_id: f.file_id,
       language: item.attributes.language,
-      download_count: item.attributes.download_count,
+      download_count: item.attributes.download_count ?? 0,
       hearing_impaired: item.attributes.hearing_impaired ?? false,
       ai_translated: item.attributes.ai_translated ?? false,
       release: item.attributes.release ?? "",
@@ -131,6 +131,11 @@ export async function searchSubtitles(params: {
       subtitle_id: item.attributes.subtitle_id ?? "",
     }));
   });
+
+  // Filter out AI-translated (usually low quality) and sort by popularity
+  return results
+    .filter((r) => !r.ai_translated)
+    .sort((a, b) => b.download_count - a.download_count);
 }
 
 // ─── Download ────────────────────────────────────────────────────────────

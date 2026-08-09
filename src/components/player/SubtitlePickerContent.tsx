@@ -94,11 +94,11 @@ export default function SubtitlePickerContent({
               className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/90 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors truncate"
               title={`${sub.language} — ${sub.release}`}
             >
+              {idx === 0 && <span className="text-[var(--accent)] mr-1">&#9733;</span>}
               {sub.language.toUpperCase()}
               {sub.hearing_impaired ? " \u00B7 HI" : ""}
-              {sub.ai_translated ? " \u00B7 AI" : ""}
-              <span className="text-[var(--accent)]/30 ml-1">
-                {sub.release.substring(0, 20)}
+              <span className="text-[var(--accent)]/30 ml-1 text-[10px]">
+                {sub.release.length > 25 ? sub.release.substring(0, 25) + "\u2026" : sub.release}
               </span>
             </button>
           ))}
