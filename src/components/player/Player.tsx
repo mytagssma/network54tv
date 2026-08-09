@@ -117,6 +117,47 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const spaceWasPlayingRef = useRef(false);
   const hasProviderSkipRef = useRef(false); // tracks if provider supplied skip times
 
+  // ─── Playback progress persistence ────────────────────
+  const storageKey = useMemo(
+    () => `n54tv-progress-${anilistId || animeTitle}-${episodeNumber}`,
+    [anilistId, animeTitle, episodeNumber]
+  );
+
+  const saveProgress = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.duration < 1) return;
+    // Don't save if within 5s of end — treat as finished
+    if (video.duration - video.currentTime < 5) {
+      try { localStorage.removeItem(storageKey); } catch {}
+      return;
+    }
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        time: video.currentTime,
+        volume: video.volume,
+        speed: video.playbackRate,
+        muted: video.muted,
+        subtitle: activeSubtitle,
+        autoSkip: autoSkipEnabled,
+        ts: Date.now(),
+      }));
+    } catch {}
+  }, [storageKey, activeSubtitle, autoSkipEnabled]);
+
+  const restoreProgress = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      // Expire after 30 days
+      if (data.ts && Date.now() - data.ts > 30 * 24 * 60 * 60 * 1000) {
+        localStorage.removeItem(storageKey);
+        return null;
+      }
+      return data;
+    } catch { return null; }
+  }, [storageKey]);
+
   // Derived
   const availableQualities = useMemo(
     () => hlsLevels.length > 0
@@ -191,6 +232,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           setStreamError(false);
+          // Restore saved progress
+          const saved = restoreProgress();
+          if (saved && saved.time > 0) {
+            video.currentTime = saved.time;
+          }
           if (autoPlay) {
             video.play().catch(() => {});
           }
@@ -504,6 +550,26 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     return () => { cancelled = true; };
   }, [malId, episodeNumber]);
 
+  // ─── Save progress periodically while playing ──────────
+  useEffect(() => {
+    if (!playing) return;
+    const id = setInterval(saveProgress, 15000); // every 15s
+    return () => clearInterval(id);
+  }, [playing, saveProgress]);
+
+  // ─── Save on pause / unload ────────────────────────────
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onPause = () => saveProgress();
+    video.addEventListener("pause", onPause);
+    window.addEventListener("beforeunload", saveProgress);
+    return () => {
+      video.removeEventListener("pause", onPause);
+      window.removeEventListener("beforeunload", saveProgress);
+    };
+  }, [saveProgress]);
+
   // ─── Auto-set initial subtitle track ────────────────────
   useEffect(() => {
     if (subtitles.length > 0) {
@@ -611,7 +677,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   }, []);
   const handleLoadedMetadata = () => {
-    if (videoRef.current) setDuration(videoRef.current.duration);
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+      // Restore volume/speed from saved progress
+      const saved = restoreProgress();
+      if (saved) {
+        videoRef.current.volume = saved.volume ?? 1;
+        setVolume(saved.volume ?? 1);
+        videoRef.current.muted = saved.muted ?? false;
+        setMuted(saved.muted ?? false);
+        videoRef.current.playbackRate = saved.speed ?? 1;
+        setPlaybackRate(saved.speed ?? 1);
+        playbackRateRef.current = saved.speed ?? 1;
+      }
+    }
   };
 
   const togglePlay = () => {
