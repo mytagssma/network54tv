@@ -8,6 +8,8 @@ interface SubtitlePickerContentProps {
   onSelect: (url: string | null) => void; // null = Off
   subtitleOffset: number;
   onOffsetChange: (offset: number) => void;
+  subtitleSize: "small" | "medium" | "large";
+  onSizeChange: (size: "small" | "medium" | "large") => void;
   osSearched: boolean;
   osLoading: boolean;
   osError: string | null;
@@ -29,6 +31,8 @@ export default function SubtitlePickerContent({
   onSelect,
   subtitleOffset,
   onOffsetChange,
+  subtitleSize,
+  onSizeChange,
   osSearched,
   osLoading,
   osError,
@@ -111,6 +115,25 @@ export default function SubtitlePickerContent({
               Reset
             </button>
           )}
+        </div>
+      )}
+      {/* Subtitle size */}
+      {activeSubtitle && (
+        <div className="px-2.5 py-1 flex items-center gap-2">
+          <span className="text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-mono">Size</span>
+          {(["small", "medium", "large"] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => onSizeChange(s)}
+              className={`px-2 py-0.5 text-[10px] font-mono transition-colors rounded-none border ${
+                subtitleSize === s
+                  ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
+                  : "text-[var(--accent)]/40 border-[var(--accent)]/10 hover:text-[var(--accent)] hover:border-[var(--accent)]/30"
+              }`}
+            >
+              {s === "small" ? "S" : s === "medium" ? "M" : "L"}
+            </button>
+          ))}
         </div>
       )}
       {activeSubtitle && <div className="border-t border-[var(--accent)]/20 mx-2 my-0.5" />}

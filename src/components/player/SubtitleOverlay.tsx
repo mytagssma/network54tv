@@ -8,6 +8,7 @@ interface SubtitleOverlayProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   headers?: Record<string, string>;
   offset?: number; // subtitle timing offset in seconds (positive = delayed, negative = earlier)
+  size?: "small" | "medium" | "large";
 }
 
 interface Cue {
@@ -190,6 +191,7 @@ export default function SubtitleOverlay({
   videoRef,
   headers,
   offset = 0,
+  size = "medium",
 }: SubtitleOverlayProps) {
   const [cues, setCues] = useState<Cue[]>([]);
   const [activeText, setActiveText] = useState<string[]>([]);
@@ -286,17 +288,23 @@ export default function SubtitleOverlay({
 
   if (error || activeText.length === 0) return null;
 
+  const sizeClasses = size === "small"
+    ? "text-xs sm:text-sm"
+    : size === "large"
+    ? "text-lg sm:text-xl md:text-2xl"
+    : "text-sm sm:text-base md:text-lg";
+
   return (
-    <div className="absolute bottom-16 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-4">
+    <div className="absolute bottom-12 sm:bottom-16 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4">
       {activeText.map((text, i) => {
         const lines = text.split(/<br\s*\/?>/i).flatMap((l) => l.split("\n"));
 
         return (
-          <div key={i} className="text-center">
+          <div key={i} className="text-center max-w-full">
             {lines.map((line, j) => (
               <span
                 key={j}
-                className="inline-block bg-black/80 text-white text-base md:text-lg font-medium leading-relaxed px-3 py-0.5 mb-0.5"
+                className={`inline-block bg-black/80 text-white font-medium leading-relaxed px-2 sm:px-3 py-0.5 mb-0.5 ${sizeClasses}`}
                 style={{
                   textShadow:
                     "0 0 4px rgba(0,0,0,0.9), 0 0 2px rgba(0,229,255,0.3)",

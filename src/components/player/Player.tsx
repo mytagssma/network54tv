@@ -102,6 +102,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   // Subtitle timing offset (seconds)
   const [subtitleOffset, setSubtitleOffset] = useState(0);
+  // Subtitle size: "small" | "medium" | "large"
+  const [subtitleSize, setSubtitleSize] = useState<"small" | "medium" | "large">("medium");
 
   // OpenSubtitles state
   const [osResults, setOsResults] = useState<
@@ -147,13 +149,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         muted: video.muted,
         subtitle: activeSubtitle,
         subtitleOffset,
+        subtitleSize,
         autoSkip: autoSkipEnabled,
         autoPlayNext,
         audioType,
         ts: Date.now(),
       }));
     } catch {}
-  }, [storageKey, activeSubtitle, subtitleOffset, autoSkipEnabled, autoPlayNext, audioType]);
+  }, [storageKey, activeSubtitle, subtitleOffset, subtitleSize, autoSkipEnabled, autoPlayNext, audioType]);
 
   const restoreProgress = useCallback(() => {
     try {
@@ -458,6 +461,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     failedOSIdsRef.current.clear();
     hasAutoLoadedDubSubRef.current = false;
     setSubtitleOffset(0);
+    setSubtitleSize("medium");
     setOsPage(1);
     setOsFilterQuery("");
 
@@ -799,6 +803,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (saved.autoPlayNext !== undefined) setAutoPlayNext(saved.autoPlayNext);
         if (typeof saved.subtitleOffset === "number") {
           setSubtitleOffset(saved.subtitleOffset);
+        }
+        if (saved.subtitleSize === "small" || saved.subtitleSize === "medium" || saved.subtitleSize === "large") {
+          setSubtitleSize(saved.subtitleSize);
         }
       }
     }
@@ -1147,6 +1154,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           videoRef={videoRef}
           headers={streamHeaders || undefined}
           offset={subtitleOffset}
+          size={subtitleSize}
         />
       )}
 
@@ -1444,6 +1452,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSubPicker(false); }}
                     subtitleOffset={subtitleOffset}
                     onOffsetChange={setSubtitleOffset}
+                    subtitleSize={subtitleSize}
+                    onSizeChange={setSubtitleSize}
                     osSearched={osSearched}
                     osLoading={osLoading}
                     osError={osError}
@@ -1683,6 +1693,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSettings(false); }}
                subtitleOffset={subtitleOffset}
                onOffsetChange={setSubtitleOffset}
+               subtitleSize={subtitleSize}
+               onSizeChange={setSubtitleSize}
                osSearched={osSearched}
                osLoading={osLoading}
                osError={osError}
