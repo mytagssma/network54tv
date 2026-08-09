@@ -1206,7 +1206,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
         {/* Controls overlay (bottom) */}
       <div
-        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-12 pb-3 px-3 transition-opacity duration-300 z-20 ${
+        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-12 pb-5 sm:pb-3 px-3 transition-opacity duration-300 z-20 ${
           showControls ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
         onClick={(e) => e.stopPropagation()}
