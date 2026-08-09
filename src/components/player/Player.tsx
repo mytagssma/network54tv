@@ -852,7 +852,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     const doc = document as any;
     if (doc.fullscreenElement || doc.webkitFullscreenElement) {
       (doc.exitFullscreen || doc.webkitExitFullscreen)?.call(doc);
-      setIsFullscreen(false);
       // Unlock orientation when exiting fullscreen
       if (screen.orientation && typeof screen.orientation.unlock === "function") {
         screen.orientation.unlock();
@@ -860,7 +859,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     } else {
       const el = containerRef.current as any;
       (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
-      setIsFullscreen(true);
       // Lock to landscape when entering fullscreen
       if (screen.orientation && typeof screen.orientation.lock === "function") {
         screen.orientation.lock("landscape").catch(() => {
@@ -869,6 +867,24 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       }
     }
   };
+
+  // Sync isFullscreen state from actual fullscreen events (not optimistic)
+  useEffect(() => {
+    const doc = document as any;
+    const handleFullscreenChange = () => {
+      const inFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+      setIsFullscreen(inFs);
+      if (!inFs && screen.orientation && typeof screen.orientation.unlock === "function") {
+        screen.orientation.unlock();
+      }
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+    };
+  }, []);
 
   const changeQuality = (q: string) => {
     setShowQualityPicker(false);
