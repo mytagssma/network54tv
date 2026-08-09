@@ -141,11 +141,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         muted: video.muted,
         subtitle: activeSubtitle,
         autoSkip: autoSkipEnabled,
+        autoPlayNext,
         audioType,
         ts: Date.now(),
       }));
     } catch {}
-  }, [storageKey, activeSubtitle, autoSkipEnabled, audioType]);
+  }, [storageKey, activeSubtitle, autoSkipEnabled, autoPlayNext, audioType]);
 
   const restoreProgress = useCallback(() => {
     try {
@@ -700,7 +701,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
-      // Restore volume/speed from saved progress
+      // Restore saved preferences
       const saved = restoreProgress();
       if (saved) {
         videoRef.current.volume = saved.volume ?? 1;
@@ -710,6 +711,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         videoRef.current.playbackRate = saved.speed ?? 1;
         setPlaybackRate(saved.speed ?? 1);
         playbackRateRef.current = saved.speed ?? 1;
+        if (saved.autoSkip !== undefined) setAutoSkipEnabled(saved.autoSkip);
+        if (saved.autoPlayNext !== undefined) setAutoPlayNext(saved.autoPlayNext);
       }
     }
   };
