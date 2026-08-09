@@ -194,6 +194,12 @@ export default function SubtitleOverlay({
   const [cues, setCues] = useState<Cue[]>([]);
   const [activeText, setActiveText] = useState<string[]>([]);
   const [error, setError] = useState(false);
+  const offsetRef = useRef(offset);
+
+  // Keep offsetRef in sync with prop
+  useEffect(() => {
+    offsetRef.current = offset;
+  }, [offset]);
 
   // Fetch and parse VTT (with module-level cache)
   useEffect(() => {
@@ -258,7 +264,7 @@ export default function SubtitleOverlay({
         return;
       }
 
-      const t = video.currentTime + offset;
+      const t = video.currentTime + offsetRef.current;
       // Only recompute when time actually changed (handles pause + seek)
       if (t !== lastTime) {
         lastTime = t;
@@ -276,7 +282,7 @@ export default function SubtitleOverlay({
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [cues, videoRef, offset]);
+  }, [cues, videoRef]);
 
   if (error || activeText.length === 0) return null;
 
