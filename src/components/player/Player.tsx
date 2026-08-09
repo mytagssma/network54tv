@@ -450,6 +450,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setOsDownloadError(null);
     setActiveOSSubtitleId(null);
     failedOSIdsRef.current.clear();
+    hasAutoLoadedDubSubRef.current = false;
 
     // Check saved progress for audio type preference
     const saved = restoreProgress();
@@ -599,6 +600,54 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       setActiveSubtitle(en ? en.url : subtitles[0].url);
     }
   }, [subtitles]);
+
+  // ─── Auto-load AI English subs for dub episodes ─────────
+  const hasAutoLoadedDubSubRef = useRef(false);
+  useEffect(() => {
+    if (audioType !== "dub" || hasAutoLoadedDubSubRef.current) return;
+    if (!animeTitle || !episodeNumber) return;
+    // Only auto-load if no provider subs are available
+    if (subtitles.length > 0) return;
+    // Only auto-load if stream is loaded
+    if (loading || sources.length === 0) return;
+
+    hasAutoLoadedDubSubRef.current = true;
+
+    (async () => {
+      try {
+        const params = new URLSearchParams({
+          query: animeTitle,
+          season_number: "1",
+          episode_number: String(episodeNumber),
+          languages: "en",
+        });
+        const res = await fetch(`/api/opensubtitles?${params}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const results = data.results ?? [];
+        if (results.length === 0) return;
+
+        // Pick the best result — prefer AI-translated for dub (they're timed for dubbed audio)
+        const ai = results.find((r: any) => r.ai_translated);
+        const best = ai || results[0];
+
+        // Download the subtitle
+        const dlRes = await fetch(`/api/opensubtitles?file_id=${best.file_id}&sub_format=vtt`);
+        if (!dlRes.ok) return;
+        const blob = await dlRes.blob();
+        if (blob.size < 50) return;
+
+        const url = URL.createObjectURL(blob);
+        setActiveSubtitle(url);
+        setActiveOSSubtitleId(best.file_id);
+        // Mark as searched so user can see results in picker
+        setOsSearched(true);
+        setOsResults(results);
+      } catch {
+        // Silent fail — user can manually search
+      }
+    })();
+  }, [audioType, animeTitle, episodeNumber, subtitles.length, loading, sources.length]);
 
   // ─── OpenSubtitles search ──────────────────────────────
   const searchOpenSubtitles = useCallback(async () => {
