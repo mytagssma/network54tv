@@ -636,6 +636,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (blob.size < 50) return;
 
         const url = URL.createObjectURL(blob);
+        // Add to subtitles list right at the top (after Off)
+        const aiLabel = `English (AI)`;
+        setSubtitles((prev) => {
+          // Don't duplicate if already present
+          if (prev.some((s) => s.url === url)) return prev;
+          return [{ url, lang: aiLabel }, ...prev];
+        });
         setActiveSubtitle(url);
         setActiveOSSubtitleId(best.file_id);
         // Mark as searched so user can see results in picker
