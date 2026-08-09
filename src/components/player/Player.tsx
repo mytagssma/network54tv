@@ -1085,9 +1085,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, []);
 
   return (
+    <div className="w-full">
     <div
       ref={containerRef}
-      className="relative w-full aspect-video bg-black overflow-hidden group outline-none"
+      className="relative w-full aspect-[2/1] sm:aspect-video bg-black overflow-hidden group outline-none"
       tabIndex={0}
       onMouseMove={handleMouseMove}
       onBlur={(e) => {
@@ -1517,160 +1518,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           </div>
         </div>
 
-        {/* Mobile settings panel */}
-        {showSettings && (
-          <div ref={settingsPanelRef} className="sm:hidden bg-[#131318] border border-[var(--accent)]/20 border-b-0 mx-0 mb-0 max-h-[60vh] overflow-y-auto rounded-none">
-            <div className="p-3 space-y-3">
-              {/* Audio section */}
-              {dubAvailable && (
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Audio</div>
-                  <div className="flex bg-black/40 border border-[var(--accent)]/20 overflow-hidden rounded-none">
-                    <button
-                      onClick={() => switchAudioType("sub")}
-                      className={`flex-1 px-4 py-2 text-xs font-semibold tracking-wide transition-colors rounded-none ${
-                        audioType === "sub"
-                          ? "bg-[var(--accent)] text-black"
-                          : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
-                      }`}
-                    >
-                      SUB
-                    </button>
-                    <div className="w-px bg-[var(--accent)]/20" />
-                    <button
-                      onClick={() => switchAudioType("dub")}
-                      className={`flex-1 px-4 py-2 text-xs font-semibold tracking-wide transition-colors rounded-none ${
-                        audioType === "dub"
-                          ? "bg-[var(--accent)] text-black"
-                          : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
-                      }`}
-                    >
-                      DUB
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Server section */}
-              {availableServers.length > 0 && (
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Server</div>
-                  <div className="flex flex-col gap-0.5">
-                    {availableServers.map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => { setActiveServer(s); activeServerRef.current = s; setShowSettings(false); loadByType(audioType, s); }}
-                        className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
-                          activeServer === s
-                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                        }`}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Quality section */}
-              {availableQualities.length > 0 && (
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Quality</div>
-                  <div className="flex flex-wrap gap-1">
-                    {availableQualities.map((q) => (
-                      <button
-                        key={q}
-                        onClick={() => { changeQuality(q); setShowSettings(false); }}
-                        className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
-                          q === currentQuality
-                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
-                            : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
-                        }`}
-                      >
-                        {q === "auto" ? "Auto" : q}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Speed section */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Speed</div>
-                <div className="flex flex-wrap gap-1">
-                  {SPEED_PRESETS.map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => { changeSpeed(r); setShowSettings(false); }}
-                      className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
-                        playbackRate === r
-                          ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
-                          : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
-                      }`}
-                    >
-                      {r}x
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Auto-Play section */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Play</div>
-                <button
-                  onClick={() => setAutoPlayNext(!autoPlayNext)}
-                  className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
-                    autoPlayNext
-                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                      : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                  }`}
-                >
-                  {autoPlayNext ? "ON — Next episode plays automatically" : "OFF"}
-                </button>
-              </div>
-
-              {/* Auto-Skip section */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Skip</div>
-                <button
-                  onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
-                  className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
-                    autoSkipEnabled
-                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                      : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                  }`}
-                >
-                  {autoSkipEnabled ? "ON — Auto-skips intro/outro" : "OFF"}
-                </button>
-              </div>
-
-              {/* Subtitles section */}
-              <div>
-                <SubtitlePickerContent
-                   activeSubtitle={activeSubtitle}
-                   subtitles={subtitles}
-                   onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSettings(false); }}
-                   subtitleOffset={subtitleOffset}
-                   onOffsetChange={setSubtitleOffset}
-                   osSearched={osSearched}
-                   osLoading={osLoading}
-                   osError={osError}
-                   osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
-                   osPage={osPage}
-                   osFilterQuery={osFilterQuery}
-                   onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
-                   onFilterChange={setOsFilterQuery}
-                   onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-                   onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
-                   activeOSSubtitleId={activeOSSubtitleId}
-                   osDownloadError={osDownloadError}
-                   onClearDownloadError={() => setOsDownloadError(null)}
-                 />
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Top info bar */}
@@ -1686,6 +1533,162 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           EP {String(episodeNumber).padStart(2, "0")}
         </span>
       </div>
+    </div>
+
+    {/* Mobile settings panel — outside overflow-hidden so it isn't clipped */}
+    {showSettings && (
+      <div ref={settingsPanelRef} className="sm:hidden bg-[#131318] border border-[var(--accent)]/20 border-b-0 mx-0 mb-0 max-h-[60vh] overflow-y-auto rounded-none">
+        <div className="p-3 space-y-3">
+          {/* Audio section */}
+          {dubAvailable && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Audio</div>
+              <div className="flex bg-black/40 border border-[var(--accent)]/20 overflow-hidden rounded-none">
+                <button
+                  onClick={() => switchAudioType("sub")}
+                  className={`flex-1 px-4 py-2 text-xs font-semibold tracking-wide transition-colors rounded-none ${
+                    audioType === "sub"
+                      ? "bg-[var(--accent)] text-black"
+                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  SUB
+                </button>
+                <div className="w-px bg-[var(--accent)]/20" />
+                <button
+                  onClick={() => switchAudioType("dub")}
+                  className={`flex-1 px-4 py-2 text-xs font-semibold tracking-wide transition-colors rounded-none ${
+                    audioType === "dub"
+                      ? "bg-[var(--accent)] text-black"
+                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  DUB
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Server section */}
+          {availableServers.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Server</div>
+              <div className="flex flex-col gap-0.5">
+                {availableServers.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => { setActiveServer(s); activeServerRef.current = s; setShowSettings(false); loadByType(audioType, s); }}
+                    className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
+                      activeServer === s
+                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                        : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Quality section */}
+          {availableQualities.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Quality</div>
+              <div className="flex flex-wrap gap-1">
+                {availableQualities.map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => { changeQuality(q); setShowSettings(false); }}
+                    className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
+                      q === currentQuality
+                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
+                        : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
+                    }`}
+                  >
+                    {q === "auto" ? "Auto" : q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Speed section */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Speed</div>
+            <div className="flex flex-wrap gap-1">
+              {SPEED_PRESETS.map((r) => (
+                <button
+                  key={r}
+                  onClick={() => { changeSpeed(r); setShowSettings(false); }}
+                  className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
+                    playbackRate === r
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
+                      : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
+                  }`}
+                >
+                  {r}x
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Auto-Play section */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Play</div>
+            <button
+              onClick={() => setAutoPlayNext(!autoPlayNext)}
+              className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
+                autoPlayNext
+                  ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                  : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+              }`}
+            >
+              {autoPlayNext ? "ON — Next episode plays automatically" : "OFF"}
+            </button>
+          </div>
+
+          {/* Auto-Skip section */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Skip</div>
+            <button
+              onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
+              className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
+                autoSkipEnabled
+                  ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                  : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+              }`}
+            >
+              {autoSkipEnabled ? "ON — Auto-skips intro/outro" : "OFF"}
+            </button>
+          </div>
+
+          {/* Subtitles section */}
+          <div>
+            <SubtitlePickerContent
+               activeSubtitle={activeSubtitle}
+               subtitles={subtitles}
+               onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSettings(false); }}
+               subtitleOffset={subtitleOffset}
+               onOffsetChange={setSubtitleOffset}
+               osSearched={osSearched}
+               osLoading={osLoading}
+               osError={osError}
+               osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
+               osPage={osPage}
+               osFilterQuery={osFilterQuery}
+               onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
+               onFilterChange={setOsFilterQuery}
+               onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
+               onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
+               activeOSSubtitleId={activeOSSubtitleId}
+               osDownloadError={osDownloadError}
+               onClearDownloadError={() => setOsDownloadError(null)}
+             />
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 }

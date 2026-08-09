@@ -143,7 +143,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
                     href={`/anime/${animeId}/watch/${episode.number}`}
                     className="flex items-center gap-3 sm:gap-4 bg-[#131318] hover:bg-[#1a1a20] border-l-2 border-[var(--accent)]/30 hover:border-l-[var(--accent)] p-3 sm:p-4 transition-all group rounded-none"
                   >
-                    <span className="text-[var(--accent)]/50 font-mono text-sm w-8 text-right shrink-0 font-bold">
+                    <span className="bg-[var(--accent)]/10 text-[var(--accent)] font-mono text-sm w-8 text-right shrink-0 font-bold border border-[var(--accent)]/30 py-px">
                       {String(episode.number).padStart(2, "0")}
                     </span>
                     <div className="flex-1 min-w-0">
