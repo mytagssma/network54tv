@@ -849,15 +849,17 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
+    const doc = document as any;
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      (doc.exitFullscreen || doc.webkitExitFullscreen)?.call(doc);
       setIsFullscreen(false);
       // Unlock orientation when exiting fullscreen
       if (screen.orientation && typeof screen.orientation.unlock === "function") {
         screen.orientation.unlock();
       }
     } else {
-      containerRef.current.requestFullscreen();
+      const el = containerRef.current as any;
+      (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
       setIsFullscreen(true);
       // Lock to landscape when entering fullscreen
       if (screen.orientation && typeof screen.orientation.lock === "function") {
