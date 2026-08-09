@@ -211,7 +211,7 @@ export default function SubtitleOverlay({
 
     const fetchSubs = async () => {
       try {
-        const url = proxyUrl(subtitleUrl, headers);
+        const url = subtitleUrl.startsWith("blob:") ? subtitleUrl : proxyUrl(subtitleUrl, headers);
         const res = await fetch(url, {
           headers: { Accept: "text/vtt, text/plain, */*" },
         });

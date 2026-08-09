@@ -785,8 +785,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          togglePlay();
-          resetControlsTimer();
+          // Ignore key repeat
+          if (e.repeat) return;
+          // Start hold-to-2x timer (same logic as pointer-based hold)
+          spaceDownRef.current = performance.now();
+          spaceWasPlayingRef.current = !video.paused;
+          holdTimerRef.current = setTimeout(() => {
+            if (video && !video.paused) {
+              video.playbackRate = 2;
+              longPressRef.current = true;
+              resetControlsTimer();
+            }
+          }, 300);
           break;
         case 'k':
           e.preventDefault();
@@ -854,9 +864,32 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === ' ') {
+        // Clear hold timer
+        if (holdTimerRef.current) {
+          clearTimeout(holdTimerRef.current);
+          holdTimerRef.current = null;
+        }
+        // Restore 2x if hold fired
+        if (longPressRef.current && videoRef.current) {
+          videoRef.current.playbackRate = playbackRateRef.current;
+          longPressRef.current = false;
+        } else if (!e.repeat) {
+          // Short tap — toggle play/pause
+          togglePlay();
+          resetControlsTimer();
+        }
+      }
+    };
+
     document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
