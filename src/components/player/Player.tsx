@@ -109,6 +109,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [osSearched, setOsSearched] = useState(false);
   const [activeOSSubtitleId, setActiveOSSubtitleId] = useState<number | null>(null);
   const [osDownloadError, setOsDownloadError] = useState<string | null>(null);
+  const failedOSIdsRef = useRef(new Set<number>()); // track failed downloads
 
   // Refs for keyboard handler and callbacks (stable across renders)
   const playingRef = useRef(playing);
@@ -632,12 +633,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         setOsDownloadError(data?.error || `Download failed (${res.status})`);
+        failedOSIdsRef.current.add(fileId);
         return;
       }
 
       const blob = await res.blob();
       if (blob.size < 50) {
         setOsDownloadError("Subtitle file is empty");
+        failedOSIdsRef.current.add(fileId);
         return;
       }
       const url = URL.createObjectURL(blob);
@@ -654,6 +657,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       setShowSettings(false);
     } catch (e) {
       setOsDownloadError(e instanceof Error ? e.message : "Download failed");
+      failedOSIdsRef.current.add(fileId);
     }
   }, [activeSubtitle]);
 
@@ -1355,10 +1359,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     osSearched={osSearched}
                     osLoading={osLoading}
                     osError={osError}
-                    osResults={osResults}
+                    osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
                     onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
                     onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-                    onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); }}
+                    onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
                     activeOSSubtitleId={activeOSSubtitleId}
                     osDownloadError={osDownloadError}
                     onClearDownloadError={() => setOsDownloadError(null)}
@@ -1561,10 +1565,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                    osSearched={osSearched}
                    osLoading={osLoading}
                    osError={osError}
-                   osResults={osResults}
+                   osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
                    onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
                    onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-                   onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); }}
+                   onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
                    activeOSSubtitleId={activeOSSubtitleId}
                    osDownloadError={osDownloadError}
                    onClearDownloadError={() => setOsDownloadError(null)}
