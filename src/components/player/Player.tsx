@@ -443,6 +443,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     hasProviderSkipRef.current = false;
     hasSetInitialSubRef.current = false;
 
+    // Reset OpenSubtitles state for new episode
+    setOsSearched(false);
+    setOsResults([]);
+    setOsError(null);
+    setOsDownloadError(null);
+    setActiveOSSubtitleId(null);
+    failedOSIdsRef.current.clear();
+
     // Check saved progress for audio type preference
     const saved = restoreProgress();
     const preferredType: "sub" | "dub" = saved?.audioType === "dub" ? "dub" : "sub";
