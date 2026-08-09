@@ -107,6 +107,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [osLoading, setOsLoading] = useState(false);
   const [osError, setOsError] = useState<string | null>(null);
   const [osSearched, setOsSearched] = useState(false);
+  const [activeOSSubtitleId, setActiveOSSubtitleId] = useState<number | null>(null);
+  const [osDownloadError, setOsDownloadError] = useState<string | null>(null);
 
   // Refs for keyboard handler and callbacks (stable across renders)
   const playingRef = useRef(playing);
@@ -618,10 +620,19 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // ─── Select an OpenSubtitles subtitle ──────────────────
   const selectOSSubtitle = useCallback(async (fileId: number) => {
     try {
+      setOsDownloadError(null);
       const res = await fetch(`/api/opensubtitles?file_id=${fileId}&sub_format=vtt`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setOsDownloadError(data?.error || `Download failed (${res.status})`);
+        return;
+      }
 
       const blob = await res.blob();
+      if (blob.size < 50) {
+        setOsDownloadError("Subtitle file is empty");
+        return;
+      }
       const url = URL.createObjectURL(blob);
 
       // Revoke previous OS blob URL if any
@@ -630,10 +641,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       }
 
       setActiveSubtitle(url);
+      // Track which OS subtitle is active
+      setActiveOSSubtitleId(fileId);
       setShowSubPicker(false);
       setShowSettings(false);
-    } catch {
-      // silently fail — user can retry
+    } catch (e) {
+      setOsDownloadError(e instanceof Error ? e.message : "Download failed");
     }
   }, [activeSubtitle]);
 
@@ -1329,7 +1342,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   <SubtitlePickerContent
                     activeSubtitle={activeSubtitle}
                     subtitles={subtitles}
-                    onSelect={(url) => { setActiveSubtitle(url); setShowSubPicker(false); }}
+                    onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSubPicker(false); }}
                     osSearched={osSearched}
                     osLoading={osLoading}
                     osError={osError}
@@ -1337,6 +1350,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
                     onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
                     onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); }}
+                    activeOSSubtitleId={activeOSSubtitleId}
+                    osDownloadError={osDownloadError}
+                    onClearDownloadError={() => setOsDownloadError(null)}
                   />
                 </div>
               )}
@@ -1530,17 +1546,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               {/* Subtitles section */}
               <div>
                 <SubtitlePickerContent
-                  activeSubtitle={activeSubtitle}
-                  subtitles={subtitles}
-                  onSelect={(url) => { setActiveSubtitle(url); setShowSettings(false); }}
-                  osSearched={osSearched}
-                  osLoading={osLoading}
-                  osError={osError}
-                  osResults={osResults}
-                  onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
-                  onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-                  onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); }}
-                />
+                   activeSubtitle={activeSubtitle}
+                   subtitles={subtitles}
+                   onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSettings(false); }}
+                   osSearched={osSearched}
+                   osLoading={osLoading}
+                   osError={osError}
+                   osResults={osResults}
+                   onSearchOpenSubtitles={() => { searchOpenSubtitles(); }}
+                   onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
+                   onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); }}
+                   activeOSSubtitleId={activeOSSubtitleId}
+                   osDownloadError={osDownloadError}
+                   onClearDownloadError={() => setOsDownloadError(null)}
+                 />
               </div>
             </div>
           </div>

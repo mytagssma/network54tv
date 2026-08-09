@@ -180,5 +180,15 @@ export async function downloadSubtitle(
   }
 
   const content = await fileRes.text();
+
+  // Validate VTT has actual cues (not empty/broken)
+  const hasCues = /\d{2}:\d{2}:\d{2}\.\d{3}\s*-->/.test(content);
+  if (subFormat === "vtt" && !hasCues) {
+    throw new Error("Downloaded subtitle file has no timing cues");
+  }
+  if (subFormat === "srt" && !/\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s*-->/.test(content)) {
+    throw new Error("Downloaded subtitle file has no timing cues");
+  }
+
   return { content, fileName };
 }

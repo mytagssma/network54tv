@@ -11,6 +11,9 @@ interface SubtitlePickerContentProps {
   onSearchOpenSubtitles: () => void;
   onSelectOpenSubtitle: (fileId: number) => void;
   onResetOpenSubtitles: () => void; // resets osSearched/osResults/osError for "Search again"
+  activeOSSubtitleId?: number | null;
+  osDownloadError?: string | null;
+  onClearDownloadError?: () => void;
 }
 
 export default function SubtitlePickerContent({
@@ -24,6 +27,9 @@ export default function SubtitlePickerContent({
   onSearchOpenSubtitles,
   onSelectOpenSubtitle,
   onResetOpenSubtitles,
+  activeOSSubtitleId,
+  osDownloadError,
+  onClearDownloadError,
 }: SubtitlePickerContentProps) {
   return (
     <>
@@ -31,7 +37,7 @@ export default function SubtitlePickerContent({
         Subtitles
       </div>
       <button
-        onClick={() => { onSelect(null); }}
+        onClick={() => { onSelect(null); onClearDownloadError?.(); }}
         className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
           !activeSubtitle
             ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
@@ -43,7 +49,7 @@ export default function SubtitlePickerContent({
       {subtitles.map((sub) => (
         <button
           key={sub.url}
-          onClick={() => { onSelect(sub.url); }}
+          onClick={() => { onSelect(sub.url); onClearDownloadError?.(); }}
           className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
             activeSubtitle === sub.url
               ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
@@ -54,6 +60,14 @@ export default function SubtitlePickerContent({
         </button>
       ))}
       {subtitles.length > 0 && <div className="border-t border-[var(--accent)]/20 mx-2 my-0.5" />}
+
+      {/* Download error */}
+      {osDownloadError && (
+        <div className="px-2.5 py-1.5 text-[11px] text-red-400 bg-red-400/10 border-l-2 border-red-400">
+          {osDownloadError}
+        </div>
+      )}
+
       {!osSearched && (
         <button
           onClick={(e) => { e.stopPropagation(); onSearchOpenSubtitles(); }}
@@ -87,21 +101,29 @@ export default function SubtitlePickerContent({
           <div className="px-2.5 pt-1 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
             OpenSubtitles
           </div>
-          {osResults.slice(0, 15).map((sub, idx) => (
-            <button
-              key={`os-${sub.file_id}-${idx}`}
-              onClick={() => { onSelectOpenSubtitle(sub.file_id); }}
-              className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/90 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors truncate"
-              title={`${sub.language} — ${sub.release}`}
-            >
-              {idx === 0 && <span className="text-[var(--accent)] mr-1">&#9733;</span>}
-              {sub.language.toUpperCase()}
-              {sub.hearing_impaired ? " \u00B7 HI" : ""}
-              <span className="text-[var(--accent)]/30 ml-1 text-[10px]">
-                {sub.release.length > 25 ? sub.release.substring(0, 25) + "\u2026" : sub.release}
-              </span>
-            </button>
-          ))}
+          {osResults.slice(0, 15).map((sub, idx) => {
+            const isActive = activeOSSubtitleId === sub.file_id;
+            return (
+              <button
+                key={`os-${sub.file_id}-${idx}`}
+                onClick={() => { onSelectOpenSubtitle(sub.file_id); }}
+                className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors truncate rounded-none ${
+                  isActive
+                    ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                    : "text-[var(--accent)]/80 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                }`}
+                title={`${sub.language} — ${sub.release}`}
+              >
+                {idx === 0 && !isActive && <span className="text-[var(--accent)] mr-1">&#9733;</span>}
+                {isActive && <span className="text-[var(--accent)] mr-1">&#10003;</span>}
+                {sub.language.toUpperCase()}
+                {sub.hearing_impaired ? " \u00B7 HI" : ""}
+                <span className="text-[var(--accent)]/30 ml-1 text-[10px]">
+                  {sub.release.length > 25 ? sub.release.substring(0, 25) + "\u2026" : sub.release}
+                </span>
+              </button>
+            );
+          })}
         </>
       )}
 
@@ -111,7 +133,7 @@ export default function SubtitlePickerContent({
       )}
       {osSearched && (
         <button
-          onClick={(e) => { e.stopPropagation(); onResetOpenSubtitles(); }}
+          onClick={(e) => { e.stopPropagation(); onResetOpenSubtitles(); onClearDownloadError?.(); }}
           className="w-full text-left px-2.5 py-1 text-[11px] text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors"
         >
           Search again
