@@ -1093,7 +1093,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       onMouseMove={handleMouseMove}
       onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
-        if (next && containerRef.current && !containerRef.current.contains(next)) {
+        if (next && containerRef.current && !containerRef.current.contains(next) &&
+            !(settingsPanelRef.current && settingsPanelRef.current.contains(next))) {
           setShowSettings(false);
           setShowServerPicker(false);
           setShowQualityPicker(false);
@@ -1538,7 +1539,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     {/* Mobile settings panel — outside overflow-hidden so it isn't clipped */}
     {showSettings && (
       <div ref={settingsPanelRef} className="sm:hidden bg-[#131318] border border-[var(--accent)]/20 border-b-0 mx-0 mb-0 max-h-[60vh] overflow-y-auto rounded-none">
-        <div className="p-3 space-y-3">
+        {/* Close button */}
+        <div className="sticky top-0 z-10 flex justify-end px-2 pt-2 bg-[#131318]">
+          <button
+            onClick={() => setShowSettings(false)}
+            className="w-7 h-7 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-3 pt-1 space-y-3">
           {/* Audio section */}
           {dubAvailable && (
             <div>
