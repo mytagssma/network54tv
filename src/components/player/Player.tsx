@@ -988,6 +988,61 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   }, [autoSkipEnabled, inIntro, inOutro, introSegment, outroSegment]);
 
+  // ─── Network recovery: reconnect HLS on network change ─────
+  useEffect(() => {
+    const handleOnline = () => {
+      const hls = hlsRef.current;
+      const video = videoRef.current;
+      if (!hls || !video) return;
+
+      // If the stream was playing, try to recover
+      if (hls.url && video.paused === false) {
+        try {
+          hls.recoverMediaError();
+        } catch {
+          // If recover fails, reload the entire stream from current position
+          const pos = video.currentTime;
+          const wasPlaying = !video.paused;
+          const srcs = sources;
+          const hdrs = streamHeaders;
+          if (srcs.length > 0) {
+            loadHls(srcs, hdrs, false);
+            // Restore position after load
+            const onManifestParsed = () => {
+              if (videoRef.current) {
+                videoRef.current.currentTime = pos;
+                if (wasPlaying) videoRef.current.play().catch(() => {});
+              }
+              hls?.off(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+            };
+            hls.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+          }
+        }
+      }
+    };
+
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [sources, streamHeaders, loadHls]);
+
+  // ─── Recover stream when tab becomes visible again (mobile background) ──
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      const video = videoRef.current;
+      const hls = hlsRef.current;
+      if (!video || !hls) return;
+
+      // If video is stalled, try to recover
+      if (video.readyState < 3 && hls.url) {
+        try { hls.recoverMediaError(); } catch { /* ignore */ }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, []);
+
   // ─── Keyboard shortcuts ──────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1196,11 +1251,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
       {/* Skip intro/outro buttons — only shown when AniSkip timestamps exist */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
-        <div className="absolute bottom-16 left-0 right-0 flex justify-center gap-3 z-30 px-3">
+        <div className="absolute top-3 right-14 sm:top-auto sm:bottom-16 sm:left-0 sm:right-0 flex justify-start sm:justify-center gap-2 sm:gap-3 z-30 px-3">
           {inIntro && introSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
-              className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[10px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
@@ -1211,7 +1266,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           {inOutro && outroSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = outroSegment.end; }}
-              className="flex items-center gap-2 px-4 py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[10px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               Skip Outro
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>

@@ -1,9 +1,8 @@
 import { getAnimeById } from "@/lib/anilist";
 import { getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
-import Link from "next/link";
-import type { Episode } from "@/types/anime";
 import ExpandableDescription from "@/components/ui/ExpandableDescription";
+import EpisodeList from "@/components/anime/EpisodeList";
 
 export const revalidate = 300;
 
@@ -134,57 +133,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
           </div>
 
           {episodes.length > 0 ? (
-            <div className="grid gap-2 sm:gap-3 max-h-[60vh] sm:max-h-none overflow-y-auto">
-              {episodes.map((episode) => {
-                const isAvailable = episode.available !== false;
-                return isAvailable ? (
-                  <Link
-                    key={`${episode.id}-${episode.number}`}
-                    href={`/anime/${animeId}/watch/${episode.number}`}
-                    className="flex items-center gap-3 sm:gap-4 bg-[#131318] hover:bg-[#1a1a20] border-l-2 border-[var(--accent)]/30 hover:border-l-[var(--accent)] p-3 sm:p-4 transition-all group rounded-none"
-                  >
-                    <span className="text-[var(--accent)]/50 font-mono text-xs w-7 text-right shrink-0 font-bold">
-                      {String(episode.number).padStart(2, "0")}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[#9a9aa0] truncate group-hover:text-white transition-colors">
-                        {episode.title || `Episode ${episode.number}`}
-                      </p>
-                    </div>
-                    <svg
-                      className="w-5 h-5 text-[#6b6b70] group-hover:text-[var(--accent)] shrink-0 transition-colors"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M9 5l7 7-7 7"
-                      />
-                    </svg>
-                  </Link>
-                ) : (
-                  <div
-                    key={`${episode.id}-${episode.number}`}
-                    className="flex items-center gap-3 sm:gap-4 bg-[#131318] border-l-2 border-[#6b6b70]/30 p-3 sm:p-4 rounded-none opacity-50 cursor-not-allowed"
-                  >
-                    <span className="text-[#6b6b70] font-mono text-sm w-8 text-right shrink-0 font-bold">
-                      {String(episode.number).padStart(2, "0")}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[#6b6b70] truncate">
-                        {episode.title || `Episode ${episode.number}`}
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-mono text-[#6b6b70] uppercase tracking-wider shrink-0">
-                      N/A
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+            <EpisodeList episodes={episodes} animeId={animeId} />
           ) : (
             <p className="text-[#6b6b70] italic">No episodes available.</p>
           )}

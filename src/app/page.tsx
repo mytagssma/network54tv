@@ -26,6 +26,7 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [filterFormat, setFilterFormat] = useState("");
   const [filterSeason, setFilterSeason] = useState("");
@@ -95,20 +96,21 @@ export default function Home() {
     }
   }
 
-  async function goToPage(newPage: number) {
-    if (newPage < 1) return;
-    setLoading(true);
-    setError("");
-    setPage(newPage);
+  async function loadMore() {
+    const nextPage = page + 1;
+    setLoadingMore(true);
     try {
       const trimmed = query.trim();
-      const data = await searchAnimeClient(trimmed || "", newPage, 24, getFilters());
-      setResults(data.media);
+      const data = trimmed || hasActiveFilters
+        ? await searchAnimeClient(trimmed, nextPage, 24, getFilters())
+        : await getRecentlyAiredClient(4, nextPage, 50);
+      setResults((prev) => [...prev, ...data.media]);
       setHasNextPage(data.hasNextPage);
+      setPage(nextPage);
     } catch {
-      setError("Search failed. Please try again.");
+      setError("Failed to load more.");
     } finally {
-      setLoading(false);
+      setLoadingMore(false);
     }
   }
 
@@ -384,54 +386,25 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 text-[var(--accent)] uppercase tracking-wider">
               // {hasSearched ? "Search Results" : "Latest Releases"}
             </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
               {results.map((anime) => (
                 <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} />
               ))}
             </div>
 
-            {/* Pagination */}
-            <div className="flex items-center justify-center gap-4 mt-8">
-              <button
-                type="button"
-                onClick={() => goToPage(page - 1)}
-                disabled={page === 1}
-                className="bg-[var(--panel)] border border-[var(--accent)]/30 px-4 py-2 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors rounded-none flex items-center gap-1.5"
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  aria-hidden="true"
+            {/* Load More */}
+            {hasNextPage && (
+              <div className="flex justify-center mt-8">
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none"
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-                </svg>
-                Prev
-              </button>
-              <span className="text-[var(--accent)] font-mono text-sm">
-                Page {page}
-              </span>
-              <button
-                type="button"
-                onClick={() => goToPage(page + 1)}
-                disabled={!hasNextPage}
-                className="bg-[var(--panel)] border border-[var(--accent)]/30 px-4 py-2 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors rounded-none flex items-center gap-1.5"
-              >
-                Next
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  aria-hidden="true"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-              </button>
-            </div>
+                  {loadingMore ? "Loading..." : "Load More"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

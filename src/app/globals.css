@@ -120,6 +120,23 @@ input[type="range"]::-moz-range-thumb {
   animation: fadeIn 0.4s ease-out both;
 }
 
+/* ── Diagonal 4-part pulse (loading skeleton) ──────────── */
+
+@keyframes diagonalPulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+.diagonal-pulse-section {
+  animation: diagonalPulse 1.2s ease-in-out infinite;
+  background: rgba(var(--accent-rgb), 0.3);
+}
+
+.diagonal-pulse-section:nth-child(1) { animation-delay: 0s; }
+.diagonal-pulse-section:nth-child(2) { animation-delay: 0.15s; }
+.diagonal-pulse-section:nth-child(3) { animation-delay: 0.3s; }
+.diagonal-pulse-section:nth-child(4) { animation-delay: 0.45s; }
+
 /* ── Line clamp utility ────────────────────────────────── */
 
 .line-clamp-2 {

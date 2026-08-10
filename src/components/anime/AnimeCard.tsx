@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 
 interface AnimeCardAnime {
@@ -11,9 +13,10 @@ interface AnimeCardAnime {
 interface AnimeCardProps {
   anime: AnimeCardAnime;
   href?: string;
+  loading?: boolean;
 }
 
-export default function AnimeCard({ anime, href }: AnimeCardProps) {
+export default function AnimeCard({ anime, href, loading }: AnimeCardProps) {
   const linkHref = href ?? `/anime/${anime.id}`;
 
   return (
@@ -25,12 +28,42 @@ export default function AnimeCard({ anime, href }: AnimeCardProps) {
     >
       {/* Cover image */}
       <div className="aspect-[3/4] relative overflow-hidden bg-[var(--background)] rounded-none">
-        <img
-          src={anime.image}
-          alt={anime.title}
-          className="w-full h-full object-cover"
-          loading="lazy"
-        />
+        {loading ? (
+          <>
+            {/* Diagonal 4-part pulse loading overlay */}
+            <div className="absolute inset-0 z-10 pointer-events-none">
+              {/* Top triangle */}
+              <div
+                className="diagonal-pulse-section absolute inset-0"
+                style={{ clipPath: "polygon(0 0, 100% 0, 50% 50%)" }}
+              />
+              {/* Right triangle */}
+              <div
+                className="diagonal-pulse-section absolute inset-0"
+                style={{ clipPath: "polygon(100% 0, 100% 100%, 50% 50%)" }}
+              />
+              {/* Bottom triangle */}
+              <div
+                className="diagonal-pulse-section absolute inset-0"
+                style={{ clipPath: "polygon(0 100%, 100% 100%, 50% 50%)" }}
+              />
+              {/* Left triangle */}
+              <div
+                className="diagonal-pulse-section absolute inset-0"
+                style={{ clipPath: "polygon(0 0, 0 100%, 50% 50%)" }}
+              />
+            </div>
+            {/* Dimmed placeholder behind the pulse */}
+            <div className="absolute inset-0 bg-[var(--panel)]" />
+          </>
+        ) : (
+          <img
+            src={anime.image}
+            alt={anime.title}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        )}
         {/* Diagonal accent line */}
         <div className="absolute top-0 right-0 w-12 h-12 bg-gradient-to-bl from-[var(--accent)]/20 to-transparent pointer-events-none" />
       </div>
@@ -38,10 +71,10 @@ export default function AnimeCard({ anime, href }: AnimeCardProps) {
       {/* Info */}
       <div className="p-3 space-y-1.5">
         <h3 className="text-sm font-bold text-white line-clamp-2 leading-tight uppercase tracking-wider">
-          {anime.title}
+          {loading ? "\u00A0" : anime.title}
         </h3>
 
-        {anime.genres && anime.genres.length > 0 && (
+        {!loading && anime.genres && anime.genres.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {anime.genres.slice(0, 3).map((genre) => (
               <span
@@ -51,6 +84,12 @@ export default function AnimeCard({ anime, href }: AnimeCardProps) {
                 {genre}
               </span>
             ))}
+          </div>
+        )}
+        {loading && (
+          <div className="flex gap-1">
+            <div className="h-2.5 w-12 bg-[var(--accent)]/10 rounded-none animate-pulse" />
+            <div className="h-2.5 w-8 bg-[var(--accent)]/10 rounded-none animate-pulse" />
           </div>
         )}
       </div>

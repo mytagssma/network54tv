@@ -21,7 +21,7 @@ export default async function BrowsePage({ searchParams }: BrowsePageProps) {
       const data = await searchAnime(query, page);
       const toCard = (a: Anime) => ({ id: a.id, title: a.title, image: a.coverImage, genres: a.genres, rating: a.score });
       results = data.media.length > 0 ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-5 gap-3">
           {data.media.map((a) => <AnimeCard key={a.id} anime={toCard(a)} />)}
         </div>
       ) : (
@@ -50,7 +50,7 @@ export default async function BrowsePage({ searchParams }: BrowsePageProps) {
               </svg>
               <h2 className="text-lg font-black text-[var(--accent)] uppercase tracking-wider font-mono">Trending Now</h2>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-5 gap-3">
               {trendingData.media.map((a) => <AnimeCard key={a.id} anime={toCard(a)} />)}
             </div>
           </div>
@@ -62,7 +62,7 @@ export default async function BrowsePage({ searchParams }: BrowsePageProps) {
               </svg>
               <h2 className="text-lg font-black text-[var(--accent)]/70 uppercase tracking-wider font-mono">Most Popular</h2>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-5 gap-3">
               {popularData.media.map((a) => <AnimeCard key={a.id} anime={toCard(a)} />)}
             </div>
           </div>
