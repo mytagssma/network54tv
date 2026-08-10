@@ -63,7 +63,7 @@ export default function Home() {
     async function loadLatest() {
       setLoading(true);
       try {
-        const data = await getRecentlyAiredClient(4, 1, 20);
+        const data = await getRecentlyAiredClient(4, 1, 24);
         setResults(data.media);
         setHasNextPage(data.hasNextPage);
       } catch {
@@ -103,7 +103,7 @@ export default function Home() {
       const trimmed = query.trim();
       const data = trimmed || hasActiveFilters
         ? await searchAnimeClient(trimmed, nextPage, 24, getFilters())
-        : await getRecentlyAiredClient(4, nextPage, 20);
+        : await getRecentlyAiredClient(4, nextPage, 24);
       setResults((prev) => [...prev, ...data.media]);
       setHasNextPage(data.hasNextPage);
       setPage(nextPage);
@@ -127,7 +127,7 @@ export default function Home() {
     setError("");
     setPage(1);
     setLoading(true);
-    getRecentlyAiredClient(4, 1, 20)
+    getRecentlyAiredClient(4, 1, 24)
       .then((data) => {
         setResults(data.media);
         setHasNextPage(data.hasNextPage);
@@ -386,11 +386,9 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 text-[var(--accent)] uppercase tracking-wider">
               // {hasSearched ? "Search Results" : "Latest Releases"}
             </h2>
-            <div className="columns-2 sm:columns-3 md:columns-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
               {results.map((anime) => (
-                <div key={anime.id} className="break-inside-avoid mb-4">
-                  <AnimeCard anime={mapAnimeToCard(anime)} />
-                </div>
+                <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} />
               ))}
             </div>
 
