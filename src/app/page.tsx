@@ -386,9 +386,11 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 text-[var(--accent)] uppercase tracking-wider">
               // {hasSearched ? "Search Results" : "Latest Releases"}
             </h2>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-4">
+            <div className="columns-2 sm:columns-3 md:columns-4 gap-4">
               {results.map((anime) => (
-                <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} />
+                <div key={anime.id} className="break-inside-avoid mb-4">
+                  <AnimeCard anime={mapAnimeToCard(anime)} />
+                </div>
               ))}
             </div>
 
