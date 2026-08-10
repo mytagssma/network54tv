@@ -63,7 +63,7 @@ export default function Home() {
     async function loadLatest() {
       setLoading(true);
       try {
-        const data = await getRecentlyAiredClient(4, 1, 24);
+        const data = await getRecentlyAiredClient(30, 1, 24);
         setResults(data.media);
         setHasNextPage(data.hasNextPage);
       } catch {
@@ -103,7 +103,7 @@ export default function Home() {
       const trimmed = query.trim();
       const data = trimmed || hasActiveFilters
         ? await searchAnimeClient(trimmed, nextPage, 24, getFilters())
-        : await getRecentlyAiredClient(4, nextPage, 24);
+        : await getRecentlyAiredClient(30, nextPage, 24);
       setResults((prev) => [...prev, ...data.media]);
       setHasNextPage(data.hasNextPage);
       setPage(nextPage);
@@ -127,7 +127,7 @@ export default function Home() {
     setError("");
     setPage(1);
     setLoading(true);
-    getRecentlyAiredClient(4, 1, 24)
+    getRecentlyAiredClient(30, 1, 24)
       .then((data) => {
         setResults(data.media);
         setHasNextPage(data.hasNextPage);
