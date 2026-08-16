@@ -32,11 +32,12 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
     }
   }, [animeTitle, animeId]);
 
-  // Read provider from localStorage on mount
+  // Read provider from localStorage on mount and fetch episodes immediately
   useEffect(() => {
     const stored = localStorage.getItem("n54tv-provider") || "";
     setProvider(stored);
-  }, []);
+    fetchEpisodes(stored);
+  }, [fetchEpisodes]);
 
   // Listen for provider-changed custom event
   useEffect(() => {

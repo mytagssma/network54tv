@@ -350,7 +350,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (fid === fetchIdRef.current) setLoading(false);
       }
     },
-    [animeTitle, episodeNumber, anilistId, loadHls]
+    [animeTitle, episodeNumber, anilistId, providerId, loadHls]
   );
 
   // ─── Probe a specific server for a given type ──────────
@@ -383,7 +383,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       } catch { /* skip */ }
       return null;
     },
-    [animeTitle, episodeNumber, anilistId]
+    [animeTitle, episodeNumber, anilistId, providerId]
   );
 
   // ─── Auto-detect all working servers ──────────────────
