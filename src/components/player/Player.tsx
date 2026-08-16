@@ -1237,7 +1237,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           <div className="text-center max-w-sm">
             <p className="text-[#9a9aa0] text-sm mb-2">Stream unavailable</p>
             <p className="text-[#6b6b70] text-xs mb-4">
-              No working sources found. Try a different episode or check back later.
+              {providerId ? `No working sources from ${providerId}. ` : ""}Try a different episode or check back later.
             </p>
             <button
               onClick={() => { destroyHls(); loadByType(audioType); }}

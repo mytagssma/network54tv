@@ -59,7 +59,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         sources: [],
         subtitles: [],
-        error: "No streaming sources found from any provider",
+        error: `No streaming sources available for this episode from the current providers. Try selecting a different provider.`,
+        providerId,
       });
     }
 
