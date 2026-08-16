@@ -1,8 +1,7 @@
 import { getAnimeById } from "@/lib/anilist";
-import { getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
 import ExpandableDescription from "@/components/ui/ExpandableDescription";
-import EpisodeList from "@/components/anime/EpisodeList";
+import EpisodeListFetcher from "@/components/anime/EpisodeListFetcher";
 
 export const revalidate = 300;
 
@@ -16,16 +15,8 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
   const animeId = parseInt(id, 10);
   if (isNaN(animeId)) notFound();
 
-  const { provider } = await searchParams;
-
   const anime = await getAnimeById(animeId);
   if (!anime) notFound();
-
-  const episodes = await getEpisodes(anime.title, animeId, provider);
-
-  // null = unknown → assume subbed (most content is subbed); dub only when explicitly true
-  const subCount = episodes.filter((ep) => ep.hasSub !== false).length;
-  const dubCount = episodes.filter((ep) => ep.hasDub === true).length;
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-gray-100">
@@ -114,30 +105,8 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
           </div>
         </div>
 
-        {/* ── Episode List Section ── */}
-        <div>
-          <div className="flex items-center gap-4 mb-5">
-            <h2 className="text-xl font-bold text-[var(--accent)] uppercase tracking-wider">
-              // Episodes
-            </h2>
-            {episodes.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
-                  Sub {subCount}
-                </span>
-                <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
-                  Dub {dubCount}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {episodes.length > 0 ? (
-            <EpisodeList episodes={episodes} animeId={animeId} />
-          ) : (
-            <p className="text-[#6b6b70] italic">No episodes available.</p>
-          )}
-        </div>
+        {/* ── Episode List (client-fetched, responds to provider changes) ── */}
+        <EpisodeListFetcher animeTitle={anime.title} animeId={animeId} initialEpisodes={[]} />
       </div>
     </div>
   );
