@@ -38,6 +38,8 @@ export default function Navbar() {
     setProviderState(id);
     localStorage.setItem("n54tv-provider", id);
     setProviderOpen(false);
+    // Reload so all components (AnimeCard links, data fetches) pick up the new provider
+    window.location.reload();
   };
 
   // Close provider dropdown on outside click
