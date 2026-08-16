@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import AccentColorSelector from "@/components/ui/AccentColorSelector";
 
@@ -22,7 +22,10 @@ function getStoredProvider(): string {
 
 export default function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const isWatchPage = pathname?.includes("/watch/");
+  const isAnimePage = pathname?.includes("/anime/");
   const [hidden, setHidden] = useState(false);
   const lastScrollRef = useRef(0);
   const [provider, setProviderState] = useState("");
@@ -38,8 +41,19 @@ export default function Navbar() {
     setProviderState(id);
     localStorage.setItem("n54tv-provider", id);
     setProviderOpen(false);
-    // Reload so all components (AnimeCard links, data fetches) pick up the new provider
-    window.location.reload();
+
+    // If on an anime page, update the URL param and refresh server data only
+    if (isAnimePage) {
+      const params = new URLSearchParams(searchParams.toString());
+      if (id) {
+        params.set("provider", id);
+      } else {
+        params.delete("provider");
+      }
+      const qs = params.toString();
+      router.replace(`${pathname}${qs ? `?${qs}` : ""}`);
+      router.refresh();
+    }
   };
 
   // Close provider dropdown on outside click
