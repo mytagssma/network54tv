@@ -8,10 +8,12 @@ export const revalidate = 0;
 
 interface Props {
   params: Promise<{ id: string; episode: string }>;
+  searchParams: Promise<{ provider?: string }>;
 }
 
-export default async function WatchPage({ params }: Props) {
+export default async function WatchPage({ params, searchParams }: Props) {
   const { id, episode } = await params;
+  const { provider } = await searchParams;
   const animeId = parseInt(id, 10);
   const episodeNumber = parseInt(episode, 10);
   if (isNaN(animeId) || isNaN(episodeNumber)) notFound();
@@ -19,7 +21,7 @@ export default async function WatchPage({ params }: Props) {
   const anime = await getAnimeById(animeId);
   if (!anime) notFound();
 
-  const episodes = await getEpisodes(anime.title, animeId);
+  const episodes = await getEpisodes(anime.title, animeId, provider);
 
   // Find current episode's providerId for consistent stream fetching
   const currentEp = episodes.find((ep) => ep.number === episodeNumber);
@@ -35,6 +37,7 @@ export default async function WatchPage({ params }: Props) {
     currentEpIndex < availableEpisodes.length - 1
       ? availableEpisodes[currentEpIndex + 1]
       : null;
+  const providerQs = provider ? `?provider=${provider}` : "";
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
@@ -48,7 +51,7 @@ export default async function WatchPage({ params }: Props) {
         </Link>
         <span className="text-[var(--accent)]">/</span>
         <Link
-          href={`/anime/${animeId}`}
+          href={`/anime/${animeId}${providerQs}`}
           className="text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors truncate max-w-[200px]"
         >
           {anime.title}
@@ -74,7 +77,7 @@ export default async function WatchPage({ params }: Props) {
         <div>
           {prevEp && (
             <Link
-              href={`/anime/${animeId}/watch/${prevEp.number}`}
+              href={`/anime/${animeId}/watch/${prevEp.number}${providerQs}`}
               className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none"
             >
               <svg
@@ -94,7 +97,7 @@ export default async function WatchPage({ params }: Props) {
 
         <div>
           <Link
-            href={`/anime/${animeId}`}
+              href={`/anime/${animeId}${providerQs}`}
             className="text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors uppercase tracking-wider"
           >
             All Episodes
@@ -104,7 +107,7 @@ export default async function WatchPage({ params }: Props) {
         <div>
           {nextEp && (
             <Link
-              href={`/anime/${animeId}/watch/${nextEp.number}`}
+              href={`/anime/${animeId}/watch/${nextEp.number}${providerQs}`}
               className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none"
             >
               <span className="hidden sm:inline">
@@ -137,7 +140,7 @@ export default async function WatchPage({ params }: Props) {
                 return (
                   <Link
                     key={ep.number}
-                    href={`/anime/${animeId}/watch/${ep.number}`}
+                    href={`/anime/${animeId}/watch/${ep.number}${providerQs}`}
                     className={`text-center py-3 text-xs sm:py-2 font-mono border transition-all duration-200 rounded-none min-h-[44px] flex items-center justify-center ${
                       isCurrent
                         ? "bg-[var(--accent)] border-[var(--accent)] text-black font-bold"

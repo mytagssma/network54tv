@@ -7,10 +7,12 @@ import type { Episode } from "@/types/anime";
 interface EpisodeListProps {
   episodes: Episode[];
   animeId: number;
+  provider?: string;
 }
 
-export default function EpisodeList({ episodes, animeId }: EpisodeListProps) {
+export default function EpisodeList({ episodes, animeId, provider }: EpisodeListProps) {
   const [clickedEp, setClickedEp] = useState<number | null>(null);
+  const providerQs = provider ? `?provider=${provider}` : "";
 
   return (
     <div className="grid gap-2 sm:gap-3 max-h-[60vh] sm:max-h-none overflow-y-auto">
@@ -21,7 +23,7 @@ export default function EpisodeList({ episodes, animeId }: EpisodeListProps) {
         return isAvailable ? (
           <Link
             key={`${episode.id}-${episode.number}`}
-            href={`/anime/${animeId}/watch/${episode.number}`}
+            href={`/anime/${animeId}/watch/${episode.number}${providerQs}`}
             onClick={() => setClickedEp(episode.number)}
             className={`flex items-center gap-3 sm:gap-4 p-3 sm:p-4 transition-all group rounded-none ${
               isClicked

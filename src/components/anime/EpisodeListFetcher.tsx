@@ -88,7 +88,7 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
       </div>
 
       {episodes.length > 0 ? (
-        <EpisodeList episodes={episodes} animeId={animeId} />
+        <EpisodeList episodes={episodes} animeId={animeId} provider={provider} />
       ) : (
         <p className="text-[#6b6b70] italic">
           {loading ? "Fetching episodes..." : "No episodes available."}
