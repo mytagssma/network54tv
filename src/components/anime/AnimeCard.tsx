@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 interface AnimeCardAnime {
   id: number;
@@ -17,7 +18,14 @@ interface AnimeCardProps {
 }
 
 export default function AnimeCard({ anime, href, loading }: AnimeCardProps) {
-  const linkHref = href ?? `/anime/${anime.id}`;
+  const [provider, setProvider] = useState("");
+
+  useEffect(() => {
+    setProvider(localStorage.getItem("n54tv-provider") || "");
+  }, []);
+
+  const baseHref = href ?? `/anime/${anime.id}`;
+  const linkHref = provider ? `${baseHref}?provider=${provider}` : baseHref;
 
   return (
     <Link
