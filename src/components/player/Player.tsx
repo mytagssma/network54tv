@@ -1113,6 +1113,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           setMuted(nv === 0); }
           resetControlsTimer();
           break;
+        case 'Escape':
+          setShowSettings(false);
+          setShowServerPicker(false);
+          setShowQualityPicker(false);
+          setShowSpeedPicker(false);
+          setShowSubPicker(false);
+          break;
         case ',':
           if (!e.shiftKey) break;
           e.preventDefault();
@@ -1209,7 +1216,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 {/* Loading overlay — simple terminal progress bar */}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10 pointer-events-none">
-          <div className="flex flex-col items-center gap-4 w-80">
+          <div className="flex flex-col items-center gap-4 w-80 max-w-[85%]">
             <div className="w-full h-2 bg-[#0a0a0f] border border-[var(--accent)]/30 relative overflow-hidden">
               <div className="absolute inset-y-0 left-0 h-full bg-[var(--accent)] animate-loading-bar" />
             </div>
@@ -1241,7 +1248,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </p>
             <button
               onClick={() => { destroyHls(); loadByType(audioType); }}
-              className="text-xs px-4 py-2 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none"
+              className="text-xs px-5 py-2.5 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none min-h-[44px]"
             >
               Retry
             </button>
@@ -1293,8 +1300,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             step={0.1}
             value={currentTime}
             onChange={handleSeek}
-            className="w-full h-1 appearance-none cursor-pointer relative z-10
-                       group-hover/bar:h-1.5
+            className="progress-range w-full h-1 appearance-none cursor-pointer relative z-10
                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
                        [&::-webkit-slider-thumb]:-mt-[4px] [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none
                        [&::-webkit-slider-thumb]:shadow-md
@@ -1360,7 +1366,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </div>
 
             {/* Time */}
-            <span className="text-xs sm:text-sm text-[var(--accent)]/50 tabular-nums font-mono select-none leading-none hidden sm:inline">
+            <span className="text-xs sm:text-sm text-[var(--accent)]/50 tabular-nums font-mono select-none leading-none">
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
           </div>
@@ -1589,8 +1595,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
             {/* Enter fullscreen (hidden when already fullscreen — top-right exit button handles that) */}
             {!isFullscreen && (
-              <button onClick={toggleFullscreen} className="w-8 h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors">
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+              <button onClick={toggleFullscreen} className="w-11 h-11 sm:w-8 sm:h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors">
+                <svg className="w-5 h-5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
                 </svg>
               </button>

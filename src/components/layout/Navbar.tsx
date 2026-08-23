@@ -56,6 +56,16 @@ export default function Navbar() {
     return () => document.removeEventListener("pointerdown", handler);
   }, [providerOpen]);
 
+  // Close provider dropdown on Escape
+  useEffect(() => {
+    if (!providerOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setProviderOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [providerOpen]);
+
   useEffect(() => {
     if (!isWatchPage) {
       setHidden(false);
@@ -102,7 +112,7 @@ export default function Navbar() {
             <div ref={providerMenuRef} className="relative">
               <button
                 onClick={() => setProviderOpen(!providerOpen)}
-                className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-[11px] font-mono uppercase tracking-wider transition-colors border border-[var(--accent)]/20 px-2 py-1 hover:border-[var(--accent)]/40 rounded-none"
+                className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-[11px] font-mono uppercase tracking-wider transition-colors border border-[var(--accent)]/20 px-2 py-1.5 sm:py-1 hover:border-[var(--accent)]/40 rounded-none min-h-[36px]"
               >
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
@@ -118,7 +128,7 @@ export default function Navbar() {
                     <button
                       key={p.id}
                       onClick={() => setProvider(p.id)}
-                      className={`w-full text-left px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors rounded-none ${
+                      className={`w-full text-left px-3 py-2.5 sm:py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors rounded-none ${
                         provider === p.id
                           ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
                           : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
@@ -134,7 +144,7 @@ export default function Navbar() {
             <AccentColorSelector />
             <Link
               href="/"
-              className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-xs font-medium uppercase tracking-wider transition-colors"
+              className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-xs font-medium uppercase tracking-wider transition-colors py-2"
             >
               <svg
                 className="w-4 h-4"

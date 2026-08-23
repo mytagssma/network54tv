@@ -51,7 +51,7 @@ export default function ExpandableDescription({ description, maxLines = 3 }: Exp
       </p>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="mt-2 text-xs font-mono text-[var(--accent)]/70 hover:text-[var(--accent)] uppercase tracking-wider transition-colors"
+        className="mt-2 inline-block py-1 text-xs font-mono text-[var(--accent)]/70 hover:text-[var(--accent)] uppercase tracking-wider transition-colors"
       >
         {expanded ? "Show Less" : "Show More"}
       </button>

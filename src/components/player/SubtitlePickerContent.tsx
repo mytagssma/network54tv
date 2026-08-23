@@ -94,7 +94,7 @@ export default function SubtitlePickerContent({
           <span className="text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-mono">Offset</span>
           <button
             onClick={() => onOffsetChange(Math.max(-5, subtitleOffset - 0.5))}
-            className="w-6 h-5 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 text-xs"
+            className="w-7 h-7 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 text-xs"
           >
             −
           </button>
@@ -103,7 +103,7 @@ export default function SubtitlePickerContent({
           </span>
           <button
             onClick={() => onOffsetChange(Math.min(5, subtitleOffset + 0.5))}
-            className="w-6 h-5 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 text-xs"
+            className="w-7 h-7 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 text-xs"
           >
             +
           </button>

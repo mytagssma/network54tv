@@ -78,7 +78,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
           {prevEp && (
             <Link
               href={`/anime/${animeId}/watch/${prevEp.number}${providerQs}`}
-              className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none"
+              className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none min-h-[44px] sm:min-h-0"
             >
               <svg
                 className="w-4 h-4"
@@ -98,7 +98,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
         <div>
           <Link
               href={`/anime/${animeId}${providerQs}`}
-            className="text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors uppercase tracking-wider"
+            className="text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors uppercase tracking-wider py-2 inline-block"
           >
             All Episodes
           </Link>
@@ -108,7 +108,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
           {nextEp && (
             <Link
               href={`/anime/${animeId}/watch/${nextEp.number}${providerQs}`}
-              className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none"
+              className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none min-h-[44px] sm:min-h-0"
             >
               <span className="hidden sm:inline">
                 EP {String(nextEp.number).padStart(2, "0")}
@@ -130,7 +130,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
       {episodes.length > 0 && (
         <div className="mt-8">
           <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider mb-3">
-            Episodes
+            // Episodes
           </h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
             {episodes.map((ep) => {

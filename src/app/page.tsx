@@ -163,7 +163,7 @@ export default function Home() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search anime..."
-                  className="w-full bg-[var(--panel)] border border-[var(--accent)]/30 pl-10 pr-4 py-2.5 text-white placeholder-[var(--text-decorative)] focus:outline-none focus:border-[var(--accent)] focus:accent-shadow-sm transition-all font-mono text-sm rounded-none"
+                  className="w-full bg-[var(--panel)] border border-[var(--accent)]/30 pl-10 pr-4 py-2.5 text-white placeholder-[var(--text-decorative)] focus:outline-none focus:border-[var(--accent)] focus:accent-shadow-sm transition-all font-mono text-sm rounded-none min-h-[44px] sm:min-h-0"
                 />
               </div>
               {/* Buttons row - stacked on mobile, inline on desktop */}
@@ -171,7 +171,7 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-black px-6 py-2.5 font-bold uppercase tracking-wider text-sm transition-all accent-shadow-md rounded-none flex items-center justify-center gap-2"
+                  className="bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-black px-6 py-2.5 font-bold uppercase tracking-wider text-sm transition-all accent-shadow-md rounded-none flex items-center justify-center gap-2 min-h-[44px] sm:min-h-0"
                 >
                   <svg
                     className="w-4 h-4"
@@ -189,7 +189,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={handleClear}
-                    className="bg-transparent hover:bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30 px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5"
+                    className="bg-transparent hover:bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30 px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0"
                   >
                     <svg
                       className="w-4 h-4"
@@ -207,7 +207,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 ${
+                  className={`px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 ${
                     showFilters || hasActiveFilters
                       ? "bg-[var(--accent)] text-black"
                       : "bg-transparent text-[var(--accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/10"
@@ -386,7 +386,7 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 text-[var(--accent)] uppercase tracking-wider">
               // {hasSearched ? "Search Results" : "Latest Releases"}
             </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
               {results.map((anime) => (
                 <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} />
               ))}
@@ -399,7 +399,7 @@ export default function Home() {
                   type="button"
                   onClick={loadMore}
                   disabled={loadingMore}
-                  className="bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none"
+                  className="bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none min-h-[44px] sm:min-h-0"
                 >
                   {loadingMore ? "Loading..." : "Load More"}
                 </button>

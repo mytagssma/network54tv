@@ -19,18 +19,24 @@ html {
   color: var(--foreground);
 }
 
-body {
-  background: var(--background);
-  min-height: 100vh;
-}
-
 /* ── Base body ─────────────────────────────────────────── */
 
 body {
   background: var(--background);
   color: var(--foreground);
+  min-height: 100vh;
   font-family: "Iosevka", system-ui, sans-serif;
   overflow-x: hidden;
+}
+
+/* ── Keyboard focus (mouse clicks stay clean) ──────────── */
+
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible,
+input[type="range"]:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
 }
 
 /* ── Selection ─────────────────────────────────────────── */
@@ -200,11 +206,27 @@ input[type="range"]::-moz-range-thumb {
 /* ── Accent color swatch selector ──────────────────────── */
 
 .accent-swatch {
+  position: relative;
   width: 14px;
   height: 14px;
-  clip-path: polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%);
   transition: all 0.15s ease;
   cursor: pointer;
+}
+
+/* Clipped color layer (kept off the button so the tap target isn't clipped) */
+.accent-swatch::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: inherit;
+  clip-path: polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%);
+}
+
+/* Invisible hit-area expansion for touch, no visual change */
+.accent-swatch::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
 }
 
 .accent-swatch:hover {
@@ -215,4 +237,16 @@ input[type="range"]::-moz-range-thumb {
   outline: 1px solid currentColor;
   outline-offset: 2px;
   transform: scale(1.2);
+}
+
+/* ── Player progress bar — hover thickening (works in WebKit + Firefox) ── */
+
+.progress-range::-webkit-slider-runnable-track,
+.progress-range::-moz-range-track {
+  transition: height 0.15s ease;
+}
+
+.progress-range:hover::-webkit-slider-runnable-track,
+.progress-range:hover::-moz-range-track {
+  height: 6px;
 }

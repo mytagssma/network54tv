@@ -57,7 +57,7 @@ export default function EpisodeList({ episodes, animeId, provider }: EpisodeList
             key={`${episode.id}-${episode.number}`}
             className="flex items-center gap-3 sm:gap-4 bg-[#131318] border-l-2 border-[#6b6b70]/30 p-3 sm:p-4 rounded-none opacity-50 cursor-not-allowed"
           >
-            <span className="text-[#6b6b70] font-mono text-sm w-8 text-right shrink-0 font-bold">
+            <span className="text-[#6b6b70] font-mono text-xs w-7 text-right shrink-0 font-bold">
               {String(episode.number).padStart(2, "0")}
             </span>
             <div className="flex-1 min-w-0">

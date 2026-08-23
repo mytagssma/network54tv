@@ -295,7 +295,7 @@ export default function SubtitleOverlay({
     : "text-sm sm:text-base md:text-lg";
 
   return (
-    <div className="absolute bottom-12 sm:bottom-16 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4">
+    <div className="absolute bottom-16 sm:bottom-20 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4">
       {activeText.map((text, i) => {
         const lines = text.split(/<br\s*\/?>/i).flatMap((l) => l.split("\n"));
 
