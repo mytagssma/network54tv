@@ -22,7 +22,9 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
     <div className="min-h-screen bg-[var(--background)] text-white">
       <div className="max-w-6xl mx-auto px-4 py-8">
         {/* ── Anime Info Section ── */}
-        <div className="grid md:grid-cols-3 gap-8 mb-12">
+        {/* Mobile: compact poster beside title, synopsis full-width below.
+            Desktop (md+): unchanged 3-col grid — poster left, details right. */}
+        <div className="grid grid-cols-[7.5rem_1fr] md:grid-cols-3 gap-x-4 gap-y-5 md:gap-8 items-start mb-12">
           {/* Cover Image */}
           <div className="md:col-span-1">
             <div className="overflow-hidden border border-[var(--accent)]/10 rounded-none">
@@ -34,8 +36,8 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
             </div>
           </div>
 
-          {/* Details */}
-          <div className="md:col-span-2 space-y-5">
+          {/* Title(s) + status badges */}
+          <div className="min-w-0 space-y-5 md:col-span-2">
             {/* Title(s) */}
             <div>
               <h1 className="text-2xl font-bold text-white uppercase tracking-wider">{anime.title}</h1>
@@ -69,7 +71,10 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
                 </span>
               )}
             </div>
+          </div>
 
+          {/* Synopsis + Genres — full width on mobile, right column on desktop */}
+          <div className="col-span-2 md:col-span-2 md:col-start-2 space-y-5">
             {/* Description */}
             <div>
               <h2 className="text-lg font-semibold mb-2 text-[var(--accent)] uppercase tracking-wider">

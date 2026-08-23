@@ -166,12 +166,12 @@ export default function Home() {
                   className="w-full bg-[var(--panel)] border border-[var(--accent)]/30 pl-10 pr-4 py-2.5 text-white placeholder-[var(--text-decorative)] focus:outline-none focus:border-[var(--accent)] focus:accent-shadow-sm transition-all font-mono text-sm rounded-none min-h-[44px] sm:min-h-0"
                 />
               </div>
-              {/* Buttons row - stacked on mobile, inline on desktop */}
-              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+              {/* Buttons row - side by side on mobile, inline on desktop */}
+              <div className="flex gap-2 w-full sm:w-auto">
                 <button
                   type="submit"
                   disabled={loading}
-                  className="bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-black px-6 py-2.5 font-bold uppercase tracking-wider text-sm transition-all accent-shadow-md rounded-none flex items-center justify-center gap-2 min-h-[44px] sm:min-h-0"
+                  className="bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-black px-6 py-2.5 font-bold uppercase tracking-wider text-sm transition-all accent-shadow-md rounded-none flex items-center justify-center gap-2 min-h-[44px] sm:min-h-0 flex-1 sm:flex-none"
                 >
                   <svg
                     className="w-4 h-4"
@@ -189,7 +189,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={handleClear}
-                    className="bg-transparent hover:bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30 px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0"
+                    className="bg-transparent hover:bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30 px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 flex-1 sm:flex-none"
                   >
                     <svg
                       className="w-4 h-4"
@@ -207,7 +207,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 ${
+                  className={`px-4 py-2.5 font-medium transition-colors rounded-none text-sm flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-0 flex-1 sm:flex-none ${
                     showFilters || hasActiveFilters
                       ? "bg-[var(--accent)] text-black"
                       : "bg-transparent text-[var(--accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/10"

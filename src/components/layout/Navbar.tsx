@@ -107,12 +107,12 @@ export default function Navbar() {
           </Link>
 
           {/* Right side: source selector + accent selector + search */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             {/* Source dropdown */}
             <div ref={providerMenuRef} className="relative">
               <button
                 onClick={() => setProviderOpen(!providerOpen)}
-                className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-[11px] font-mono uppercase tracking-wider transition-colors border border-[var(--accent)]/20 px-2 py-1.5 sm:py-1 hover:border-[var(--accent)]/40 rounded-none min-h-[36px]"
+                className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-[11px] font-mono uppercase tracking-wider transition-colors border border-[var(--accent)]/20 px-2 py-1.5 sm:py-1 hover:border-[var(--accent)]/40 rounded-none min-h-[44px] sm:min-h-[36px]"
               >
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
@@ -128,7 +128,7 @@ export default function Navbar() {
                     <button
                       key={p.id}
                       onClick={() => setProvider(p.id)}
-                      className={`w-full text-left px-3 py-2.5 sm:py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors rounded-none ${
+                      className={`w-full text-left px-3 py-2.5 sm:py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors rounded-none min-h-[44px] sm:min-h-0 flex items-center ${
                         provider === p.id
                           ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
                           : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
@@ -144,7 +144,7 @@ export default function Navbar() {
             <AccentColorSelector />
             <Link
               href="/"
-              className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-xs font-medium uppercase tracking-wider transition-colors py-2"
+              className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-xs font-medium uppercase tracking-wider transition-colors py-2 min-h-[44px] sm:min-h-0"
             >
               <svg
                 className="w-4 h-4"
