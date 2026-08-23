@@ -66,8 +66,8 @@ export default function Home() {
         const data = await getRecentlyAiredClient(30, 1, 24);
         setResults(data.media);
         setHasNextPage(data.hasNextPage);
-      } catch {
-        setError("Failed to load latest anime.");
+      } catch (e: any) {
+        setError(e?.message || "Failed to load latest anime.");
       } finally {
         setLoading(false);
       }
@@ -89,8 +89,8 @@ export default function Home() {
       const data = await searchAnimeClient(trimmed || "", 1, 24, getFilters());
       setResults(data.media);
       setHasNextPage(data.hasNextPage);
-    } catch {
-      setError("Search failed. Please try again.");
+    } catch (e: any) {
+      setError(e?.message || "Search failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -107,8 +107,8 @@ export default function Home() {
       setResults((prev) => [...prev, ...data.media]);
       setHasNextPage(data.hasNextPage);
       setPage(nextPage);
-    } catch {
-      setError("Failed to load more.");
+    } catch (e: any) {
+      setError(e?.message || "Failed to load more.");
     } finally {
       setLoadingMore(false);
     }

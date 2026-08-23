@@ -52,7 +52,17 @@ export async function POST(req: NextRequest) {
     });
 
     if (!res.ok) {
-      return NextResponse.json({ error: `AniList API error: ${res.status}` }, { status: res.status });
+      // Upstream failure (e.g. AniList outage) — serve stale cache if we have it
+      const stale = cache.get(cacheKey);
+      if (stale) {
+        return NextResponse.json({ data: stale.data, stale: true });
+      }
+      let upstreamMsg = `AniList API error: ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body?.errors?.[0]?.message) upstreamMsg = body.errors[0].message;
+      } catch { /* keep default */ }
+      return NextResponse.json({ error: upstreamMsg }, { status: res.status });
     }
 
     const json = await res.json();
