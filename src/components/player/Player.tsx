@@ -21,6 +21,20 @@ const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
+const FILTER_PRESETS = [
+  { id: "off", label: "Off", css: "none" },
+  { id: "vivid", label: "Anime Vivid", css: "brightness(1.05) contrast(1.1) saturate(1.3)" },
+  { id: "soft", label: "Anime Soft", css: "brightness(1.02) contrast(0.95) saturate(1.1)" },
+  { id: "cinema", label: "Cinema", css: "brightness(0.95) contrast(1.15) saturate(0.85) sepia(0.05)" },
+  { id: "sharp", label: "Sharp", css: "brightness(1) contrast(1.1) saturate(1.3)" },
+] as const;
+
+type FilterId = (typeof FILTER_PRESETS)[number]["id"];
+
+function getFilterCSS(id: FilterId): string {
+  return FILTER_PRESETS.find((f) => f.id === id)?.css ?? "none";
+}
+
 function formatTime(t: number): string {
   if (!isFinite(t) || t < 0) return "0:00";
   const h = Math.floor(t / 3600);
@@ -52,6 +66,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const qualityWrapRef = useRef<HTMLDivElement>(null);
   const speedWrapRef = useRef<HTMLDivElement>(null);
   const subWrapRef = useRef<HTMLDivElement>(null);
+  const filterWrapRef = useRef<HTMLDivElement>(null);
 
   // Stream state
   const [sources, setSources] = useState<StreamSource[]>([]);
@@ -88,6 +103,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Subtitle state
   const [activeSubtitle, setActiveSubtitle] = useState<string | null>(null);
   const [showSubPicker, setShowSubPicker] = useState(false);
+
+  // Video filter state
+  const [videoFilter, setVideoFilter] = useState<FilterId>("off");
+  const [showFilterPicker, setShowFilterPicker] = useState(false);
 
   // Settings menu (mobile)
   const [showSettings, setShowSettings] = useState(false);
@@ -153,10 +172,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         autoSkip: autoSkipEnabled,
         autoPlayNext,
         audioType,
+        videoFilter,
         ts: Date.now(),
       }));
     } catch {}
-  }, [storageKey, activeSubtitle, subtitleOffset, subtitleSize, autoSkipEnabled, autoPlayNext, audioType]);
+  }, [storageKey, activeSubtitle, subtitleOffset, subtitleSize, autoSkipEnabled, autoPlayNext, audioType, videoFilter]);
 
   const restoreProgress = useCallback(() => {
     try {
@@ -777,10 +797,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
       if (showSpeedPicker && speedWrapRef.current && !speedWrapRef.current.contains(t)) setShowSpeedPicker(false);
       if (showSubPicker && subWrapRef.current && !subWrapRef.current.contains(t)) setShowSubPicker(false);
+      if (showFilterPicker && filterWrapRef.current && !filterWrapRef.current.contains(t)) setShowFilterPicker(false);
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showSettings, showServerPicker, showQualityPicker, showSpeedPicker, showSubPicker]);
+  }, [showSettings, showServerPicker, showQualityPicker, showSpeedPicker, showSubPicker, showFilterPicker]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -810,6 +831,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
         if (saved.subtitleSize === "small" || saved.subtitleSize === "medium" || saved.subtitleSize === "large") {
           setSubtitleSize(saved.subtitleSize);
+        }
+        if (saved.videoFilter && FILTER_PRESETS.some((f) => f.id === saved.videoFilter)) {
+          setVideoFilter(saved.videoFilter);
         }
       }
     }
@@ -1157,6 +1181,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           setShowQualityPicker(false);
           setShowSpeedPicker(false);
           setShowSubPicker(false);
+          setShowFilterPicker(false);
           break;
         case ',':
           if (!e.shiftKey) break;
@@ -1225,6 +1250,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           setShowQualityPicker(false);
           setShowSpeedPicker(false);
           setShowSubPicker(false);
+          setShowFilterPicker(false);
         }
       }}
     >
@@ -1232,6 +1258,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       <video
         ref={videoRef}
         className="w-full h-full object-contain"
+        style={{ filter: videoFilter === "off" ? undefined : getFilterCSS(videoFilter) }}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onPlay={() => setPlaying(true)}
@@ -1455,7 +1482,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               <div ref={serverWrapRef} className="relative h-full flex items-center gap-1">
                 <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden sm:inline">Srv</span>
                 <button
-                  onClick={() => { setShowServerPicker(!showServerPicker); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); }}
+                  onClick={() => { setShowServerPicker(!showServerPicker); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                   className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
                 >
                   {activeServer || "Auto"}
@@ -1485,7 +1512,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {availableQualities.length > 0 && (
               <div ref={qualityWrapRef} className="relative h-full flex items-center">
                 <button
-                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); }}
+                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                   className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
                 >
                   <svg className="w-3 h-3 opacity-60" fill="currentColor" viewBox="0 0 24 24">
@@ -1523,7 +1550,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Speed selector */}
             <div ref={speedWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); }}
+                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                 className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
               >
                 <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -1559,7 +1586,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Subtitle toggle + picker */}
             <div ref={subWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSubPicker(!showSubPicker); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSettings(false); }}
+                onClick={() => { setShowSubPicker(!showSubPicker); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                 className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
                   activeSubtitle
                     ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
@@ -1628,12 +1655,50 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </svg>
               SKIP
             </button>
+
+            {/* Video filter picker */}
+            <div ref={filterWrapRef} className="relative h-full flex items-center">
+              <button
+                onClick={() => { setShowFilterPicker(!showFilterPicker); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); }}
+                className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
+                  videoFilter !== "off"
+                    ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
+                    : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
+                }`}
+              >
+                <svg className="w-3 h-3 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+                </svg>
+                FX
+              </button>
+              {showFilterPicker && (
+                <div className="absolute right-0 bottom-full mb-1.5 w-40 bg-[#131318] border border-[var(--accent)]/20 shadow-xl overflow-hidden z-50 backdrop-blur-sm rounded-none">
+                  <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
+                    Filter
+                  </div>
+                  {FILTER_PRESETS.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => { setVideoFilter(f.id); setShowFilterPicker(false); }}
+                      className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
+                        videoFilter === f.id
+                          ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                          : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             </div>
 
             {/* Settings gear (mobile only) */}
             <button
               ref={gearRef}
-              onClick={() => { setShowSettings(!showSettings); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); }}
+              onClick={() => { setShowSettings(!showSettings); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowFilterPicker(false); }}
               className="w-11 h-11 sm:hidden flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors rounded-none"
             >
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -1673,7 +1738,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       {isFullscreen && (
         <button
           onClick={toggleFullscreen}
-          className="absolute top-4 right-4 z-40 min-w-[48px] min-h-[48px] w-11 h-11 sm:w-10 sm:h-10 flex items-center justify-center bg-black/60 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+          className={`absolute top-4 right-4 z-40 min-w-[48px] min-h-[48px] w-11 h-11 sm:w-10 sm:h-10 flex items-center justify-center bg-black/60 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors transition-opacity duration-300 ${
+            showControls ? "opacity-100" : "opacity-0 pointer-events-none"
+          }`}
         >
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
@@ -1786,6 +1853,26 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   }`}
                 >
                   {r}x
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Filter section */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Filter</div>
+            <div className="flex flex-wrap gap-1">
+              {FILTER_PRESETS.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setVideoFilter(f.id)}
+                  className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
+                    videoFilter === f.id
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
+                      : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
+                  }`}
+                >
+                  {f.label}
                 </button>
               ))}
             </div>
