@@ -3,25 +3,18 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 export const runtime = "edge";
 
-// CDN domains known to NOT enforce Referer checks on video segments.
-// Segments from these domains can be loaded directly by the browser,
-// bypassing the proxy round-trip entirely.
-const DIRECT_DOMAINS = new Set([
-  "megap.norami.site",
-  "megap.shiora.site",
-  "megap.kotocdn.site",
-  "vivibebe.site",
-]);
-
 /**
  * Proxies streaming requests with proper headers (Referer, Origin) that
  * the CDN requires but browsers won't send when loading HLS segments.
  *
- * For m3u8 manifests: rewrites all segment/sub-playlist URLs to also go
- * through this proxy so every request carries the required headers.
+ * The video element uses crossOrigin="anonymous" (required for MSE/hls.js),
+ * so ALL segment loads must go through this proxy — the CDN domains don't
+ * send CORS headers, which would cause browser requests to fail silently.
  *
- * For binary segments (.ts, .aac, etc.): if the CDN domain is known-safe,
- * redirects the browser directly (no proxy hop). Otherwise streams through.
+ * For m3u8 manifests: rewrites all segment/sub-playlist URLs to go through
+ * this proxy so every request carries the required headers + CORS.
+ *
+ * For binary segments (.ts, .aac, etc.): streams through with proper headers.
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -61,13 +54,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Internal URLs not allowed" }, { status: 403 });
     }
 
-    // Fast path: binary segments from known-safe CDN domains — redirect
-    // directly so the browser fetches without the proxy round-trip.
     const looksLikeM3u8 = decodedUrl.includes(".m3u8");
-    if (!looksLikeM3u8 && DIRECT_DOMAINS.has(hostname)) {
-      return NextResponse.redirect(decodedUrl, 302);
-    }
-
     const requestHeaders: Record<string, string> = {
       Referer: referer,
       Origin: origin,
@@ -107,14 +94,13 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // ── Parse m3u8 and rewrite URLs ──
-    // Only proxy URLs from the SAME host as the manifest. Sub-playlist and
-    // segment URLs from CDN domains pass through directly — avoids the
-    // per-segment proxy round-trip that causes stuttering on PC.
+    // ── Parse m3u8 and rewrite ALL URLs to go through the proxy ──
+    // Required because the video element has crossOrigin="anonymous" and CDN
+    // domains don't send CORS headers — segments loaded directly would be
+    // blocked by the browser's CORS enforcement.
     const text = await upstream.text();
     const baseUrl = decodedUrl.substring(0, decodedUrl.lastIndexOf("/") + 1);
     const ourOrigin = `${req.nextUrl.protocol}//${req.nextUrl.host}`;
-    const manifestHost = parsedUrl.hostname;
 
     const rewritten = text
       .split("\n")
@@ -127,21 +113,12 @@ export async function GET(req: NextRequest) {
           ? trimmed
           : new URL(trimmed, baseUrl).toString();
 
-        // Only proxy URLs from the same host as the manifest (e.g. anikoto's
-        // own embed pages). CDN segment URLs load directly — no extra hop.
-        let segHost: string;
-        try { segHost = new URL(absoluteUrl).hostname; } catch { return line; }
-
-        if (segHost === manifestHost) {
-          const proxyParams = new URLSearchParams({
-            url: absoluteUrl,
-            referer,
-            origin,
-          });
-          return `${ourOrigin}/api/proxy?${proxyParams}`;
-        }
-        // CDN segment — pass through directly
-        return absoluteUrl;
+        const proxyParams = new URLSearchParams({
+          url: absoluteUrl,
+          referer,
+          origin,
+        });
+        return `${ourOrigin}/api/proxy?${proxyParams}`;
       })
       .join("\n");
 
