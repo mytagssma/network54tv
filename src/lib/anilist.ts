@@ -292,7 +292,12 @@ async function fetchGraphQL(query: string, variables: Record<string, any>) {
   try {
     const res = await fetch(ANILIST_API, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Origin: "https://anilist.co",
+        Referer: "https://anilist.co/",
+      },
       body: JSON.stringify({ query, variables }),
       next: { revalidate: 300 },
     });

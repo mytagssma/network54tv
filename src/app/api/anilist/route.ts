@@ -125,7 +125,12 @@ export async function POST(req: NextRequest) {
   try {
     const res = await fetchWithRetry(ANILIST_API, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Origin: "https://anilist.co",
+        Referer: "https://anilist.co/",
+      },
       body: JSON.stringify({ query, variables }),
     });
 
