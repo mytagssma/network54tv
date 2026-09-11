@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+export const runtime = "edge";
+
+// CDN domains known to NOT enforce Referer checks on video segments.
+// Segments from these domains can be loaded directly by the browser,
+// bypassing the proxy round-trip entirely.
+const DIRECT_DOMAINS = new Set([
+  "megap.norami.site",
+  "megap.shiora.site",
+  "megap.kotocdn.site",
+  "vivibebe.site",
+]);
 
 /**
  * Proxies streaming requests with proper headers (Referer, Origin) that
@@ -10,11 +20,8 @@ export const runtime = "nodejs";
  * For m3u8 manifests: rewrites all segment/sub-playlist URLs to also go
  * through this proxy so every request carries the required headers.
  *
- * For binary segments (.ts, .aac, etc.): passes through as-is with headers.
- *
- * Usage:
- *   /api/proxy?url=https://megap.kotocdn.site/.../master.m3u8
- *   &referer=https://megaplay.buzz/&origin=https://megaplay.buzz
+ * For binary segments (.ts, .aac, etc.): if the CDN domain is known-safe,
+ * redirects the browser directly (no proxy hop). Otherwise streams through.
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -54,6 +61,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Internal URLs not allowed" }, { status: 403 });
     }
 
+    // Fast path: binary segments from known-safe CDN domains — redirect
+    // directly so the browser fetches without the proxy round-trip.
+    const looksLikeM3u8 = decodedUrl.includes(".m3u8");
+    if (!looksLikeM3u8 && DIRECT_DOMAINS.has(hostname)) {
+      return NextResponse.redirect(decodedUrl, 302);
+    }
+
     const requestHeaders: Record<string, string> = {
       Referer: referer,
       Origin: origin,
@@ -74,7 +88,7 @@ export async function GET(req: NextRequest) {
     const isM3u8 =
       contentType.includes("m3u8") ||
       contentType.includes("vnd.apple.mpegurl") ||
-      decodedUrl.includes(".m3u8");
+      looksLikeM3u8;
 
     // ── Pass through binary (TS, AAC, subtitles, etc.) using a streaming
     //    pipe so we don't buffer the entire segment in serverless memory.

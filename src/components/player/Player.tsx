@@ -239,25 +239,28 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           testBandwidth: true,
           abrEwmaDefaultEstimate: 2_000_000,
           startFragPrefetch: true,
-          maxLoadingDelay: 400,
+          maxLoadingDelay: 200,
 
-          // Buffer — lean forward for smooth playback
-          maxBufferLength: 15,
-          maxMaxBufferLength: 30,
-          maxBufferSize: 30 * 1000 * 1000,
-          backBufferLength: 15,
+          // Buffer — generous to avoid desktop stalling
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          maxBufferSize: 60 * 1000 * 1000,
+          backBufferLength: 30,
           maxBufferHole: 0.5,
 
-          // VOD: disable LL-HLS to avoid part scheduling jitter
+          // VOD: disable LL-HLS
           lowLatencyMode: false,
 
-          // Network resilience — retry faster to reduce stall time
+          // Network — aggressive retries reduce stall duration
           fragLoadingMaxRetry: 6,
-          fragLoadingRetryDelay: 300,
+          fragLoadingRetryDelay: 200,
           manifestLoadingMaxRetry: 4,
-          manifestLoadingRetryDelay: 200,
+          manifestLoadingRetryDelay: 100,
           levelLoadingMaxRetry: 4,
-          levelLoadingRetryDelay: 200,
+          levelLoadingRetryDelay: 100,
+          fragLoadingTimeOut: 15000,
+          manifestLoadingTimeOut: 8000,
+          levelLoadingTimeOut: 10000,
 
           // Cap quality to player size (saves bandwidth on mobile)
           capLevelToPlayerSize: true,
