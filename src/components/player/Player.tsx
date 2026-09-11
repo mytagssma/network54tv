@@ -1300,6 +1300,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           headers={streamHeaders || undefined}
           offset={subtitleOffset}
           size={subtitleSize}
+          controlsVisible={showControls}
         />
       )}
 

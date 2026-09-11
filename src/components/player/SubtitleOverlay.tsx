@@ -9,6 +9,7 @@ interface SubtitleOverlayProps {
   headers?: Record<string, string>;
   offset?: number; // subtitle timing offset in seconds (positive = delayed, negative = earlier)
   size?: "small" | "medium" | "large";
+  controlsVisible?: boolean;
 }
 
 interface Cue {
@@ -148,6 +149,12 @@ function parseVTT(vttContent: string): Cue[] {
   const cues: Cue[] = [];
   let text = vttContent.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
+  // Strip ASS/SSA style overrides: {\b1}, {\an8}, {\pos(x,y)}, {\fad(...)}, etc.
+  text = text.replace(/\{[^}]*\}/g, "");
+
+  // Normalize ASS line breaks (\N, \n) to real newlines
+  text = text.replace(/\\[Nn]/g, "\n");
+
   const headerMatch = text.match(/^WEBVTT.*?\n\n/);
   if (headerMatch) {
     text = text.slice(headerMatch[0].length);
@@ -176,10 +183,38 @@ function parseVTT(vttContent: string): Cue[] {
     const end = parseVTTTime(timingMatch[2]);
     const cueText = lines.slice(timingIdx + 1).filter((l) => !l.startsWith("NOTE")).join("\n").trim();
 
-    if (cueText) {
+    if (!cueText) continue;
+
+    // Split long cues that contain multiple speakers' dialogue.
+    // Detect sentence boundaries (. ! ?) followed by a capital letter or space+capital,
+    // which typically marks a new speaker's line in merged subtitles.
+    const duration = end - start;
+    const sentences = cueText
+      .split(/(?<=[.!?])\s+(?=[A-Z""\u201c])/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (sentences.length > 1) {
+      // Distribute time proportionally across sentences
+      const totalChars = sentences.reduce((sum, s) => sum + s.length, 0);
+      let t = start;
+      for (const sentence of sentences) {
+        const share = sentence.length / totalChars;
+        const cueEnd = t + duration * share;
+        // Strip HTML tags for clean text
+        const clean = sentence.replace(/<[^>]*>/g, "").trim();
+        if (clean) {
+          cues.push({ start: t, end: Math.min(cueEnd, end), text: clean });
+        }
+        t = cueEnd;
+      }
+    } else {
       cues.push({ start, end, text: cueText });
     }
   }
+
+  // Sort by start time for binary search correctness
+  cues.sort((a, b) => a.start - b.start);
 
   return cues;
 }
@@ -192,6 +227,7 @@ export default function SubtitleOverlay({
   headers,
   offset = 0,
   size = "medium",
+  controlsVisible = true,
 }: SubtitleOverlayProps) {
   const [cues, setCues] = useState<Cue[]>([]);
   const [activeText, setActiveText] = useState<string[]>([]);
@@ -295,7 +331,13 @@ export default function SubtitleOverlay({
     : "text-xs sm:text-sm sm:text-base md:text-lg";
 
   return (
-    <div className="absolute bottom-10 sm:bottom-16 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4">
+    <div
+      className={`absolute left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4 transition-all duration-300 ease-in-out ${
+        controlsVisible
+          ? "bottom-10 sm:bottom-16"
+          : "bottom-2 sm:bottom-4"
+      }`}
+    >
       {activeText.map((text, i) => {
         const lines = text.split(/<br\s*\/?>/i).flatMap((l) => l.split("\n"));
 
