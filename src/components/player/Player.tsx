@@ -214,26 +214,30 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         const loadUrl = headers ? proxyUrl(selected.url, headers) : selected.url;
 
         const hls = new Hls({
-          // Startup
+          // Startup — start low, ramp up fast
           startLevel: -1,
           testBandwidth: true,
-          abrEwmaDefaultEstimate: 1_000_000,
+          abrEwmaDefaultEstimate: 2_000_000,
           startFragPrefetch: true,
+          maxLoadingDelay: 400,
 
-          // Buffer — "standard" preset from MoonTVPlus/DecoTV
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
-          maxBufferSize: 60 * 1000 * 1000,
-          backBufferLength: 30,
+          // Buffer — lean forward for smooth playback
+          maxBufferLength: 15,
+          maxMaxBufferLength: 30,
+          maxBufferSize: 30 * 1000 * 1000,
+          backBufferLength: 15,
           maxBufferHole: 0.5,
 
           // VOD: disable LL-HLS to avoid part scheduling jitter
           lowLatencyMode: false,
 
-          // Network resilience
+          // Network resilience — retry faster to reduce stall time
           fragLoadingMaxRetry: 6,
+          fragLoadingRetryDelay: 300,
           manifestLoadingMaxRetry: 4,
+          manifestLoadingRetryDelay: 200,
           levelLoadingMaxRetry: 4,
+          levelLoadingRetryDelay: 200,
 
           // Cap quality to player size (saves bandwidth on mobile)
           capLevelToPlayerSize: true,

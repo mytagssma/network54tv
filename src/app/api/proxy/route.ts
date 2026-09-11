@@ -76,16 +76,20 @@ export async function GET(req: NextRequest) {
       contentType.includes("vnd.apple.mpegurl") ||
       decodedUrl.includes(".m3u8");
 
-    // ── Pass through binary (TS, AAC, subtitles, etc.) ──
+    // ── Pass through binary (TS, AAC, subtitles, etc.) using a streaming
+    //    pipe so we don't buffer the entire segment in serverless memory.
     if (!isM3u8) {
-      const buffer = Buffer.from(await upstream.arrayBuffer());
-      return new NextResponse(buffer, {
-        headers: {
-          "Content-Type": contentType || "application/octet-stream",
-          "Content-Length": String(buffer.length),
-          "Access-Control-Allow-Origin": "*",
-          "Cache-Control": "public, max-age=3600",
-        },
+      const cacheHeaders: Record<string, string> = {
+        "Content-Type": contentType || "application/octet-stream",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      };
+      const contentLength = upstream.headers.get("content-length");
+      if (contentLength) cacheHeaders["Content-Length"] = contentLength;
+
+      return new NextResponse(upstream.body, {
+        status: upstream.status,
+        headers: cacheHeaders,
       });
     }
 
