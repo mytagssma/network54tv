@@ -174,6 +174,20 @@ query ($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int) {
 }
 `;
 
+/**
+ * Rewrite AniList CDN cover URLs to the stable img.anili.st proxy.
+ * The CDN hashes (s4.anilist.co/file/anilistcdn/...) go stale over time;
+ * img.anili.st/media/{id} never breaks and redirects to the current image.
+ */
+function fixCoverUrl(url: string | undefined, mediaId: number): string {
+  if (!url) return `https://img.anili.st/media/${mediaId}`;
+  // If it's an anilist CDN URL with a hash, replace with the stable proxy
+  if (url.includes("anilist.co") || url.includes("anili.st")) {
+    return `https://img.anili.st/media/${mediaId}`;
+  }
+  return url;
+}
+
 function anilistMediaToAnime(media: any): Anime {
   return {
     id: media.id,
@@ -181,7 +195,7 @@ function anilistMediaToAnime(media: any): Anime {
     title: media.title?.english || media.title?.romaji || "Unknown",
     englishTitle: media.title?.english,
     nativeTitle: media.title?.native,
-    coverImage: media.coverImage?.extraLarge || media.coverImage?.large || "",
+    coverImage: fixCoverUrl(media.coverImage?.extraLarge || media.coverImage?.large, media.id),
     bannerImage: media.bannerImage,
     description: media.description
       ?.replace(/<[^>]*>/g, "")
