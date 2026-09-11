@@ -148,7 +148,7 @@ async function getSessionForProvider(
 
 interface ProviderDef {
   name: string;
-  getSession: (title: string) => Promise<ProviderSession | null>;
+  getSession: (title: string, anilistId?: number) => Promise<ProviderSession | null>;
   getSources: (episodeId: string, type: "sub" | "dub", episodeNumber: number, server?: string) => Promise<StreamResult | null>;
 }
 
@@ -164,12 +164,24 @@ const PROVIDERS: ProviderDef[] = [
         (id) => anikoto.fetchAnimeInfo(id)
       ),
     getSources: async (episodeId, type, _ep, server) => {
-      const data = await anikoto.fetchSources(
-        episodeId,
-        type as any,
-        (server as any) || "vidstream-2"
-      );
-      return toStreamResult(data, "anikoto");
+      // megaplay.buzz `getSources` (vidstream-2) now returns encrypted payload
+      // instead of sources — fall back through servers until one works.
+      const serverOrder = server
+        ? [server, "hd-1", "vidstream-2"]
+        : ["hd-1", "vidstream-2"];
+      const seen = new Set<string>();
+      for (const s of serverOrder) {
+        if (seen.has(s)) continue;
+        seen.add(s);
+        try {
+          const data = await anikoto.fetchSources(episodeId, type as any, s as any);
+          const result = toStreamResult(data, "anikoto");
+          if (result) return result;
+        } catch {
+          // try next server
+        }
+      }
+      return null;
     },
   },
 
@@ -205,16 +217,26 @@ const PROVIDERS: ProviderDef[] = [
     },
   },
 
-  // 4. anineko
+  // 4. anineko — fetchAnimeInfo(anilistId) expects a numeric AniList ID, not a search slug
   {
     name: "anineko",
-    getSession: (title) =>
-      getSessionForProvider(
-        "anineko",
-        title,
-        () => searchProvider("anineko", (q) => anineko.search(q), title),
-        (id) => anineko.fetchAnimeInfo(id)
-      ),
+    getSession: async (title, anilistId) => {
+      if (!anilistId) return null;
+      const cacheKeyStr = cacheKey("anineko", title);
+      const cached = sessionCache.get(cacheKeyStr);
+      if (cached) return cached;
+      try {
+        const info = await anineko.fetchAnimeInfo(String(anilistId));
+        const episodes = info?.episodes ?? [];
+        if (!Array.isArray(episodes) || episodes.length === 0) return null;
+        const session: ProviderSession = { providerId: "anineko", animeId: String(anilistId), episodes };
+        sessionCache.set(cacheKeyStr, session);
+        return session;
+      } catch (err) {
+        console.warn(`[providers] anineko getSession("${title}", anilistId=${anilistId}) failed:`, err instanceof Error ? err.message : err);
+        return null;
+      }
+    },
     getSources: async (episodeId, type, _ep, _server) => {
       const data = await anineko.fetchSources(episodeId, type);
       return toStreamResult(data, "anineko");
@@ -441,7 +463,7 @@ export async function getEpisodes(
       for (const provider of PROVIDERS) {
         if (provider.name !== providerName) continue;
         try {
-          const session = await provider.getSession(animeTitle);
+          const session = await provider.getSession(animeTitle, anilistId);
           if (!session) continue;
 
           candidateEpisodes = session.episodes
@@ -492,7 +514,7 @@ export async function getEpisodes(
     if (candidateEpisodes.length === 0) {
       for (const provider of PROVIDERS) {
         try {
-          const session = await provider.getSession(animeTitle);
+          const session = await provider.getSession(animeTitle, anilistId);
           if (!session) continue;
 
           candidateEpisodes = session.episodes
