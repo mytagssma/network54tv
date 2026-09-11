@@ -1,0 +1,399 @@
+{
+  "trending": [
+    {
+      "id": 155723,
+      "idMal": 53545,
+      "title": {
+        "romaji": "Dr. STONE: NEW WORLD",
+        "english": "Dr. STONE: New World",
+        "native": "Dr.STONE NEW WORLD"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx155723-95mS6U5QYx6V.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx155723-95mS6U5QYx6V.png",
+        "color": "#e38a1a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx155723-s6Y6s8Gv6H8z.jpg",
+      "description": "The third season of Dr. STONE.<br><br>Senkuu and the Kingdom of Science sail to new lands to uncover more scientific secrets! ...",
+      "averageScore": 83,
+      "episodes": 11,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "SPRING",
+      "seasonYear": 2023,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Comedy", "Sci-Fi"],
+      "trending": 95,
+      "popularity": 125000,
+      "studios": { "nodes": [{ "name": "TMS Entertainment" }] }
+    },
+    {
+      "id": 21,
+      "idMal": 21,
+      "title": {
+        "romaji": "ONE PIECE",
+        "english": "One Piece",
+        "native": "ONE PIECE"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21-63b7e7.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-63b7e7.png",
+        "color": "#e4a12a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx21-63b7e7.jpg",
+      "description": "Gold Roger was known as the Pirate King, the strongest and most infamous being to have sailed the Grand Line...",
+      "averageScore": 88,
+      "episodes": 1100,
+      "duration": 24,
+      "status": "RELEASING",
+      "season": "AUTUMN",
+      "seasonYear": 1999,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Comedy", "Fantasy"],
+      "trending": 98,
+      "popularity": 500000,
+      "studios": { "nodes": [{ "name": "Toei Animation" }] }
+    },
+    {
+      "id": 151807,
+      "idMal": 52299,
+      "title": {
+        "romaji": "Ore dake Level Up na Ken",
+        "english": "Solo Leveling",
+        "native": "俺だけレベルアップな件"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx151807-7756f8.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx151807-7756f8.png",
+        "color": "#4a6af8"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx151807-7756f8.jpg",
+      "description": "In a world where hunters, humans who possess magical abilities, must battle deadly monsters to protect mankind...",
+      "averageScore": 84,
+      "episodes": 12,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "WINTER",
+      "seasonYear": 2024,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Fantasy"],
+      "trending": 90,
+      "popularity": 250000,
+      "studios": { "nodes": [{ "name": "A-1 Pictures" }] }
+    },
+    {
+      "id": 166103,
+      "idMal": 55701,
+      "title": {
+        "romaji": "Kimetsu no Yaiba: Hashira Geiko-hen",
+        "english": "Demon Slayer: Kimetsu no Yaiba Hashira Training Arc",
+        "native": "鬼滅の刃 柱稽古編"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx166103-6623e1.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx166103-6623e1.png",
+        "color": "#f84a4a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx166103-6623e1.jpg",
+      "description": "The Hashira Training Arc of Demon Slayer: Kimetsu no Yaiba...",
+      "averageScore": 85,
+      "episodes": 8,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "SPRING",
+      "seasonYear": 2024,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Fantasy"],
+      "trending": 92,
+      "popularity": 180000,
+      "studios": { "nodes": [{ "name": "ufotable" }] }
+    },
+    {
+      "id": 145064,
+      "idMal": 51009,
+      "title": {
+        "romaji": "Jujutsu Kaisen Kaigyoku/Gyokusetsu·Shibuya Jihen",
+        "english": "JUJUTSU KAISEN Season 2",
+        "native": "呪術廻戦 懐玉・玉折/渋谷事変"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx145064-66f8e7.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx145064-66f8e7.png",
+        "color": "#4a4af8"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx145064-66f8e7.jpg",
+      "description": "The second season of Jujutsu Kaisen covering the Hidden Inventory and Shibuya Incident arcs...",
+      "averageScore": 87,
+      "episodes": 23,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "SUMMER",
+      "seasonYear": 2023,
+      "format": "TV",
+      "genres": ["Action", "Drama", "Supernatural"],
+      "trending": 89,
+      "popularity": 320000,
+      "studios": { "nodes": [{ "name": "MAPPA" }] }
+    },
+    {
+      "id": 154587,
+      "idMal": 52991,
+      "title": {
+        "romaji": "Sousou no Frieren",
+        "english": "Frieren: Beyond Journey's End",
+        "native": "葬送のフリーレン"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx154587-553df8.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-553df8.png",
+        "color": "#a1cbd1"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx154587-553df8.jpg",
+      "description": "Elven mage Frieren and her courageous fellow adventurers have defeated the Demon King and brought peace to the land...",
+      "averageScore": 92,
+      "episodes": 28,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "AUTUMN",
+      "seasonYear": 2023,
+      "format": "TV",
+      "genres": ["Adventure", "Drama", "Fantasy"],
+      "trending": 94,
+      "popularity": 220000,
+      "studios": { "nodes": [{ "name": "Madhouse" }] }
+    }
+  ],
+  "popular": [
+    {
+      "id": 21,
+      "idMal": 21,
+      "title": {
+        "romaji": "ONE PIECE",
+        "english": "One Piece",
+        "native": "ONE PIECE"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21-63b7e7.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-63b7e7.png",
+        "color": "#e4a12a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx21-63b7e7.jpg",
+      "description": "Gold Roger was known as the Pirate King...",
+      "averageScore": 88,
+      "episodes": 1100,
+      "duration": 24,
+      "status": "RELEASING",
+      "season": "AUTUMN",
+      "seasonYear": 1999,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Comedy", "Fantasy"],
+      "trending": 98,
+      "popularity": 500000,
+      "studios": { "nodes": [{ "name": "Toei Animation" }] }
+    },
+    {
+      "id": 154587,
+      "idMal": 52991,
+      "title": {
+        "romaji": "Sousou no Frieren",
+        "english": "Frieren: Beyond Journey's End",
+        "native": "葬送のフリーレン"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx154587-553df8.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-553df8.png",
+        "color": "#a1cbd1"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx154587-553df8.jpg",
+      "description": "Elven mage Frieren and her courageous fellow adventurers have defeated the Demon King and brought peace to the land...",
+      "averageScore": 92,
+      "episodes": 28,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "AUTUMN",
+      "seasonYear": 2023,
+      "format": "TV",
+      "genres": ["Adventure", "Drama", "Fantasy"],
+      "trending": 94,
+      "popularity": 220000,
+      "studios": { "nodes": [{ "name": "Madhouse" }] }
+    },
+    {
+      "id": 155723,
+      "idMal": 53545,
+      "title": {
+        "romaji": "Dr. STONE: NEW WORLD",
+        "english": "Dr. STONE: New World",
+        "native": "Dr.STONE NEW WORLD"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx155723-95mS6U5QYx6V.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx155723-95mS6U5QYx6V.png",
+        "color": "#e38a1a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx155723-s6Y6s8Gv6H8z.jpg",
+      "description": "The third season of Dr. STONE.<br><br>Senkuu and the Kingdom of Science sail to new lands to uncover more scientific secrets! ...",
+      "averageScore": 83,
+      "episodes": 11,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "SPRING",
+      "seasonYear": 2023,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Comedy", "Sci-Fi"],
+      "trending": 95,
+      "popularity": 125000,
+      "studios": { "nodes": [{ "name": "TMS Entertainment" }] }
+    }
+  ],
+  "recentlyAired": [
+    {
+      "airingAt": 1724424000,
+      "episode": 1115,
+      "media": {
+        "id": 21,
+        "isAdult": false,
+        "title": {
+          "romaji": "ONE PIECE",
+          "english": "One Piece",
+          "native": "ONE PIECE"
+        },
+        "coverImage": {
+          "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21-63b7e7.png",
+          "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-63b7e7.png",
+          "color": "#e4a12a"
+        },
+        "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx21-63b7e7.jpg",
+        "description": "Gold Roger was known as the Pirate King...",
+        "averageScore": 88,
+        "episodes": 1100,
+        "duration": 24,
+        "status": "RELEASING",
+        "season": "AUTUMN",
+        "seasonYear": 1999,
+        "format": "TV",
+        "genres": ["Action", "Adventure", "Comedy", "Fantasy"],
+        "trending": 98,
+        "popularity": 500000,
+        "studios": { "nodes": [{ "name": "Toei Animation" }] }
+      }
+    },
+    {
+      "airingAt": 1724420000,
+      "episode": 11,
+      "media": {
+        "id": 155723,
+        "isAdult": false,
+        "title": {
+          "romaji": "Dr. STONE: NEW WORLD",
+          "english": "Dr. STONE: New World",
+          "native": "Dr.STONE NEW WORLD"
+        },
+        "coverImage": {
+          "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx155723-95mS6U5QYx6V.png",
+          "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx155723-95mS6U5QYx6V.png",
+          "color": "#e38a1a"
+        },
+        "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx155723-s6Y6s8Gv6H8z.jpg",
+        "description": "The third season of Dr. STONE.<br><br>Senkuu and the Kingdom of Science sail to new lands to uncover more scientific secrets! ...",
+        "averageScore": 83,
+        "episodes": 11,
+        "duration": 24,
+        "status": "FINISHED",
+        "season": "SPRING",
+        "seasonYear": 2023,
+        "format": "TV",
+        "genres": ["Action", "Adventure", "Comedy", "Sci-Fi"],
+        "trending": 95,
+        "popularity": 125000,
+        "studios": { "nodes": [{ "name": "TMS Entertainment" }] }
+      }
+    }
+  ],
+  "mediaMap": {
+    "21": {
+      "id": 21,
+      "idMal": 21,
+      "title": {
+        "romaji": "ONE PIECE",
+        "english": "One Piece",
+        "native": "ONE PIECE"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21-63b7e7.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-63b7e7.png",
+        "color": "#e4a12a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx21-63b7e7.jpg",
+      "description": "Gold Roger was known as the Pirate King, the strongest and most infamous being to have sailed the Grand Line. The capture and death of Roger by the World Government brought a change throughout the world...",
+      "averageScore": 88,
+      "episodes": 1100,
+      "duration": 24,
+      "status": "RELEASING",
+      "season": "AUTUMN",
+      "seasonYear": 1999,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Comedy", "Fantasy"],
+      "trending": 98,
+      "popularity": 500000,
+      "studios": { "nodes": [{ "name": "Toei Animation" }] },
+      "relations": { "edges": [] }
+    },
+    "155723": {
+      "id": 155723,
+      "idMal": 53545,
+      "title": {
+        "romaji": "Dr. STONE: NEW WORLD",
+        "english": "Dr. STONE: New World",
+        "native": "Dr.STONE NEW WORLD"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx155723-95mS6U5QYx6V.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx155723-95mS6U5QYx6V.png",
+        "color": "#e38a1a"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx155723-s6Y6s8Gv6H8z.jpg",
+      "description": "The third season of Dr. STONE.<br><br>Senkuu and the Kingdom of Science sail to new lands to uncover more scientific secrets and find a way to petrification's origin!",
+      "averageScore": 83,
+      "episodes": 11,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "SPRING",
+      "seasonYear": 2023,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Comedy", "Sci-Fi"],
+      "trending": 95,
+      "popularity": 125000,
+      "studios": { "nodes": [{ "name": "TMS Entertainment" }] },
+      "relations": { "edges": [] }
+    },
+    "151807": {
+      "id": 151807,
+      "idMal": 52299,
+      "title": {
+        "romaji": "Ore dake Level Up na Ken",
+        "english": "Solo Leveling",
+        "native": "俺だけレベルアップな件"
+      },
+      "coverImage": {
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx151807-7756f8.png",
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx151807-7756f8.png",
+        "color": "#4a6af8"
+      },
+      "bannerImage": "https://s4.anilist.co/file/anilistcdn/media/anime/banner/bx151807-7756f8.jpg",
+      "description": "In a world where hunters, humans who possess magical abilities, must battle deadly monsters to protect mankind, Sung Jinwoo, a notoriously weak hunter, finds himself in a struggle for survival...",
+      "averageScore": 84,
+      "episodes": 12,
+      "duration": 24,
+      "status": "FINISHED",
+      "season": "WINTER",
+      "seasonYear": 2024,
+      "format": "TV",
+      "genres": ["Action", "Adventure", "Fantasy"],
+      "trending": 90,
+      "popularity": 250000,
+      "studios": { "nodes": [{ "name": "A-1 Pictures" }] },
+      "relations": { "edges": [] }
+    }
+  }
+}

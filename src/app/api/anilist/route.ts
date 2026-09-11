@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import fallbackData from "@/lib/anilist-fallback.json";
 
 const ANILIST_API = "https://graphql.anilist.co";
 
@@ -30,21 +31,98 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3): P
   return fetch(url, options);
 }
 
+function getLocalFallback(query: string, variables: Record<string, any>) {
+  if (query.includes("Media(id:") || query.includes("id: $id") || variables.id) {
+    const idStr = String(variables.id);
+    const media = (fallbackData.mediaMap as any)[idStr] || fallbackData.trending[0];
+    return { Media: media };
+  }
+  
+  if (query.includes("airingSchedules")) {
+    return {
+      Page: {
+        airingSchedules: fallbackData.recentlyAired,
+        pageInfo: { total: fallbackData.recentlyAired.length, currentPage: 1, lastPage: 1, hasNextPage: false }
+      }
+    };
+  }
+  
+  if (query.includes("sort: TRENDING_DESC") || query.includes("TRENDING_DESC")) {
+    return {
+      Page: {
+        media: fallbackData.trending,
+        pageInfo: { total: fallbackData.trending.length, currentPage: 1, lastPage: 1, hasNextPage: false }
+      }
+    };
+  }
+  
+  if (query.includes("sort: POPULARITY_DESC") || query.includes("POPULARITY_DESC")) {
+    return {
+      Page: {
+        media: fallbackData.popular,
+        pageInfo: { total: fallbackData.popular.length, currentPage: 1, lastPage: 1, hasNextPage: false }
+      }
+    };
+  }
+  
+  if (variables.search) {
+    const q = variables.search.toLowerCase();
+    const matched = [...fallbackData.trending, ...fallbackData.popular].filter(m => 
+      m.title?.romaji?.toLowerCase().includes(q) || 
+      m.title?.english?.toLowerCase().includes(q) ||
+      m.title?.native?.toLowerCase().includes(q)
+    );
+    const seen = new Set();
+    const uniqueMatched = matched.filter(m => {
+      if (seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
+    return {
+      Page: {
+        media: uniqueMatched,
+        pageInfo: { total: uniqueMatched.length, currentPage: 1, lastPage: 1, hasNextPage: false }
+      }
+    };
+  }
+  
+  const allMedia = [...fallbackData.trending, ...fallbackData.popular];
+  const seen = new Set();
+  const uniqueMedia = allMedia.filter(m => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+  return {
+    Page: {
+      media: uniqueMedia,
+      pageInfo: { total: uniqueMedia.length, currentPage: 1, lastPage: 1, hasNextPage: false }
+    }
+  };
+}
+
 export async function POST(req: NextRequest) {
+  let requestBody: any = {};
   try {
-    const { query, variables } = await req.json();
+    requestBody = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
 
-    if (!query) {
-      return NextResponse.json({ error: "Missing query" }, { status: 400 });
-    }
+  const { query, variables = {} } = requestBody;
 
-    const cacheKey = getCacheKey(query, variables);
-    const cached = cache.get(cacheKey);
-    
-    if (cached && cached.expires > Date.now()) {
-      return NextResponse.json({ data: cached.data, cached: true });
-    }
+  if (!query) {
+    return NextResponse.json({ error: "Missing query" }, { status: 400 });
+  }
 
+  const cacheKey = getCacheKey(query, variables);
+  const cached = cache.get(cacheKey);
+  
+  if (cached && cached.expires > Date.now()) {
+    return NextResponse.json({ data: cached.data, cached: true });
+  }
+
+  try {
     const res = await fetchWithRetry(ANILIST_API, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -57,16 +135,22 @@ export async function POST(req: NextRequest) {
       if (stale) {
         return NextResponse.json({ data: stale.data, stale: true });
       }
-      let upstreamMsg = `AniList API error: ${res.status}`;
-      try {
-        const body = await res.json();
-        if (body?.errors?.[0]?.message) upstreamMsg = body.errors[0].message;
-      } catch { /* keep default */ }
-      return NextResponse.json({ error: upstreamMsg }, { status: res.status });
+      
+      const fallback = getLocalFallback(query, variables);
+      return NextResponse.json({ data: fallback, fallback: true });
     }
 
     const json = await res.json();
     if (json.errors) {
+      // If it contains "temporarily disabled" or similar, use fallback
+      const isOutage = json.errors.some((e: any) => 
+        e.message?.toLowerCase().includes("disabled") || 
+        e.message?.toLowerCase().includes("stability")
+      );
+      if (isOutage) {
+        const fallback = getLocalFallback(query, variables);
+        return NextResponse.json({ data: fallback, fallback: true });
+      }
       return NextResponse.json({ error: json.errors[0]?.message }, { status: 400 });
     }
 
@@ -79,6 +163,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ data: json.data });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "Failed to fetch" }, { status: 500 });
+    const fallback = getLocalFallback(query, variables);
+    return NextResponse.json({ data: fallback, fallback: true });
   }
 }
