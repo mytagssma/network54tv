@@ -1,5 +1,4 @@
 import type { Anime } from "@/types/anime";
-import fallbackData from "./anilist-fallback.json";
 
 const ANILIST_API = "https://graphql.anilist.co";
 
@@ -174,20 +173,6 @@ query ($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int) {
 }
 `;
 
-/**
- * Rewrite AniList CDN cover URLs to the stable img.anili.st proxy.
- * The CDN hashes (s4.anilist.co/file/anilistcdn/...) go stale over time;
- * img.anili.st/media/{id} never breaks and redirects to the current image.
- */
-function fixCoverUrl(url: string | undefined, mediaId: number): string {
-  if (!url) return `https://img.anili.st/media/${mediaId}`;
-  // If it's an anilist CDN URL with a hash, replace with the stable proxy
-  if (url.includes("anilist.co") || url.includes("anili.st")) {
-    return `https://img.anili.st/media/${mediaId}`;
-  }
-  return url;
-}
-
 function anilistMediaToAnime(media: any): Anime {
   return {
     id: media.id,
@@ -195,7 +180,7 @@ function anilistMediaToAnime(media: any): Anime {
     title: media.title?.english || media.title?.romaji || "Unknown",
     englishTitle: media.title?.english,
     nativeTitle: media.title?.native,
-    coverImage: fixCoverUrl(media.coverImage?.extraLarge || media.coverImage?.large, media.id),
+    coverImage: media.coverImage?.extraLarge || media.coverImage?.large || "",
     bannerImage: media.bannerImage,
     description: media.description
       ?.replace(/<[^>]*>/g, "")
@@ -214,101 +199,22 @@ function anilistMediaToAnime(media: any): Anime {
   };
 }
 
-function getLocalFallback(query: string, variables: Record<string, any>) {
-  console.warn("Using offline AniList fallback data for query:", query.substring(0, 100));
-  
-  if (query.includes("Media(id:") || query.includes("id: $id") || variables.id) {
-    const idStr = String(variables.id);
-    const media = (fallbackData.mediaMap as any)[idStr] || fallbackData.trending[0];
-    return { Media: media };
-  }
-  
-  if (query.includes("airingSchedules")) {
-    return {
-      Page: {
-        airingSchedules: fallbackData.recentlyAired,
-        pageInfo: { total: fallbackData.recentlyAired.length, currentPage: 1, lastPage: 1, hasNextPage: false }
-      }
-    };
-  }
-  
-  if (query.includes("sort: TRENDING_DESC") || query.includes("TRENDING_DESC")) {
-    return {
-      Page: {
-        media: fallbackData.trending,
-        pageInfo: { total: fallbackData.trending.length, currentPage: 1, lastPage: 1, hasNextPage: false }
-      }
-    };
-  }
-  
-  if (query.includes("sort: POPULARITY_DESC") || query.includes("POPULARITY_DESC")) {
-    return {
-      Page: {
-        media: fallbackData.popular,
-        pageInfo: { total: fallbackData.popular.length, currentPage: 1, lastPage: 1, hasNextPage: false }
-      }
-    };
-  }
-  
-  if (variables.search) {
-    const q = variables.search.toLowerCase();
-    const matched = [...fallbackData.trending, ...fallbackData.popular].filter(m => 
-      m.title?.romaji?.toLowerCase().includes(q) || 
-      m.title?.english?.toLowerCase().includes(q) ||
-      m.title?.native?.toLowerCase().includes(q)
-    );
-    // deduplicate by id
-    const seen = new Set();
-    const uniqueMatched = matched.filter(m => {
-      if (seen.has(m.id)) return false;
-      seen.add(m.id);
-      return true;
-    });
-    return {
-      Page: {
-        media: uniqueMatched,
-        pageInfo: { total: uniqueMatched.length, currentPage: 1, lastPage: 1, hasNextPage: false }
-      }
-    };
-  }
-  
-  // Default to a combination of trending and popular
-  const allMedia = [...fallbackData.trending, ...fallbackData.popular];
-  const seen = new Set();
-  const uniqueMedia = allMedia.filter(m => {
-    if (seen.has(m.id)) return false;
-    seen.add(m.id);
-    return true;
-  });
-  return {
-    Page: {
-      media: uniqueMedia,
-      pageInfo: { total: uniqueMedia.length, currentPage: 1, lastPage: 1, hasNextPage: false }
-    }
-  };
-}
-
 async function fetchGraphQL(query: string, variables: Record<string, any>) {
-  try {
-    const res = await fetch(ANILIST_API, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Origin: "https://anilist.co",
-        Referer: "https://anilist.co/",
-      },
-      body: JSON.stringify({ query, variables }),
-      next: { revalidate: 300 },
-    });
-    if (!res.ok) throw new Error(`AniList API error: ${res.status}`);
-    const json = await res.json();
-    if (json.errors) throw new Error(json.errors[0]?.message);
-    return json.data;
-  } catch (err) {
-    console.error("fetchGraphQL error, using local fallback data:", err);
-    return getLocalFallback(query, variables);
-  }
+  const res = await fetch(ANILIST_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Origin: "https://anilist.co",
+      Referer: "https://anilist.co/",
+    },
+    body: JSON.stringify({ query, variables }),
+    next: { revalidate: 300 },
+  });
+  if (!res.ok) throw new Error(`AniList API error: ${res.status}`);
+  const json = await res.json();
+  if (json.errors) throw new Error(json.errors[0]?.message);
+  return json.data;
 }
 
 export async function getTrending(
