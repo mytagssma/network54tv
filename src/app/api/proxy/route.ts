@@ -108,9 +108,13 @@ export async function GET(req: NextRequest) {
     }
 
     // ── Parse m3u8 and rewrite URLs ──
+    // Only proxy URLs from the SAME host as the manifest. Sub-playlist and
+    // segment URLs from CDN domains pass through directly — avoids the
+    // per-segment proxy round-trip that causes stuttering on PC.
     const text = await upstream.text();
     const baseUrl = decodedUrl.substring(0, decodedUrl.lastIndexOf("/") + 1);
     const ourOrigin = `${req.nextUrl.protocol}//${req.nextUrl.host}`;
+    const manifestHost = parsedUrl.hostname;
 
     const rewritten = text
       .split("\n")
@@ -123,12 +127,21 @@ export async function GET(req: NextRequest) {
           ? trimmed
           : new URL(trimmed, baseUrl).toString();
 
-        const proxyParams = new URLSearchParams({
-          url: absoluteUrl,
-          referer,
-          origin,
-        });
-        return `${ourOrigin}/api/proxy?${proxyParams}`;
+        // Only proxy URLs from the same host as the manifest (e.g. anikoto's
+        // own embed pages). CDN segment URLs load directly — no extra hop.
+        let segHost: string;
+        try { segHost = new URL(absoluteUrl).hostname; } catch { return line; }
+
+        if (segHost === manifestHost) {
+          const proxyParams = new URLSearchParams({
+            url: absoluteUrl,
+            referer,
+            origin,
+          });
+          return `${ourOrigin}/api/proxy?${proxyParams}`;
+        }
+        // CDN segment — pass through directly
+        return absoluteUrl;
       })
       .join("\n");
 
