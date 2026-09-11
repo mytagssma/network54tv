@@ -14,8 +14,21 @@ import {
   anineko,
   megaplay,
   animeunity,
+  configure,
 } from "kaizoku-core";
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
+
+// ─── Wire scrape proxy for Cloudflare-protected providers ──────────────
+// kaizoku-core reads SCRAPE_PROXY_URL/SCRAPE_PROXY_KEY from env automatically,
+// but we call configure() explicitly to ensure it's set before any provider runs.
+const scrapeProxyUrl = process.env.SCRAPE_PROXY_URL;
+const scrapeProxyKey = process.env.SCRAPE_PROXY_KEY;
+if (scrapeProxyUrl) {
+  configure({ scrapeProxyUrl, scrapeProxyKey: scrapeProxyKey || undefined });
+  console.log("[providers] Scrape proxy configured:", scrapeProxyUrl);
+} else {
+  console.warn("[providers] No SCRAPE_PROXY_URL set — provider requests may be blocked by Cloudflare from datacenter IPs");
+}
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -72,7 +85,8 @@ async function searchProvider(
     }) || results[0];
 
     return match?.id ?? match?.animeId ?? null;
-  } catch {
+  } catch (err) {
+    console.warn(`[providers] searchProvider(${providerName}) failed:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -104,7 +118,8 @@ async function getSessionForProvider(
       if (firstKey) sessionCache.delete(firstKey);
     }
     return session;
-  } catch {
+  } catch (err) {
+    console.warn(`[providers] getSessionForProvider(${providerName}, "${title}") failed:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -310,7 +325,8 @@ export async function getMegaPlaySession(
     const episodes = info?.episodes ?? [];
     if (!Array.isArray(episodes) || episodes.length === 0) return null;
     return { providerId: "megaplay", animeId: String(anilistId), episodes };
-  } catch {
+  } catch (err) {
+    console.warn(`[providers] getMegaPlaySession(anilistId=${anilistId}) failed:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -324,7 +340,8 @@ export async function getMegaPlaySources(
   try {
     const data = await megaplay.fetchSources(episodeId, type, episodeNumber, malId);
     return toStreamResult(data, "megaplay");
-  } catch {
+  } catch (err) {
+    console.warn(`[providers] getMegaPlaySources(ep=${episodeId}) failed:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -504,10 +521,13 @@ export async function getStreamingSources(
   { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
   | null
 > {
+  const tried: string[] = [];
+
   // ── Phase 1: Try the preferred provider first (matches episode list source) ──
   if (preferredProvider) {
     // Try megaplay if preferred
     if (preferredProvider === "megaplay" && anilistId) {
+      tried.push("megaplay");
       try {
         const session = await getMegaPlaySession(anilistId, animeTitle);
         if (session) {
@@ -517,12 +537,15 @@ export async function getStreamingSources(
             if (result) return { ...result, providerId: "megaplay" };
           }
         }
-      } catch { /* fall through */ }
+      } catch (err) {
+        console.warn(`[providers] megaplay phase1 failed:`, err instanceof Error ? err.message : err);
+      }
     }
 
     // Try the named provider from PROVIDERS list
     for (const provider of PROVIDERS) {
       if (provider.name !== preferredProvider) continue;
+      tried.push(provider.name);
       try {
         const session = await provider.getSession(animeTitle);
         if (!session) continue;
@@ -532,7 +555,9 @@ export async function getStreamingSources(
 
         const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
         if (result) return { ...result, providerId: provider.name };
-      } catch { /* fall through */ }
+      } catch (err) {
+        console.warn(`[providers] ${provider.name} phase1 failed:`, err instanceof Error ? err.message : err);
+      }
       break;
     }
   }
@@ -541,6 +566,7 @@ export async function getStreamingSources(
   for (const provider of PROVIDERS) {
     // Skip if already tried as preferred
     if (preferredProvider && provider.name === preferredProvider) continue;
+    tried.push(provider.name);
 
     try {
       const session = await provider.getSession(animeTitle);
@@ -553,13 +579,15 @@ export async function getStreamingSources(
       if (result) {
         return { ...result, providerId: provider.name };
       }
-    } catch {
+    } catch (err) {
+      console.warn(`[providers] ${provider.name} phase2 failed:`, err instanceof Error ? err.message : err);
       continue;
     }
   }
 
   // ── Phase 3: Try megaplay directly with AniList ID (if not already tried) ──
   if (anilistId && preferredProvider !== "megaplay") {
+    tried.push("megaplay");
     try {
       const session = await getMegaPlaySession(anilistId, animeTitle);
       if (session) {
@@ -569,11 +597,12 @@ export async function getStreamingSources(
           if (result) return { ...result, providerId: "megaplay" };
         }
       }
-    } catch {
-      // fall through
+    } catch (err) {
+      console.warn(`[providers] megaplay phase3 failed:`, err instanceof Error ? err.message : err);
     }
   }
 
+  console.warn(`[providers] getStreamingSources("${animeTitle}", ep${episodeNumber}, ${type}) — all providers failed. Tried:`, tried);
   return null;
 }
 

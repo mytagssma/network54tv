@@ -1275,17 +1275,27 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       {/* Error overlay */}
       {streamError && !loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10">
-          <div className="text-center max-w-sm">
-            <p className="text-[#9a9aa0] text-sm mb-2">Stream unavailable</p>
-            <p className="text-[#6b6b70] text-xs mb-4">
-              {providerId ? `No working sources from ${providerId}. ` : ""}Try a different episode or check back later.
+          <div className="text-center max-w-sm px-4">
+            <p className="text-[#9a9aa0] text-sm mb-1">Stream unavailable</p>
+            <p className="text-[#6b6b70] text-xs mb-4 leading-relaxed">
+              {providerId
+                ? `No working sources from ${providerId}. All providers may be blocked — try a different server or check back later.`
+                : "All streaming providers returned no sources. They may be blocked by Cloudflare — try again later or switch provider."}
             </p>
-            <button
-              onClick={() => { destroyHls(); loadByType(audioType); }}
-              className="text-xs px-5 py-2.5 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none min-h-[44px]"
-            >
-              Retry
-            </button>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => { destroyHls(); loadByType(audioType); }}
+                className="text-xs px-5 py-2.5 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none min-h-[44px]"
+              >
+                Retry
+              </button>
+              <button
+                onClick={() => { destroyHls(); loadByType(audioType === "sub" ? "dub" : "sub"); }}
+                className="text-xs px-5 py-2.5 border border-white/10 text-[#9a9aa0] hover:bg-white/5 transition-colors rounded-none min-h-[44px]"
+              >
+                {audioType === "sub" ? "Try Dub" : "Try Sub"}
+              </button>
+            </div>
           </div>
         </div>
       )}
