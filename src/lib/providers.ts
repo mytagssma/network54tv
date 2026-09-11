@@ -27,7 +27,18 @@ const scrapeProxyKey = process.env.SCRAPE_PROXY_KEY;
 // Point kaizoku-core's internal AniList client to our proxy (adds Origin header
 // to bypass AniList's server-IP block). The /api/anilist/fetch route forwards
 // with browser-like headers.
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.VERCEL_URL || "http://localhost:3000";
+// Build an absolute URL for the AniList proxy. On Vercel, VERCEL_URL is
+// host-only (e.g. "xyz.vercel.app") — we must prepend https://.
+function buildSiteUrl(): string {
+  if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/+$/, "");
+  if (process.env.VERCEL_URL) {
+    const raw = process.env.VERCEL_URL.replace(/\/+$/, "");
+    return raw.startsWith("http") ? raw : `https://${raw}`;
+  }
+  return "http://localhost:3000";
+}
+
+const siteUrl = buildSiteUrl();
 const anilistProxyUrl = `${siteUrl}/api/anilist/fetch`;
 
 const configOpts: Record<string, any> = { anilistProxyUrl };
@@ -446,7 +457,8 @@ export async function getEpisodes(
             }))
             .sort((a: Episode, b: Episode) => a.number - b.number);
           break;
-        } catch {
+        } catch (err) {
+          console.warn(`[providers] getEpisodes(${providerName}) getSession failed:`, err instanceof Error ? err.message : err);
           continue;
         }
       }
@@ -470,7 +482,8 @@ export async function getEpisodes(
             }))
             .sort((a: Episode, b: Episode) => a.number - b.number);
         }
-      } catch {
+      } catch (err) {
+        console.warn(`[providers] getEpisodes megaplay failed:`, err instanceof Error ? err.message : err);
         // fall through
       }
     }
@@ -496,7 +509,8 @@ export async function getEpisodes(
             .sort((a: Episode, b: Episode) => a.number - b.number);
 
           if (candidateEpisodes.length > 0) break;
-        } catch {
+        } catch (err) {
+          console.warn(`[providers] getEpisodes(${provider.name}) failed:`, err instanceof Error ? err.message : err);
           continue;
         }
       }
