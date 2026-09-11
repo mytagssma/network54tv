@@ -23,12 +23,21 @@ import type { Episode, StreamSource, Subtitle } from "@/types/anime";
 // but we call configure() explicitly to ensure it's set before any provider runs.
 const scrapeProxyUrl = process.env.SCRAPE_PROXY_URL;
 const scrapeProxyKey = process.env.SCRAPE_PROXY_KEY;
+
+// Point kaizoku-core's internal AniList client to our proxy (adds Origin header
+// to bypass AniList's server-IP block). The /api/anilist/fetch route forwards
+// with browser-like headers.
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.VERCEL_URL || "http://localhost:3000";
+const anilistProxyUrl = `${siteUrl}/api/anilist/fetch`;
+
+const configOpts: Record<string, any> = { anilistProxyUrl };
 if (scrapeProxyUrl) {
-  configure({ scrapeProxyUrl, scrapeProxyKey: scrapeProxyKey || undefined });
+  configOpts.scrapeProxyUrl = scrapeProxyUrl;
+  configOpts.scrapeProxyKey = scrapeProxyKey || undefined;
   console.log("[providers] Scrape proxy configured:", scrapeProxyUrl);
-} else {
-  console.warn("[providers] No SCRAPE_PROXY_URL set — provider requests may be blocked by Cloudflare from datacenter IPs");
 }
+console.log("[providers] AniList proxy:", anilistProxyUrl);
+configure(configOpts);
 
 // ─── Types ───────────────────────────────────────────────────────────
 
