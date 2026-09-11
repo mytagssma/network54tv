@@ -289,13 +289,13 @@ export default function SubtitleOverlay({
   if (error || activeText.length === 0) return null;
 
   const sizeClasses = size === "small"
-    ? "text-xs sm:text-sm"
+    ? "text-[10px] sm:text-xs sm:text-sm"
     : size === "large"
-    ? "text-lg sm:text-xl md:text-2xl"
-    : "text-sm sm:text-base md:text-lg";
+    ? "text-sm sm:text-lg sm:text-xl"
+    : "text-xs sm:text-sm sm:text-base md:text-lg";
 
   return (
-    <div className="absolute bottom-16 sm:bottom-20 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4">
+    <div className="absolute bottom-10 sm:bottom-16 left-0 right-0 pointer-events-none z-20 flex flex-col items-center gap-1 px-2 sm:px-4">
       {activeText.map((text, i) => {
         const lines = text.split(/<br\s*\/?>/i).flatMap((l) => l.split("\n"));
 

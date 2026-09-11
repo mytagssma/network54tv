@@ -38,7 +38,6 @@ export default function Navbar() {
   const setProvider = (id: string) => {
     setProviderState(id);
     localStorage.setItem("n54tv-provider", id);
-    setProviderOpen(false);
 
     // Notify EpisodeListFetcher to re-fetch with new provider
     window.dispatchEvent(new CustomEvent("n54tv-provider-changed", { detail: id }));

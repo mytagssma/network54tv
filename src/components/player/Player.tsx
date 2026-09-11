@@ -989,40 +989,74 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, [autoSkipEnabled, inIntro, inOutro, introSegment, outroSegment]);
 
   // ─── Network recovery: reconnect HLS on network change ─────
+  // Handles: online/offline events, VPN/WiFi↔mobile data switches
+  // (navigator.connection), and periodic stall detection.
   useEffect(() => {
-    const handleOnline = () => {
+    const recoverStream = () => {
       const hls = hlsRef.current;
       const video = videoRef.current;
-      if (!hls || !video) return;
+      if (!hls || !video || !hls.url) return;
 
-      // If the stream was playing, try to recover
-      if (hls.url && video.paused === false) {
-        try {
-          hls.recoverMediaError();
-        } catch {
-          // If recover fails, reload the entire stream from current position
-          const pos = video.currentTime;
-          const wasPlaying = !video.paused;
-          const srcs = sources;
-          const hdrs = streamHeaders;
-          if (srcs.length > 0) {
-            loadHls(srcs, hdrs, false);
-            // Restore position after load
-            const onManifestParsed = () => {
-              if (videoRef.current) {
-                videoRef.current.currentTime = pos;
-                if (wasPlaying) videoRef.current.play().catch(() => {});
-              }
-              hls?.off(Hls.Events.MANIFEST_PARSED, onManifestParsed);
-            };
-            hls.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
-          }
+      const pos = video.currentTime;
+      const wasPlaying = video.paused === false;
+      const srcs = sources;
+      const hdrs = streamHeaders;
+
+      // Try lightweight recover first, fall back to full reload
+      try {
+        hls.recoverMediaError();
+      } catch {
+        if (srcs.length > 0) {
+          loadHls(srcs, hdrs, false);
+          const onManifestParsed = () => {
+            if (videoRef.current) {
+              videoRef.current.currentTime = pos;
+              if (wasPlaying) videoRef.current.play().catch(() => {});
+            }
+            hls?.off(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+          };
+          hls.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
         }
       }
     };
 
+    const handleOnline = () => recoverStream();
+
+    const handleOffline = () => {
+      // Don't pause — just let HLS buffer drain gracefully.
+      // When the network comes back (online/connection change),
+      // recoverStream will kick in.
+    };
+
+    // navigator.connection fires on WiFi↔mobile/VPN switches that
+    // don't trigger the online/offline events.
+    const conn = typeof navigator !== "undefined" ? (navigator as any).connection : null;
+    const handleConnectionChange = () => {
+      // Small delay so the OS has time to establish the new route
+      setTimeout(recoverStream, 500);
+    };
+
+    // Periodic stall detection — if playback is frozen for >8s,
+    // try to recover even without a network event.
+    const stallCheck = setInterval(() => {
+      const video = videoRef.current;
+      const hls = hlsRef.current;
+      if (!video || !hls || !hls.url || video.paused) return;
+      if (video.readyState >= 3) return; // enough data, not stalled
+      // Stalled and was playing — try to recover
+      recoverStream();
+    }, 8000);
+
     window.addEventListener("online", handleOnline);
-    return () => window.removeEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    conn?.addEventListener("change", handleConnectionChange);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      conn?.removeEventListener("change", handleConnectionChange);
+      clearInterval(stallCheck);
+    };
   }, [sources, streamHeaders, loadHls]);
 
   // ─── Recover stream when tab becomes visible again (mobile background) ──
@@ -1258,11 +1292,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
       {/* Skip intro/outro buttons — only shown when AniSkip timestamps exist */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
-        <div className="absolute top-3 right-14 sm:top-auto sm:bottom-16 sm:left-0 sm:right-0 flex justify-start sm:justify-center gap-2 sm:gap-3 z-30 px-3">
+        <div className="absolute bottom-12 left-0 right-0 sm:bottom-16 sm:left-auto sm:right-auto flex justify-center sm:justify-center gap-2 sm:gap-3 z-30 px-3">
           {inIntro && introSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
-              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[10px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+              className="flex items-center gap-1.5 sm:gap-2 px-4 py-2 sm:px-3 sm:py-1.5 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[11px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
@@ -1273,7 +1307,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           {inOutro && outroSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = outroSegment.end; }}
-              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[10px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+              className="flex items-center gap-1.5 sm:gap-2 px-4 py-2 sm:px-3 sm:py-1.5 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[11px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
             >
               Skip Outro
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -1625,7 +1659,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       {isFullscreen && (
         <button
           onClick={toggleFullscreen}
-          className="absolute top-3 right-3 z-30 w-11 h-11 sm:w-10 sm:h-10 flex items-center justify-center bg-black/60 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+          className="absolute top-4 right-4 z-40 min-w-[48px] min-h-[48px] w-11 h-11 sm:w-10 sm:h-10 flex items-center justify-center bg-black/60 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
         >
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />

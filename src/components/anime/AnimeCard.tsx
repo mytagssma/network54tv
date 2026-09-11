@@ -15,9 +15,10 @@ interface AnimeCardProps {
   anime: AnimeCardAnime;
   href?: string;
   loading?: boolean;
+  onClick?: () => void;
 }
 
-export default function AnimeCard({ anime, href, loading }: AnimeCardProps) {
+export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardProps) {
   const [provider, setProvider] = useState("");
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export default function AnimeCard({ anime, href, loading }: AnimeCardProps) {
   return (
     <Link
       href={linkHref}
+      onClick={() => onClick?.()}
       className="block bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
                  transition-all duration-200 hover:border-[var(--accent)]/50 hover:-translate-y-0.5
                  rounded-none accent-card-hover"

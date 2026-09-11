@@ -35,6 +35,7 @@ export default function Home() {
   const [filterSort, setFilterSort] = useState("");
   const [filterTags, setFilterTags] = useState<Record<string, "include" | "exclude">>({});
   const [filterTagMode, setFilterTagMode] = useState<"OR" | "AND">("OR");
+  const [navigatingId, setNavigatingId] = useState<number | null>(null);
 
   const hasActiveFilters = Boolean(
     filterFormat || filterSeason || filterTimeRange || filterStatus || filterSort ||
@@ -386,9 +387,9 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 text-[var(--accent)] uppercase tracking-wider">
               // {hasSearched ? "Search Results" : "Latest Releases"}
             </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
               {results.map((anime) => (
-                <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} />
+                <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} loading={anime.id === navigatingId} onClick={() => setNavigatingId(anime.id)} />
               ))}
             </div>
 
