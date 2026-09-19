@@ -106,8 +106,23 @@ export async function GET(req: NextRequest) {
       .split("\n")
       .map((line) => {
         const trimmed = line.trim();
-        // Keep comments, tags, empty lines as-is
-        if (trimmed.startsWith("#") || trimmed === "") return line;
+        if (trimmed === "") return line;
+
+        // If it starts with "#", it's a tag/comment.
+        // If it has URI="..." or URI=..., we need to rewrite that URI so that it goes through the proxy too.
+        if (trimmed.startsWith("#")) {
+          return trimmed.replace(/URI=\"([^\"]+)\"/gi, (match, uri) => {
+            const absoluteUrl = uri.startsWith("http")
+              ? uri
+              : new URL(uri, baseUrl).toString();
+            const proxyParams = new URLSearchParams({
+              url: absoluteUrl,
+              referer,
+              origin,
+            });
+            return `URI="${ourOrigin}/api/proxy?${proxyParams}"`;
+          });
+        }
 
         const absoluteUrl = trimmed.startsWith("http")
           ? trimmed

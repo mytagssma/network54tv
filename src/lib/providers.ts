@@ -14,6 +14,7 @@ import {
   anineko,
   megaplay,
   animeunity,
+  kickassanime,
   configure,
 } from "kaizoku-core";
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
@@ -153,7 +154,28 @@ interface ProviderDef {
 }
 
 const PROVIDERS: ProviderDef[] = [
-  // 1. anikoto — primary, has server selection
+  // 1. kickassanime — primary high-quality provider with multi-subtitle support
+  {
+    name: "kickassanime",
+    getSession: (title) =>
+      getSessionForProvider(
+        "kickassanime",
+        title,
+        () => searchProvider("kickassanime", (q) => kickassanime.search(q), title),
+        (id) => kickassanime.fetchAnimeInfo(id)
+      ),
+    getSources: async (episodeId, type, _ep, _server) => {
+      try {
+        const data = await kickassanime.fetchSources(episodeId, type);
+        return toStreamResult(data, "kickassanime");
+      } catch (err) {
+        console.warn(`[providers] kickassanime fetchSources failed:`, err instanceof Error ? err.message : err);
+        return null;
+      }
+    },
+  },
+
+  // 2. anikoto — fallback, has server selection
   {
     name: "anikoto",
     getSession: (title) =>
