@@ -19,6 +19,17 @@ interface PlayerProps {
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
 
+// Provider options shown in the error overlay when a stream fails
+const PROVIDER_OPTIONS = [
+  { id: "", label: "Auto" },
+  { id: "kickassanime", label: "Kickass" },
+  { id: "anikoto", label: "Anikoto" },
+  { id: "anizone", label: "AniZone" },
+  { id: "allmanga", label: "AllManga" },
+  { id: "anineko", label: "AniNeko" },
+  { id: "animeunity", label: "AnimeUnity" },
+];
+
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
 const FILTER_PRESETS = [
@@ -74,6 +85,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [streamHeaders, setStreamHeaders] = useState<Record<string, string> | null>(null);
   const [loading, setLoading] = useState(true);
   const [streamError, setStreamError] = useState(false);
+  // Manual provider override — set when the user picks a provider after a failure
+  const [providerOverride, setProviderOverride] = useState<string | null>(null);
+  const activeProvider = providerOverride ?? providerId;
 
   // Playback state
   const [playing, setPlaying] = useState(false);
@@ -349,7 +363,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             server,
           });
           if (anilistId) params.set("anilistId", String(anilistId));
-          if (providerId) params.set("providerId", providerId);
+          if (activeProvider) params.set("providerId", activeProvider);
 
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
@@ -377,7 +391,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (fid === fetchIdRef.current) setLoading(false);
       }
     },
-    [animeTitle, episodeNumber, anilistId, providerId, loadHls]
+    [animeTitle, episodeNumber, anilistId, activeProvider, loadHls]
   );
 
   // ─── Probe a specific server for a given type ──────────
@@ -396,7 +410,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           strict: "true",
         });
         if (anilistId) params.set("anilistId", String(anilistId));
-        if (providerId) params.set("providerId", providerId);
+        if (activeProvider) params.set("providerId", activeProvider);
         const res = await fetch(`/api/stream?${params}`);
         if (!res.ok) return null;
         const data = await res.json();
@@ -410,7 +424,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       } catch { /* skip */ }
       return null;
     },
-    [animeTitle, episodeNumber, anilistId, providerId]
+    [animeTitle, episodeNumber, anilistId, activeProvider]
   );
 
   // ─── Auto-detect all working servers ──────────────────
@@ -519,7 +533,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             strict: "true",
           });
           if (anilistId) params.set("anilistId", String(anilistId));
-          if (providerId) params.set("providerId", providerId);
+          if (activeProvider) params.set("providerId", activeProvider);
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
           const data = await res.json();
@@ -582,7 +596,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [animeTitle, episodeNumber, providerId]);
+  }, [animeTitle, episodeNumber, activeProvider]);
 
   // ─── Fetch AniSkip timestamps independently (non-blocking) ──
   useEffect(() => {
@@ -1313,9 +1327,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           <div className="text-center max-w-sm px-4">
             <p className="text-[#9a9aa0] text-sm mb-1">Stream unavailable</p>
             <p className="text-[#6b6b70] text-xs mb-4 leading-relaxed">
-              {providerId
-                ? `No working sources from ${providerId}. All providers may be blocked — try a different server or check back later.`
-                : "All streaming providers returned no sources. They may be blocked by Cloudflare — try again later or switch provider."}
+              {activeProvider
+                ? `No working sources from ${activeProvider}. Pick a different provider below or retry.`
+                : "All streaming providers returned no sources. Pick a provider below or try again later."}
             </p>
             <div className="flex gap-2 justify-center">
               <button
@@ -1330,6 +1344,40 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               >
                 {audioType === "sub" ? "Try Dub" : "Try Sub"}
               </button>
+            </div>
+            {/* Provider picker — only shown when the stream fails */}
+            <div className="mt-4 pt-3 border-t border-white/10">
+              <p className="text-[#6b6b70] text-[10px] uppercase tracking-widest mb-2 font-mono">
+                // Switch Provider
+              </p>
+              <div className="flex flex-wrap gap-1.5 justify-center">
+                {PROVIDER_OPTIONS.map((p) => {
+                  const current = providerOverride ?? providerId ?? "";
+                  const isActive = current === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        if (p.id === current) {
+                          // Same provider — force a retry
+                          destroyHls();
+                          loadByType(audioType);
+                        } else {
+                          // Different provider — override triggers the load effect
+                          setProviderOverride(p.id);
+                        }
+                      }}
+                      className={`text-[10px] px-2.5 py-1.5 border font-mono uppercase tracking-wider transition-colors rounded-none min-h-[36px] ${
+                        isActive
+                          ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/15"
+                          : "border-white/10 text-[#9a9aa0] hover:text-[var(--accent)] hover:border-[var(--accent)]/40"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>

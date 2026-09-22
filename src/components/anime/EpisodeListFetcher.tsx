@@ -13,13 +13,11 @@ interface EpisodeListFetcherProps {
 export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisodes }: EpisodeListFetcherProps) {
   const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes);
   const [loading, setLoading] = useState(false);
-  const [provider, setProvider] = useState("");
 
-  const fetchEpisodes = useCallback(async (providerId: string) => {
+  const fetchEpisodes = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ title: animeTitle, id: String(animeId) });
-      if (providerId) params.set("provider", providerId);
       const res = await fetch(`/api/episodes?${params}`);
       if (res.ok) {
         const data = await res.json();
@@ -32,35 +30,11 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
     }
   }, [animeTitle, animeId]);
 
-  // Read provider from localStorage on mount and fetch episodes immediately
+  // Fetch episodes on mount (auto provider — selector was removed)
   useEffect(() => {
-    const stored = localStorage.getItem("n54tv-provider") || "";
-    setProvider(stored);
-    fetchEpisodes(stored);
-  }, [fetchEpisodes]);
-
-  // Listen for provider-changed custom event
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const newProvider = (e as CustomEvent).detail || "";
-      setProvider(newProvider);
-      fetchEpisodes(newProvider);
-    };
-    window.addEventListener("n54tv-provider-changed", handler);
-    return () => window.removeEventListener("n54tv-provider-changed", handler);
-  }, [fetchEpisodes]);
-
-  // Also listen for storage events (from other tabs)
-  useEffect(() => {
-    const handler = (e: StorageEvent) => {
-      if (e.key === "n54tv-provider") {
-        const newProvider = e.newValue || "";
-        setProvider(newProvider);
-        fetchEpisodes(newProvider);
-      }
-    };
-    window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
+    // Clear any stale stored provider from the removed header selector
+    try { localStorage.removeItem("n54tv-provider"); } catch {}
+    fetchEpisodes();
   }, [fetchEpisodes]);
 
   // Sub/Dub counts
@@ -89,7 +63,7 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
       </div>
 
       {episodes.length > 0 ? (
-        <EpisodeList episodes={episodes} animeId={animeId} provider={provider} />
+        <EpisodeList episodes={episodes} animeId={animeId} />
       ) : (
         <p className="text-[#6b6b70] italic">
           {loading ? "Fetching episodes..." : "No episodes available."}
