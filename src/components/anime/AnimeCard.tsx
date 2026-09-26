@@ -66,8 +66,6 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
             loading="lazy"
           />
         )}
-        {/* Diagonal accent line */}
-        <div className="absolute top-0 right-0 w-12 h-12 bg-gradient-to-bl from-[var(--accent)]/20 to-transparent pointer-events-none" />
       </div>
 
       {/* Info */}
