@@ -22,7 +22,14 @@ function BrowseContent() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
 
-  const toCard = (a: Anime) => ({ id: a.id, title: a.title, image: a.coverImage, genres: a.genres, rating: a.score });
+  const toCard = (a: Anime) => ({
+    id: a.id,
+    title: a.title,
+    image: a.coverImage,
+    genres: a.genres,
+    rating: a.score,
+    episodes: a.episodes,
+  });
 
   // Fetch initial data when query changes
   useEffect(() => {

@@ -7,7 +7,10 @@ interface AnimeCardAnime {
   title: string;
   image: string;
   genres?: string[];
+  /** AniList averageScore, 0–100 */
   rating?: number;
+  /** Total episode count */
+  episodes?: number;
 }
 
 interface AnimeCardProps {
@@ -19,6 +22,15 @@ interface AnimeCardProps {
 
 export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardProps) {
   const baseHref = href ?? `/anime/${anime.id}`;
+
+  // AniList averageScore is 0–100 → render as e.g. 8.5
+  const ratingLabel =
+    typeof anime.rating === "number" && Number.isFinite(anime.rating) && anime.rating > 0
+      ? (anime.rating / 10).toFixed(1)
+      : null;
+  const episodeLabel =
+    typeof anime.episodes === "number" && anime.episodes > 0 ? `${anime.episodes} EP` : null;
+  const hasMeta = Boolean(ratingLabel || episodeLabel);
 
   return (
     <Link
@@ -69,7 +81,7 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
       </div>
 
       {/* Info */}
-      <div className="p-3 space-y-1.5">
+      <div className="p-3 space-y-1">
         <h3 className="text-sm font-bold text-white line-clamp-2 leading-tight uppercase tracking-wider">
           {loading ? "\u00A0" : anime.title}
         </h3>
@@ -86,11 +98,37 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
             ))}
           </div>
         )}
-        {loading && (
-          <div className="flex gap-1">
-            <div className="h-2.5 w-12 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-            <div className="h-2.5 w-8 bg-[var(--accent)]/10 rounded-none animate-pulse" />
+
+        {/* Meta row: rating + episode count */}
+        {!loading && hasMeta && (
+          <div className="flex items-center justify-between gap-2 text-[10px] leading-none tracking-wide">
+            <span className="inline-flex items-center gap-1 text-[var(--accent)] font-semibold">
+              {ratingLabel && (
+                <>
+                  <span aria-hidden="true" className="text-[9px] leading-none">
+                    ★
+                  </span>
+                  <span className="tabular-nums">{ratingLabel}</span>
+                </>
+              )}
+            </span>
+            <span className="text-white/50 font-medium tabular-nums whitespace-nowrap">
+              {episodeLabel}
+            </span>
           </div>
+        )}
+
+        {loading && (
+          <>
+            <div className="flex gap-1">
+              <div className="h-2.5 w-12 bg-[var(--accent)]/10 rounded-none animate-pulse" />
+              <div className="h-2.5 w-8 bg-[var(--accent)]/10 rounded-none animate-pulse" />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="h-2.5 w-7 bg-[var(--accent)]/10 rounded-none animate-pulse" />
+              <div className="h-2.5 w-9 bg-[var(--accent)]/10 rounded-none animate-pulse" />
+            </div>
+          </>
         )}
       </div>
     </Link>

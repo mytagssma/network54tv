@@ -11,6 +11,8 @@ function mapAnimeToCard(anime: Anime) {
     title: anime.title,
     image: anime.coverImage,
     genres: anime.genres,
+    rating: anime.score,
+    episodes: anime.episodes,
   };
 }
 
