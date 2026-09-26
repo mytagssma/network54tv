@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import "@fontsource/iosevka/latin.css";
 import "./globals.css";
 import Navbar from "@/components/layout/Navbar";
-import Footer from "@/components/layout/Footer";
 
 export const metadata: Metadata = {
   title: "n54tv // network54tv",
@@ -63,7 +62,6 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-[var(--background)] text-white cyber-grid-bg">
         <Navbar />
         <main className="relative z-10 flex-1">{children}</main>
-        <Footer />
       </body>
     </html>
   );
