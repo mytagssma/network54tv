@@ -262,6 +262,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const inIntro = !!introSegment && currentTime >= introSegment.start && currentTime < introSegment.end && duration > 0;
   const inOutro = !!outroSegment && currentTime >= outroSegment.start && currentTime < outroSegment.end && duration > 0;
+  // Speed picker options: presets plus the current rate when it came from a
+  // ±0.25 keyboard step, so the active rate is always highlighted
+  const speedOptions = useMemo(() => {
+    const opts = new Set(SPEED_PRESETS);
+    opts.add(playbackRate);
+    return [...opts].sort((a, b) => a - b);
+  }, [playbackRate]);
   // Prev/next episode targets for the control bar (prev never goes below EP 1)
   const prevEpisodeTarget = episodeNumber > 1 && anilistId ? episodeNumber - 1 : null;
   const nextEpisodeTarget = nextEpisodeNumber && anilistId ? nextEpisodeNumber : null;
@@ -1190,6 +1197,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   };
 
+  // Keyboard speed steps (shift+, / shift+.): ±0.25, clamped to 0.25–4.
+  // Updates the rate state too, so the speed picker stays in sync.
+  const stepPlaybackRate = (delta: number) => {
+    const next = Math.min(4, Math.max(0.25, Math.round((playbackRateRef.current + delta) * 100) / 100));
+    if (next === playbackRateRef.current) return;
+    playbackRateRef.current = next;
+    setPlaybackRate(next);
+    if (videoRef.current) videoRef.current.playbackRate = next;
+  };
+
   // ─── Pick a streaming provider (control-bar dropdown) ───────
   // Reuses the manual override the error overlay uses: flipping the
   // override changes `activeProvider`, which re-runs the load effect
@@ -1371,6 +1388,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       const video = videoRef.current;
       if (!video) return;
 
+      // shift + ,/. — step playback speed by 0.25 (clamped 0.25–4).
+      // Matched on the physical key (e.code) so it works on any layout,
+      // where e.key may report '<', ';', etc.
+      if (e.shiftKey && (e.code === "Comma" || e.code === "Period")) {
+        e.preventDefault();
+        stepPlaybackRate(e.code === "Comma" ? -0.25 : 0.25);
+        resetControlsTimer();
+        return;
+      }
+
       switch (e.key) {
         case ' ':
           e.preventDefault();
@@ -1441,24 +1468,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           setShowSubPicker(false);
           setShowFilterPicker(false);
           break;
-        case ',':
-          if (!e.shiftKey) break;
-          e.preventDefault();
-          { const i = SPEED_PRESETS.indexOf(playbackRateRef.current);
-          const prev = i > 0 ? SPEED_PRESETS[i - 1] : SPEED_PRESETS[0];
-          video.playbackRate = prev;
-          setPlaybackRate(prev); }
-          resetControlsTimer();
-          break;
-        case '.':
-          if (!e.shiftKey) break;
-          e.preventDefault();
-          { const i = SPEED_PRESETS.indexOf(playbackRateRef.current);
-          const next = i < SPEED_PRESETS.length - 1 ? SPEED_PRESETS[i + 1] : SPEED_PRESETS[SPEED_PRESETS.length - 1];
-          video.playbackRate = next;
-          setPlaybackRate(next); }
-          resetControlsTimer();
-          break;
+        // speed steps are handled above via e.code (shift + ,/.)
       }
     };
 
@@ -2001,7 +2011,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
                     Speed
                   </div>
-                  {SPEED_PRESETS.map((r) => (
+                  {speedOptions.map((r) => (
                     <button
                       key={r}
                       onClick={() => changeSpeed(r)}
@@ -2286,7 +2296,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           <div>
             <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Speed</div>
             <div className="flex flex-wrap gap-1">
-              {SPEED_PRESETS.map((r) => (
+              {speedOptions.map((r) => (
                 <button
                   key={r}
                    onClick={() => { changeSpeed(r); }}
