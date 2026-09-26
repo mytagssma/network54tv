@@ -55,6 +55,32 @@ function formatTime(t: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// Pathname (lowercased, query/hash ignored) for extension checks
+function getUrlPathname(url: string): string {
+  try {
+    return new URL(url, window.location.href).pathname.toLowerCase();
+  } catch {
+    return url.split(/[?#]/)[0].toLowerCase();
+  }
+}
+
+// DASH manifests — unplayable here (hls.js only, no dash.js)
+function isDashUrl(url: string): boolean {
+  return getUrlPathname(url).endsWith(".mpd");
+}
+
+// Progressive files the browser can play directly via video.src
+function isProgressiveUrl(url: string): boolean {
+  return /\.(mp4|m4v|webm|mov)$/.test(getUrlPathname(url));
+}
+
+// A source we can actually attempt: HLS (when hls.js is supported) or progressive —
+// never DASH (.mpd), which would otherwise assign an unplayable URL and stall at 0:00
+function isPlayableSource(s: StreamSource): boolean {
+  if (isDashUrl(s.url)) return false;
+  return (s.isM3U8 && Hls.isSupported()) || isProgressiveUrl(s.url);
+}
+
 export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId }: PlayerProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -69,6 +95,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const activeServerRef = useRef<string | null>(null);
   const currentQualityRef = useRef("auto");
   const lastTimeUpdateRef = useRef(0);
+  const triedUrlsRef = useRef<Set<string>>(new Set()); // playable URLs already attempted this load
+  // ─── Load-attempt lifecycle ───────────────────────────────
+  // Each source choice is one bounded "attempt" (see loadHls below).
+  // watchdogRef: 15s timer that fails an attempt when neither MANIFEST_PARSED
+  //              nor a fatal error ever fires (silent black screen).
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // "idle" → no attempt running, "pending" → waiting for media, "ready" → playing
+  const attemptStateRef = useRef<"idle" | "pending" | "ready">("idle");
+  // Fails the attempt that is currently running (null while idle).
+  const failAttemptRef = useRef<(() => void) | null>(null);
 
   // Refs for close-on-outside-click
   const settingsPanelRef = useRef<HTMLDivElement>(null);
@@ -217,132 +253,250 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const inIntro = !!introSegment && currentTime >= introSegment.start && currentTime < introSegment.end && duration > 0;
   const inOutro = !!outroSegment && currentTime >= outroSegment.start && currentTime < outroSegment.end && duration > 0;
 
+  // ─── Attempt watchdog ────────────────────────────────────
+  const clearWatchdog = useCallback(() => {
+    if (watchdogRef.current) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+  }, []);
+
   // ─── Destroy HLS ────────────────────────────────────────
   const destroyHls = useCallback(() => {
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
-  }, []);
+    // A torn-down instance can never report progress again — retire its
+    // attempt so its watchdog/handlers can't fire against a newer load.
+    clearWatchdog();
+    attemptStateRef.current = "idle";
+    failAttemptRef.current = null;
+  }, [clearWatchdog]);
+
+  // The running attempt produced a usable stream: dismiss the loading bar
+  // here (HLS: MANIFEST_PARSED, progressive: loadedmetadata).
+  const markAttemptReady = useCallback(() => {
+    if (attemptStateRef.current !== "pending") return;
+    clearWatchdog();
+    attemptStateRef.current = "ready";
+    setStreamError(false);
+    setLoading(false);
+  }, [clearWatchdog]);
 
   // ─── Load HLS stream ────────────────────────────────────
   const loadHls = useCallback(
     (srcs: StreamSource[], headers: Record<string, string> | null, autoPlay: boolean) => {
       const video = videoRef.current;
-      if (!video || srcs.length === 0) return;
+      if (!video) {
+        // Nothing to attach media to — surface the error instead of hanging.
+        setLoading(false);
+        setStreamError(true);
+        return;
+      }
 
-      destroyHls();
+      destroyHls(); // also retires any previous attempt (watchdog + handlers)
+      triedUrlsRef.current = new Set();
+
+      // Restrict to sources the browser can actually play (.mpd/DASH is excluded)
+      const playable = srcs.filter(isPlayableSource);
+      if (playable.length === 0) {
+        setLoading(false);
+        setStreamError(true);
+        return;
+      }
 
       // Pick the source matching selected quality, or fallback
-      let selected = srcs.find((s) => s.quality === currentQualityRef.current);
-      if (!selected) {
-        selected =
-          srcs.find((s) => s.quality === "1080p") ||
-          srcs.find((s) => s.quality === "720p") ||
-          srcs.find((s) => s.quality === "480p") ||
-          srcs[0];
-      }
-      if (!selected) return;
+      const pick = (pool: StreamSource[]): StreamSource | undefined =>
+        pool.find((s) => s.quality === currentQualityRef.current) ||
+        pool.find((s) => s.quality === "1080p") ||
+        pool.find((s) => s.quality === "720p") ||
+        pool.find((s) => s.quality === "480p") ||
+        pool.find((s) => s.isM3U8 && Hls.isSupported()) ||
+        pool[0];
 
-      if (selected.isM3U8 && Hls.isSupported()) {
-        const loadUrl = headers ? proxyUrl(selected.url, headers) : selected.url;
+      // ── Attempt lifecycle ──────────────────────────────────────────
+      // Each selected source is one bounded "attempt":
+      //   • fatal NETWORK_ERROR → startLoad() at most 2×, then fail attempt
+      //   • fatal MEDIA_ERROR   → recoverMediaError() at most 2×, then fail attempt
+      //   • any other fatal     → fail attempt immediately
+      //   • watchdog (15s)      → fail attempt if the stream never becomes ready
+      // Failing = destroyHls → next untried source; when the pool is exhausted
+      // → setStreamError(true) (the failover effect then rotates servers, or
+      // the error overlay renders). No recovery path is unbounded any more.
+      const tryLoad = (pool: StreamSource[]) => {
+        const selected = pick(pool);
+        if (!selected) {
+          // Pool exhausted — the error overlay requires !loading, so error wins.
+          setLoading(false);
+          setStreamError(true);
+          return;
+        }
+        triedUrlsRef.current.add(selected.url);
 
-        const hls = new Hls({
-          // Startup — start low, ramp up fast
-          startLevel: -1,
-          testBandwidth: true,
-          abrEwmaDefaultEstimate: 2_000_000,
-          startFragPrefetch: true,
-          maxLoadingDelay: 200,
+        // ── Arm a fresh attempt ──
+        const netRecoveries = { used: 0 };
+        const mediaRecoveries = { used: 0 };
+        setLoading(true); // honest: the bar stays up until media is ready
+        attemptStateRef.current = "pending";
 
-          // Buffer — generous to avoid desktop stalling
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
-          maxBufferSize: 60 * 1000 * 1000,
-          backBufferLength: 30,
-          maxBufferHole: 0.5,
-
-          // VOD: disable LL-HLS
-          lowLatencyMode: false,
-
-          // Network — aggressive retries reduce stall duration
-          fragLoadingMaxRetry: 6,
-          fragLoadingRetryDelay: 200,
-          manifestLoadingMaxRetry: 4,
-          manifestLoadingRetryDelay: 100,
-          levelLoadingMaxRetry: 4,
-          levelLoadingRetryDelay: 100,
-          fragLoadingTimeOut: 15000,
-          manifestLoadingTimeOut: 8000,
-          levelLoadingTimeOut: 10000,
-
-          // Cap quality to player size (saves bandwidth on mobile)
-          capLevelToPlayerSize: true,
-
-          enableWorker: true,
-        });
-        hls.loadSource(loadUrl);
-        hls.attachMedia(video);
-        hlsRef.current = hls;
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          setStreamError(false);
-          // Restore saved progress
-          const saved = restoreProgress();
-          if (saved && saved.time > 0) {
-            video.currentTime = saved.time;
+        const fail = () => {
+          if (failAttemptRef.current !== fail) return; // superseded attempt
+          failAttemptRef.current = null;
+          destroyHls(); // tears down hls and clears this attempt's watchdog
+          const next = pool.filter((s) => !triedUrlsRef.current.has(s.url));
+          if (next.length > 0) {
+            tryLoad(next);
+          } else {
+            // Drop a broken direct-play src so it can't keep erroring.
+            const v = videoRef.current;
+            if (v?.getAttribute("src")) {
+              try {
+                v.removeAttribute("src");
+                v.load();
+              } catch {}
+            }
+            setLoading(false);
+            setStreamError(true);
           }
+        };
+        failAttemptRef.current = fail;
+
+        // Watchdog: no MANIFEST_PARSED / loadedmetadata / fatal error within
+        // 15s means this attempt is silently stuck on a black frame — fail it.
+        clearWatchdog();
+        watchdogRef.current = setTimeout(() => {
+          watchdogRef.current = null;
+          fail();
+        }, 15000);
+
+        if (selected.isM3U8 && Hls.isSupported()) {
+          // Always through /api/proxy: the CDN requires a Referer and sends no
+          // CORS headers, so a direct cross-origin load fails silently.
+          const loadUrl = proxyUrl(selected.url, headers);
+
+          const hls = new Hls({
+            // Startup — start low, ramp up fast
+            startLevel: -1,
+            testBandwidth: true,
+            abrEwmaDefaultEstimate: 2_000_000,
+            startFragPrefetch: true,
+            maxLoadingDelay: 200,
+
+            // Buffer — generous to avoid desktop stalling
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            maxBufferSize: 60 * 1000 * 1000,
+            backBufferLength: 30,
+            maxBufferHole: 0.5,
+
+            // VOD: disable LL-HLS
+            lowLatencyMode: false,
+
+            // Network — aggressive retries reduce stall duration
+            fragLoadingMaxRetry: 6,
+            fragLoadingRetryDelay: 200,
+            manifestLoadingMaxRetry: 4,
+            manifestLoadingRetryDelay: 100,
+            levelLoadingMaxRetry: 4,
+            levelLoadingRetryDelay: 100,
+            fragLoadingTimeOut: 15000,
+            manifestLoadingTimeOut: 8000,
+            levelLoadingTimeOut: 10000,
+
+            // Cap quality to player size (saves bandwidth on mobile)
+            capLevelToPlayerSize: true,
+
+            enableWorker: true,
+          });
+          hls.loadSource(loadUrl);
+          hls.attachMedia(video);
+          hlsRef.current = hls;
+
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (failAttemptRef.current !== fail) return; // superseded attempt
+            markAttemptReady(); // loading dismissed + watchdog cleared
+            setStreamError(false);
+            // Restore saved progress
+            const saved = restoreProgress();
+            if (saved && saved.time > 0) {
+              video.currentTime = saved.time;
+            }
+            if (autoPlay) {
+              video.play().catch(() => {});
+            }
+            // Expose HLS internal quality levels
+            if (hls.levels?.length) {
+              const levels = hls.levels.map((l, i) => ({
+                index: i,
+                height: l.height || 0,
+                name: l.height ? `${l.height}p` : `Level ${i}`,
+              }));
+              setHlsLevels(levels);
+              setCurrentQuality("auto");
+              currentQualityRef.current = "auto";
+            }
+          });
+
+          // Track auto-selected level for display
+          hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+            if (hls.currentLevel === -1 && hls.levels?.[data.level]) {
+              const h = hls.levels[data.level].height;
+              if (h) {
+                setCurrentQuality(`${h}p`);
+                currentQualityRef.current = `${h}p`;
+              }
+            }
+          });
+
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (!data.fatal) return;
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                if (netRecoveries.used < 2) {
+                  netRecoveries.used += 1;
+                  try {
+                    hls.startLoad();
+                  } catch {
+                    fail();
+                  }
+                } else {
+                  fail();
+                }
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                if (mediaRecoveries.used < 2) {
+                  mediaRecoveries.used += 1;
+                  try {
+                    hls.recoverMediaError();
+                  } catch {
+                    fail();
+                  }
+                } else {
+                  fail();
+                }
+                break;
+              default:
+                // Any other fatal error fails the attempt right away; `fail`
+                // moves on to the next untried playable source (tried-set
+                // prevents re-selecting the same failing URL).
+                fail();
+            }
+          });
+        } else {
+          // Direct play for progressive files — also through /api/proxy,
+          // otherwise the CDN 403s (no Referer) and the browser blocks the
+          // cross-origin response (no CORS headers).
+          video.src = proxyUrl(selected.url, headers);
           if (autoPlay) {
             video.play().catch(() => {});
           }
-          // Expose HLS internal quality levels
-          if (hls.levels?.length) {
-            const levels = hls.levels.map((l, i) => ({
-              index: i,
-              height: l.height || 0,
-              name: l.height ? `${l.height}p` : `Level ${i}`,
-            }));
-            setHlsLevels(levels);
-            setCurrentQuality("auto");
-            currentQualityRef.current = "auto";
-          }
-        });
-
-        // Track auto-selected level for display
-        hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-          if (hls.currentLevel === -1 && hls.levels?.[data.level]) {
-            const h = hls.levels[data.level].height;
-            if (h) {
-              setCurrentQuality(`${h}p`);
-              currentQualityRef.current = `${h}p`;
-            }
-          }
-        });
-
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal) {
-            switch (data.type) {
-              case Hls.ErrorTypes.NETWORK_ERROR:
-                hls.startLoad();
-                break;
-              case Hls.ErrorTypes.MEDIA_ERROR:
-                hls.recoverMediaError();
-                break;
-              default:
-                setStreamError(true);
-                break;
-            }
-          }
-        });
-      } else {
-        // Direct play for non-m3u8
-        video.src = selected.url;
-        if (autoPlay) {
-          video.play().catch(() => {});
         }
-      }
+      };
+
+      tryLoad(playable);
     },
-    [destroyHls]
+    [destroyHls, clearWatchdog, markAttemptReady]
   );
 
   // ─── Fetch stream with server fallback ──────────────────
@@ -351,6 +505,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       const fid = ++fetchIdRef.current;
       setLoading(true);
       setStreamError(false);
+      // Set once a load attempt owns the loading state (it dismisses the bar
+      // on MANIFEST_PARSED / loadedmetadata).
+      let handedOffToAttempt = false;
 
       try {
         for (const server of SERVERS) {
@@ -376,6 +533,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             setSubtitles(data.subtitles || []);
             setStreamHeaders(data.headers || null);
             setStreamError(false);
+            handedOffToAttempt = true;
             loadHls(data.sources, data.headers || null, true);
             return;
           }
@@ -388,7 +546,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       } catch {
         if (fid === fetchIdRef.current) setStreamError(true);
       } finally {
-        if (fid === fetchIdRef.current) setLoading(false);
+        // Safety net so the loading overlay can never be stranded over an
+        // error: error paths clear it here, successful loads clear it when
+        // their attempt becomes ready.
+        if (fid === fetchIdRef.current && !handedOffToAttempt) setLoading(false);
       }
     },
     [animeTitle, episodeNumber, anilistId, activeProvider, loadHls]
@@ -407,7 +568,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           episode: String(episodeNumber),
           type,
           server,
-          strict: "true",
         });
         if (anilistId) params.set("anilistId", String(anilistId));
         if (activeProvider) params.set("providerId", activeProvider);
@@ -530,7 +690,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             episode: String(episodeNumber),
             type: preferredType,
             server,
-            strict: "true",
           });
           if (anilistId) params.set("anilistId", String(anilistId));
           if (activeProvider) params.set("providerId", activeProvider);
@@ -548,8 +707,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             setAvailableServers([server]);
             setStreamError(false);
             setAudioType(preferredType);
+            // Don't dismiss the loading bar here — the attempt owns it and
+            // clears it on MANIFEST_PARSED / loadedmetadata (or fails over).
             loadHls(data.sources, data.headers || null, true);
-            setLoading(false);
 
             // Use provider skip times if available (more accurate than AniSkip)
             if (data.intro || data.outro) {
@@ -829,6 +989,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   }, []);
   const handleLoadedMetadata = () => {
+    // Progressive/direct-src attempt now has media metadata — it is playable,
+    // so this is where its loading bar is dismissed (HLS dismisses on
+    // MANIFEST_PARSED). No-op unless an attempt is still pending.
+    markAttemptReady();
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
       // Restore saved preferences
@@ -854,6 +1018,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
       }
     }
+  };
+
+  // Media-element failures (progressive 403/decode, MSE attach errors) are
+  // never reported by hls.js and used to vanish silently — fail the current
+  // attempt so we rotate to the next source instead of freezing on black.
+  const handleVideoError = () => {
+    if (attemptStateRef.current === "idle") return; // no attempt running
+    if (!videoRef.current?.error) return; // stale/reset event
+    failAttemptRef.current?.();
   };
 
   const togglePlay = () => {
@@ -1278,6 +1451,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         style={{ filter: videoFilter === "off" ? undefined : getFilterCSS(videoFilter) }}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
+        onError={handleVideoError}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => {

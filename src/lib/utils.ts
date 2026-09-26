@@ -18,12 +18,34 @@ export function truncate(text: string, maxLength: number): string {
   return text.substring(0, maxLength) + "...";
 }
 
-/** Build a proxy URL that adds required headers upstream */
-export function proxyUrl(rawUrl: string, headers?: Record<string, string>): string {
+/**
+ * Build a proxy URL that adds required headers upstream.
+ *
+ * Header precedence:
+ *   1. Explicit `headers` Referer/Origin supplied by the stream provider
+ *   2. Derived from the target URL's own host (e.g. https://hls.krussdomi.com)
+ *      — a hardcoded default referer would be rejected by every other CDN
+ */
+export function proxyUrl(
+  rawUrl: string,
+  headers?: Record<string, string> | null
+): string {
+  let derivedOrigin = "";
+  try {
+    const host = new URL(rawUrl).host;
+    if (host) derivedOrigin = `https://${host}`;
+  } catch {
+    // unparseable (e.g. blob:) — fall through to the legacy default below
+  }
   const referer =
-    headers?.["Referer"] || headers?.["referer"] || "https://megaplay.buzz/";
+    headers?.["Referer"] ||
+    headers?.["referer"] ||
+    (derivedOrigin ? `${derivedOrigin}/` : "https://megaplay.buzz/");
   const origin =
-    headers?.["Origin"] || headers?.["origin"] || "https://megaplay.buzz";
+    headers?.["Origin"] ||
+    headers?.["origin"] ||
+    derivedOrigin ||
+    "https://megaplay.buzz";
   const params = new URLSearchParams({ url: rawUrl, referer, origin });
   return `/api/proxy?${params}`;
 }

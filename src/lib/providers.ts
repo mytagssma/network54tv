@@ -84,31 +84,43 @@ function normalize(s: string): string {
 // ─── Provider Adapters ────────────────────────────────────────────────
 
 /**
- * Try to find the best-matching anime for `title` using a provider's `search` function,
- * returning the provider-specific ID.
+ * Try to find anime matching `title` using a provider's `search` function.
+ * Returns an ordered, deduped list of provider-specific candidate IDs:
+ * all title-matching results first (original order), then `results[0]`
+ * as a fallback if nothing title-matched.
  */
 async function searchProvider(
   providerName: string,
   searchFn: (q: string) => Promise<any>,
   title: string
-): Promise<string | null> {
+): Promise<(string | number)[]> {
   try {
     const res = await searchFn(title);
     const results = res?.results ?? res?.data ?? [];
-    if (!Array.isArray(results) || results.length === 0) return null;
+    if (!Array.isArray(results) || results.length === 0) return [];
 
     const clean = normalize(title);
-    const match = results.find((r: any) => {
+    const candidates: (string | number)[] = [];
+    const seen = new Set<string | number>();
+    const idOf = (r: any): string | number | null => r?.id ?? r?.animeId ?? null;
+
+    for (const r of results) {
       const rName = normalize(
         typeof r.title === "string" ? r.title : r.title?.romaji || r.title?.english || ""
       );
-      return rName.includes(clean) || clean.includes(rName);
-    }) || results[0];
+      if (!rName.includes(clean) && !clean.includes(rName)) continue;
+      const id = idOf(r);
+      if (id === null || seen.has(id)) continue;
+      seen.add(id);
+      candidates.push(id);
+    }
+    if (candidates.length > 0) return candidates;
 
-    return match?.id ?? match?.animeId ?? null;
+    const fallback = idOf(results[0]);
+    return fallback !== null ? [fallback] : [];
   } catch (err) {
     console.warn(`[providers] searchProvider(${providerName}) failed:`, err instanceof Error ? err.message : err);
-    return null;
+    return [];
   }
 }
 
@@ -117,28 +129,47 @@ async function searchProvider(
 async function getSessionForProvider(
   providerName: string,
   title: string,
-  doSearch: () => Promise<string | null>,
-  doFetchInfo: (id: string) => Promise<any>
+  doSearch: () => Promise<(string | number)[]>,
+  doFetchInfo: (id: string) => Promise<any>,
+  episodeNumber?: number
 ): Promise<ProviderSession | null> {
   const key = cacheKey(providerName, title);
   const cached = sessionCache.get(key);
-  if (cached) return cached;
+  if (cached) {
+    // Only trust the cache if it can serve the requested episode — a cached
+    // "Part 1" session (e.g. 11 eps) must not poison an ep-12 request.
+    const cachedOk =
+      episodeNumber === undefined ||
+      (Array.isArray(cached.episodes) &&
+        cached.episodes.some((e: any) => e?.number === episodeNumber));
+    if (cachedOk) return cached;
+    // else fall through to re-search
+  }
 
   try {
-    const id = await doSearch();
-    if (!id) return null;
+    const ids = await doSearch();
+    if (ids.length === 0) return null;
 
-    const info = await doFetchInfo(id);
-    const episodes = info?.episodes ?? info?.data?.episodes ?? [];
-    if (!Array.isArray(episodes) || episodes.length === 0) return null;
+    for (const id of ids) {
+      const info = await doFetchInfo(String(id));
+      const episodes = info?.episodes ?? info?.data?.episodes ?? [];
+      if (!Array.isArray(episodes) || episodes.length === 0) continue;
+      if (
+        episodeNumber !== undefined &&
+        !episodes.some((e: any) => e?.number === episodeNumber)
+      ) {
+        continue;
+      }
 
-    const session: ProviderSession = { providerId: providerName, animeId: id, episodes };
-    sessionCache.set(key, session);
-    if (sessionCache.size > SESSION_CACHE_MAX) {
-      const firstKey = sessionCache.keys().next().value;
-      if (firstKey) sessionCache.delete(firstKey);
+      const session: ProviderSession = { providerId: providerName, animeId: String(id), episodes };
+      sessionCache.set(key, session);
+      if (sessionCache.size > SESSION_CACHE_MAX) {
+        const firstKey = sessionCache.keys().next().value;
+        if (firstKey) sessionCache.delete(firstKey);
+      }
+      return session;
     }
-    return session;
+    return null;
   } catch (err) {
     console.warn(`[providers] getSessionForProvider(${providerName}, "${title}") failed:`, err instanceof Error ? err.message : err);
     return null;
@@ -149,7 +180,7 @@ async function getSessionForProvider(
 
 interface ProviderDef {
   name: string;
-  getSession: (title: string, anilistId?: number) => Promise<ProviderSession | null>;
+  getSession: (title: string, anilistId?: number, episodeNumber?: number) => Promise<ProviderSession | null>;
   getSources: (episodeId: string, type: "sub" | "dub", episodeNumber: number, server?: string) => Promise<StreamResult | null>;
 }
 
@@ -157,12 +188,13 @@ const PROVIDERS: ProviderDef[] = [
   // 1. kickassanime — primary high-quality provider with multi-subtitle support
   {
     name: "kickassanime",
-    getSession: (title) =>
+    getSession: (title, _anilistId, episodeNumber) =>
       getSessionForProvider(
         "kickassanime",
         title,
         () => searchProvider("kickassanime", (q) => kickassanime.search(q), title),
-        (id) => kickassanime.fetchAnimeInfo(id)
+        (id) => kickassanime.fetchAnimeInfo(id),
+        episodeNumber
       ),
     getSources: async (episodeId, type, _ep, _server) => {
       try {
@@ -178,12 +210,13 @@ const PROVIDERS: ProviderDef[] = [
   // 2. anikoto — fallback, has server selection
   {
     name: "anikoto",
-    getSession: (title) =>
+    getSession: (title, _anilistId, episodeNumber) =>
       getSessionForProvider(
         "anikoto",
         title,
         () => searchProvider("anikoto", (q) => anikoto.search(q), title),
-        (id) => anikoto.fetchAnimeInfo(id)
+        (id) => anikoto.fetchAnimeInfo(id),
+        episodeNumber
       ),
     getSources: async (episodeId, type, _ep, server) => {
       // megaplay.buzz `getSources` (vidstream-2) now returns encrypted payload
@@ -210,12 +243,13 @@ const PROVIDERS: ProviderDef[] = [
   // 2. anizone
   {
     name: "anizone",
-    getSession: (title) =>
+    getSession: (title, _anilistId, episodeNumber) =>
       getSessionForProvider(
         "anizone",
         title,
         () => searchProvider("anizone", (q) => anizone.search(q), title),
-        (id) => anizone.fetchAnimeInfo(id)
+        (id) => anizone.fetchAnimeInfo(id),
+        episodeNumber
       ),
     getSources: async (episodeId, _type, episodeNumber, _server) => {
       const data = await anizone.fetchSources(episodeId, undefined, episodeNumber);
@@ -226,12 +260,13 @@ const PROVIDERS: ProviderDef[] = [
   // 3. allmanga
   {
     name: "allmanga",
-    getSession: (title) =>
+    getSession: (title, _anilistId, episodeNumber) =>
       getSessionForProvider(
         "allmanga",
         title,
         () => searchProvider("allmanga", (q) => allmanga.search(q), title),
-        (id) => allmanga.fetchAnimeInfo(id)
+        (id) => allmanga.fetchAnimeInfo(id),
+        episodeNumber
       ),
     getSources: async (episodeId, type, _ep, _server) => {
       const data = await allmanga.fetchSources(episodeId, type);
@@ -278,12 +313,13 @@ const PROVIDERS: ProviderDef[] = [
   // 6. animeunity
   {
     name: "animeunity",
-    getSession: (title) =>
+    getSession: (title, _anilistId, episodeNumber) =>
       getSessionForProvider(
         "animeunity",
         title,
         () => searchProvider("animeunity", (q) => animeunity.search(q), title),
-        (id) => animeunity.fetchAnimeInfo(id)
+        (id) => animeunity.fetchAnimeInfo(id),
+        episodeNumber
       ),
     getSources: async (episodeId, _type, episodeNumber, _server) => {
       const data = await (animeunity as any).fetchEpisodeSources(episodeId, undefined, episodeNumber);
@@ -327,19 +363,41 @@ async function fetchAniSkipTimes(
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Drop DASH `.mpd` manifests: the player only supports HLS (hls.js) or
+ * progressive files — no dash.js — so an `.mpd` source renders as a silent
+ * 0:00 player. In practice the kickassanime `.mpd` URL was also 404-dead.
+ * Checks the pathname only (query/hash ignored, case-insensitive).
+ */
+function isPlayableSourceUrl(url: string): boolean {
+  try {
+    return !new URL(url, "http://localhost").pathname.toLowerCase().endsWith(".mpd");
+  } catch {
+    // Unparseable URL — fall back to a query/hash-stripped suffix check.
+    const path = url.split(/[?#]/)[0] ?? "";
+    return !path.toLowerCase().endsWith(".mpd");
+  }
+}
+
 function toStreamResult(
   data: any,
   providerId: string
 ): StreamResult | null {
-  if (!data) return null;
-  const sources: StreamSource[] = (data.sources || [])
-    .filter((s: any) => s?.url)
+  if (!data) {
+    return null;
+  }
+  const rawSources: any[] = Array.isArray(data.sources) ? data.sources : [];
+  const sources: StreamSource[] = rawSources
+    .filter((s: any) => s?.url && isPlayableSourceUrl(String(s.url)))
     .map((s: any) => ({
       url: s.url,
       quality: s.quality || "auto",
       isM3U8: s.isM3U8 !== false,
     }));
 
+  // Empty after filtering (e.g. only unplayable `.mpd` sources) ⇒ treat as
+  // "provider produced nothing" so getStreamingSources falls through to the
+  // next provider instead of short-circuiting on an unplayable payload.
   if (sources.length === 0) return null;
 
   const subtitles: Subtitle[] = (data.subtitles || [])
@@ -403,7 +461,8 @@ export async function getMegaPlaySources(
 ): Promise<StreamResult | null> {
   try {
     const data = await megaplay.fetchSources(episodeId, type, episodeNumber, malId);
-    return toStreamResult(data, "megaplay");
+    const result = toStreamResult(data, "megaplay");
+    return result;
   } catch (err) {
     console.warn(`[providers] getMegaPlaySources(ep=${episodeId}) failed:`, err instanceof Error ? err.message : err);
     return null;
@@ -601,7 +660,9 @@ export async function getStreamingSources(
           const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
           if (targetEp?.id) {
             const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
-            if (result) return { ...result, providerId: "megaplay" };
+            if (result) {
+              return { ...result, providerId: "megaplay" };
+            }
           }
         }
       } catch (err) {
@@ -614,14 +675,20 @@ export async function getStreamingSources(
       if (provider.name !== preferredProvider) continue;
       tried.push(provider.name);
       try {
-        const session = await provider.getSession(animeTitle);
-        if (!session) continue;
+        const session = await provider.getSession(animeTitle, undefined, episodeNumber);
+        if (!session) {
+          continue;
+        }
 
         const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
-        if (!targetEp?.id) continue;
+        if (!targetEp?.id) {
+          continue;
+        }
 
         const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
-        if (result) return { ...result, providerId: provider.name };
+        if (result) {
+          return { ...result, providerId: provider.name };
+        }
       } catch (err) {
         console.warn(`[providers] ${provider.name} phase1 failed:`, err instanceof Error ? err.message : err);
       }
@@ -636,11 +703,15 @@ export async function getStreamingSources(
     tried.push(provider.name);
 
     try {
-      const session = await provider.getSession(animeTitle);
-      if (!session) continue;
+      const session = await provider.getSession(animeTitle, undefined, episodeNumber);
+      if (!session) {
+        continue;
+      }
 
       const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
-      if (!targetEp?.id) continue;
+      if (!targetEp?.id) {
+        continue;
+      }
 
       const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
       if (result) {
@@ -661,7 +732,9 @@ export async function getStreamingSources(
         const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
         if (targetEp?.id) {
           const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
-          if (result) return { ...result, providerId: "megaplay" };
+          if (result) {
+            return { ...result, providerId: "megaplay" };
+          }
         }
       }
     } catch (err) {

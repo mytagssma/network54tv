@@ -26,8 +26,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Missing url parameter" }, { status: 400 });
   }
 
+  let decodedUrl = "";
   try {
-    const decodedUrl = decodeURIComponent(encodedUrl);
+    decodedUrl = decodeURIComponent(encodedUrl);
 
     // SSRF protection: validate URL scheme and block private/internal hosts
     let parsedUrl: URL;
@@ -62,7 +63,19 @@ export async function GET(req: NextRequest) {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     };
 
-    const upstream = await fetch(decodedUrl, { headers: requestHeaders });
+    // Byte-range requests (progressive seeking) must be relayed upstream so we
+    // can pass back a real 206 + Content-Range. Manifests never need it.
+    const rangeHeader = req.headers.get("range");
+    if (!looksLikeM3u8 && rangeHeader) {
+      requestHeaders["Range"] = rangeHeader;
+    }
+
+    // Bound the upstream wait: a dead CDN must surface as a 504 instead of
+    // hanging the player's request forever.
+    const upstream = await fetch(decodedUrl, {
+      headers: requestHeaders,
+      signal: AbortSignal.timeout(10000),
+    });
 
     if (!upstream.ok) {
       return NextResponse.json(
@@ -84,9 +97,23 @@ export async function GET(req: NextRequest) {
         "Content-Type": contentType || "application/octet-stream",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "public, max-age=86400, s-maxage=86400",
+        // Progressive seeking relies on range support being advertised.
+        "Accept-Ranges": "bytes",
       };
+
+      // Relay the upstream 206 + Content-Range for byte-range requests.
+      const contentRange = upstream.headers.get("content-range");
+      if (contentRange) cacheHeaders["Content-Range"] = contentRange;
+
+      // Only forward Content-Length when fetch() handed us the body verbatim.
+      // With an upstream Content-Encoding the body has already been
+      // decompressed, so the compressed length would promise bytes that never
+      // arrive and the browser would hang waiting for them.
       const contentLength = upstream.headers.get("content-length");
-      if (contentLength) cacheHeaders["Content-Length"] = contentLength;
+      const contentEncoding = upstream.headers.get("content-encoding");
+      if (contentLength && !contentEncoding) {
+        cacheHeaders["Content-Length"] = contentLength;
+      }
 
       return new NextResponse(upstream.body, {
         status: upstream.status,
@@ -146,6 +173,13 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (e: any) {
+    // AbortSignal.timeout(10000) fired — the CDN never answered.
+    if (e?.name === "TimeoutError" || e?.name === "AbortError") {
+      return NextResponse.json(
+        { error: "Upstream timed out", url: decodedUrl },
+        { status: 504 }
+      );
+    }
     return NextResponse.json(
       { error: e.message || "Proxy error" },
       { status: 500 }
