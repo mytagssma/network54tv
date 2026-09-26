@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { searchAnimeClient, getTrendingClient, groupByReleaseSeason } from "@/lib/anilist";
+import { searchAnimeClient, getTrendingClient, groupByFranchise } from "@/lib/anilist";
 import type { Anime } from "@/types/anime";
 import AnimeCard from "@/components/anime/AnimeCard";
 
@@ -23,8 +23,9 @@ function BrowseContent() {
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
   // "" = default sort: home page's latest-updates order (queue#8)
   const [sort, setSort] = useState("");
-  // Search filter: bucket results by release season/year (queue#19b)
-  const [groupBySeason, setGroupBySeason] = useState(false);
+  // Search filter: cluster results into franchises (seasons/prequels/spin-offs
+  // together) — on by default; an explicit sort keeps the fetched order.
+  const [groupFranchise, setGroupFranchise] = useState(true);
 
   const toCard = (a: Anime) => ({
     id: a.id,
@@ -109,6 +110,16 @@ function BrowseContent() {
     </div>
   );
 
+  // Franchise buckets derived from the accumulated results on every render, so
+  // "Load More" re-buckets incrementally. Lone results render as a flat tail.
+  const groupedResults = groupFranchise
+    ? groupByFranchise(results, { preserveOrder: Boolean(sort) })
+    : [];
+  const franchiseGroups = groupedResults.filter((group) => group.items.length > 1);
+  const standaloneItems = groupedResults
+    .filter((group) => group.items.length === 1)
+    .map((group) => group.items[0]);
+
   let resultsNode: React.ReactNode = null;
   if (loading) {
     resultsNode = <div className="text-center py-12 text-[var(--text-decorative)] font-mono text-sm uppercase tracking-wider">Loading...</div>;
@@ -117,17 +128,27 @@ function BrowseContent() {
   } else if (query) {
     resultsNode = results.length > 0 ? (
       <div>
-        {groupBySeason ? (
-          groupByReleaseSeason(results).map((group) => (
-            <section key={group.label} className="mb-8 last:mb-0">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="h-4 w-1 bg-[var(--accent)]/60" />
-                <h3 className="text-sm font-black text-[var(--accent)]/80 uppercase tracking-wider font-mono">// {group.label}</h3>
-                <span className="text-[11px] text-[var(--text-decorative)] font-mono">{group.items.length} title{group.items.length === 1 ? "" : "s"}</span>
+        {groupFranchise && franchiseGroups.length > 0 ? (
+          <>
+            {franchiseGroups.map((group) => (
+              <section key={group.items[0].id} className="mb-8 last:mb-0">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-4 w-1 bg-[var(--accent)]/60" />
+                  <h3 className="text-sm font-black text-[var(--accent)]/80 uppercase tracking-wider font-mono">// {group.label}</h3>
+                  <span className="text-[11px] text-[var(--text-decorative)] font-mono">
+                    {group.detail ? `${group.detail} · ` : ""}
+                    {group.items.length} title{group.items.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                {renderCardGrid(group.items)}
+              </section>
+            ))}
+            {standaloneItems.length > 0 && (
+              <div className={franchiseGroups.length > 0 ? "mt-8" : ""}>
+                {renderCardGrid(standaloneItems)}
               </div>
-              {renderCardGrid(group.items)}
-            </section>
-          ))
+            )}
+          </>
         ) : (
           renderCardGrid(results)
         )}
@@ -210,10 +231,10 @@ function BrowseContent() {
             </div>
             <button
               type="button"
-              onClick={() => setGroupBySeason((prev) => !prev)}
-              aria-pressed={groupBySeason}
+              onClick={() => setGroupFranchise((prev) => !prev)}
+              aria-pressed={groupFranchise}
               className={`flex items-center gap-1.5 text-xs px-3 py-1.5 font-mono uppercase tracking-wider border transition-colors rounded-none min-h-[36px] ${
-                groupBySeason
+                groupFranchise
                   ? "bg-[var(--accent)] border-[var(--accent)] text-black"
                   : "bg-transparent border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10"
               }`}
@@ -221,7 +242,7 @@ function BrowseContent() {
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
               </svg>
-              Group by Season
+              Group by Franchise
             </button>
           </div>
         )}

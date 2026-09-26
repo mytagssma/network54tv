@@ -1,4 +1,4 @@
-import type { Anime } from "@/types/anime";
+import type { Anime, AnimeRelation } from "@/types/anime";
 
 const ANILIST_API = "https://graphql.anilist.co";
 
@@ -51,6 +51,13 @@ query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season
       trending
       popularity
       studios { nodes { name } }
+      startDate { year month day }
+      relations {
+        edges {
+          node { id }
+          relationType
+        }
+      }
     }
   }
 }
@@ -197,7 +204,26 @@ function anilistMediaToAnime(media: any): Anime {
     studios: media.studios?.nodes?.map((s: any) => s.name) || [],
     trending: media.trending || 0,
     color: media.coverImage?.color,
+    startDate: media.startDate?.year
+      ? media.startDate.year * 10000 +
+        (media.startDate.month || 1) * 100 +
+        (media.startDate.day || 1)
+      : undefined,
+    relations: mapRelations(media.relations),
   };
+}
+
+/** Flatten `relations.edges` → `{ id, relationType }` for franchise clustering. */
+function mapRelations(relations: any): AnimeRelation[] | undefined {
+  const edges = relations?.edges;
+  if (!Array.isArray(edges) || edges.length === 0) return undefined;
+  const mapped: AnimeRelation[] = [];
+  for (const edge of edges) {
+    const id = edge?.node?.id;
+    if (typeof id !== "number") continue;
+    mapped.push({ id, relationType: String(edge.relationType || "OTHER").toUpperCase() });
+  }
+  return mapped.length > 0 ? mapped : undefined;
 }
 
 // ─── Fuzzy title matching (queue#5) ──────────────────────────────────────
@@ -875,41 +901,386 @@ export async function getAnimeByIdClient(id: number): Promise<Anime | null> {
   }
 }
 
-// ─── Group by release season (queue#19b) ─────────────────────────────────
+// ─── Franchise grouping (queue:seasons) ────────────────────────────────────────
+//
+// The old toggle bucketed results by BROADCAST season ("Fall 2024"), which
+// scatters a franchise across buckets: Naruto (2002), Shippuden (2007) and
+// Boruto (2017) never showed up together. This pass clusters results into
+// FRANCHISES instead: union-find over the AniList `relations` edges whose
+// target is also present in the fetched result set (so manga/SOURCE targets
+// drop out automatically — results are `type: ANIME` only). Inside a cluster
+// the PREQUEL→SEQUEL chain is walked from the earliest `startDate` to derive
+// "Season 1/2/3…" numbers, prequels become "Prequel" and everything else
+// (ONA/OVA/side-stories) keeps its format as a label. Fully client-side and
+// dependency-free; recomputed from the accumulated result list on every
+// render, so "Load More" re-buckets incrementally.
 
 export interface SeasonGroup {
+  /** Franchise title (cluster root) or the lone title for a standalone result. */
   label: string;
+  /** Members ordered main-season-first (chronological when not preserving an explicit sort). */
   items: Anime[];
+  /** Compact "S1–S3 · Prequel · OVA" summary rendered next to the title count. */
+  detail?: string;
 }
 
-/** Single anime → "Fall 2024", "Spring", "2019" or "Other". */
-function releaseSeasonLabel(anime: Anime): string {
-  const season = anime.season
-    ? anime.season.charAt(0).toUpperCase() + anime.season.slice(1).toLowerCase()
-    : "";
-  const year = anime.seasonYear ? String(anime.seasonYear) : "";
-  if (season && year) return `${season} ${year}`;
-  return season || year || "Other";
+export interface FranchiseGroupOptions {
+  /**
+   * Keep the fetched order inside every group. Used when the user picked an
+   * explicit sort — that ordering must be honoured exactly. With the default
+   * ordering, items are sorted by franchise season (then air date) instead.
+   */
+  preserveOrder?: boolean;
+}
+
+/** Crossover edges — clustering these would merge unrelated franchises. */
+const IGNORED_RELATION_TYPES = new Set(["CHARACTER"]);
+/** Formats that can be a genuine new TV season of the same source material. */
+const TV_ONLY_FORMATS = new Set(["TV"]);
+/** Links that mean "alternate take / extra", not "next season". */
+const NON_SEASON_RELATIONS = new Set([
+  "ALTERNATIVE",
+  "SIDE_STORY",
+  "SPIN_OFF",
+  "SUMMARY",
+  "CONTAINS",
+  "CHARACTER",
+  "OTHER",
+]);
+
+/** YYYYMMDD sort key; falls back to the season year, then sorts last. */
+function startDateKey(anime: Anime): number {
+  if (typeof anime.startDate === "number" && anime.startDate > 0) return anime.startDate;
+  if (anime.seasonYear) return anime.seasonYear * 10000;
+  return Number.MAX_SAFE_INTEGER;
+}
+
+/** "MOVIE" → "Movie", "OVA"/"ONA"/"TV" kept as-is … used in the detail summary. */
+function formatLabel(anime: Anime): string {
+  const raw = String(anime.format || "").toUpperCase();
+  if (!raw) return "Other";
+  if (raw === "OVA" || raw === "ONA" || raw === "TV") return raw;
+  if (raw === "MOVIE") return "Movie";
+  if (raw === "TV_SHORT") return "TV Short";
+  if (raw === "SPECIAL") return "Special";
+  if (raw === "MUSIC") return "Music";
+  return raw.charAt(0) + raw.slice(1).toLowerCase();
 }
 
 /**
- * Bucket results by release season/year, preserving the order in which each
- * season first appears — so the result order (default latest-updates order,
- * fuzzy tiers or an explicit sort) is kept inside every group and the groups
- * follow that same order (newest season first for the default ordering).
+ * Union-find over `relations` edges whose target id is in the result set.
+ * Clusters keep first-appearance order, so group order follows the fetched
+ * ordering (latest-updates, fuzzy tiers or an explicit sort).
  */
-export function groupByReleaseSeason(items: Anime[]): SeasonGroup[] {
-  const groups: SeasonGroup[] = [];
-  const byLabel = new Map<string, SeasonGroup>();
-  for (const item of items) {
-    const label = releaseSeasonLabel(item);
-    let group = byLabel.get(label);
-    if (!group) {
-      group = { label, items: [] };
-      byLabel.set(label, group);
-      groups.push(group);
+function clusterByFranchise(items: Anime[]): Anime[][] {
+  const indexOf = new Map<number, number>();
+  items.forEach((item, i) => {
+    if (typeof item.id === "number" && !indexOf.has(item.id)) indexOf.set(item.id, i);
+  });
+
+  const parent = items.map((_, i) => i);
+  const find = (x: number): number => {
+    let root = x;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[x] !== x) {
+      const next = parent[x];
+      parent[x] = root;
+      x = next;
     }
-    group.items.push(item);
+    return root;
+  };
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) return;
+    // Keep the earliest result index as root → clusters follow first appearance.
+    if (ra < rb) parent[rb] = ra;
+    else parent[ra] = rb;
+  };
+
+  items.forEach((item, i) => {
+    for (const rel of item.relations || []) {
+      if (typeof rel?.id !== "number" || rel.id === item.id) continue;
+      if (IGNORED_RELATION_TYPES.has(String(rel.relationType || "").toUpperCase())) continue;
+      const j = indexOf.get(rel.id);
+      if (j === undefined || j === i) continue;
+      union(i, j);
+    }
+  });
+
+  const groups = new Map<number, Anime[]>();
+  const roots: number[] = [];
+  items.forEach((item, i) => {
+    const root = find(i);
+    let bucket = groups.get(root);
+    if (!bucket) {
+      bucket = [];
+      groups.set(root, bucket);
+      roots.push(root);
+    }
+    bucket.push(item);
+  });
+  return roots.map((root) => groups.get(root)!);
+}
+
+/** Pair key that is stable regardless of argument order. */
+function pairKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+interface FranchiseChain {
+  /** child id → ids of its in-cluster prequels (edge direction normalised). */
+  prequelsOf: Map<number, Set<number>>;
+  /** parent id → ids of its in-cluster sequels. */
+  sequelsOf: Map<number, Set<number>>;
+  /** season number per id, anchored at the cluster's earliest startDate. */
+  seasonOf: Map<number, number>;
+}
+
+function buildSeasonChain(members: Anime[]): FranchiseChain {
+  const idSet = new Set<number>();
+  for (const m of members) idSet.add(m.id);
+  const byId = new Map<number, Anime>();
+  for (const m of members) byId.set(m.id, m);
+
+  const prequelsOf = new Map<number, Set<number>>();
+  const addPrequel = (child: number, parent: number) => {
+    if (child === parent || !idSet.has(child) || !idSet.has(parent)) return;
+    let set = prequelsOf.get(child);
+    if (!set) prequelsOf.set(child, (set = new Set()));
+    set.add(parent);
+  };
+
+  // Same-source material shared by two anime (AniList points anime → manga
+  // with ADAPTATION/SOURCE; those ids are never part of an ANIME result set).
+  const sourcesOf = new Map<number, Set<number>>();
+  // Direct anime ↔ anime links seen between two in-cluster members.
+  const directLinks = new Map<string, Set<string>>();
+
+  for (const m of members) {
+    for (const rel of m.relations || []) {
+      if (typeof rel?.id !== "number" || rel.id === m.id) continue;
+      const type = String(rel.relationType || "").toUpperCase();
+
+      if (type === "ADAPTATION" || type === "SOURCE") {
+        if (!idSet.has(rel.id)) {
+          // Source material (manga/novel) — remember for season chaining.
+          let set = sourcesOf.get(m.id);
+          if (!set) sourcesOf.set(m.id, (set = new Set()));
+          set.add(rel.id);
+          continue;
+        }
+        // Anime → anime ADAPTATION: fall through and record it as a link.
+      }
+
+      if (!idSet.has(rel.id)) continue;
+
+      if (type === "PREQUEL") addPrequel(m.id, rel.id); // rel.id precedes m
+      else if (type === "SEQUEL") addPrequel(rel.id, m.id); // m precedes rel.id
+
+      const key = pairKey(m.id, rel.id);
+      let types = directLinks.get(key);
+      if (!types) directLinks.set(key, (types = new Set()));
+      types.add(type);
+    }
   }
-  return groups;
+
+  // "Genuinely a new TV season" fallback: two TV anime adapting the same
+  // source material with no explicit season edge between them (and not marked
+  // as an alternative/remake) chain in air-date order.
+  const sourceCarrier = new Map<number, number[]>(); // source id → member ids
+  for (const [id, sources] of sourcesOf) {
+    for (const source of sources) {
+      let carriers = sourceCarrier.get(source);
+      if (!carriers) sourceCarrier.set(source, (carriers = []));
+      carriers.push(id);
+    }
+  }
+  const considered = new Set<string>();
+  for (const carriers of sourceCarrier.values()) {
+    for (let a = 0; a < carriers.length; a++) {
+      for (let b = a + 1; b < carriers.length; b++) {
+        const idA = carriers[a];
+        const idB = carriers[b];
+        const key = pairKey(idA, idB);
+        if (considered.has(key)) continue;
+        considered.add(key);
+        const animeA = byId.get(idA);
+        const animeB = byId.get(idB);
+        if (!animeA || !animeB) continue;
+        if (!TV_ONLY_FORMATS.has(String(animeA.format || "").toUpperCase())) continue;
+        if (!TV_ONLY_FORMATS.has(String(animeB.format || "").toUpperCase())) continue;
+        const types = directLinks.get(key);
+        if (types) {
+          // An explicit season edge already ordered them (or refuses to).
+          let skip = false;
+          for (const type of types) {
+            if (type === "PREQUEL" || type === "SEQUEL" || type === "ADAPTATION") continue;
+            skip = true; // ALTERNATIVE / SIDE_STORY / OTHER … not a new season
+          }
+          if (skip || types.has("PREQUEL") || types.has("SEQUEL")) continue;
+        }
+        const [early, late] =
+          startDateKey(animeA) <= startDateKey(animeB) ? [idA, idB] : [idB, idA];
+        addPrequel(late, early);
+      }
+    }
+  }
+
+  const sequelsOf = new Map<number, Set<number>>();
+  for (const [child, parents] of prequelsOf) {
+    for (const parent of parents) {
+      let set = sequelsOf.get(parent);
+      if (!set) sequelsOf.set(parent, (set = new Set()));
+      set.add(child);
+    }
+  }
+
+  // Season numbers: every chain component is anchored at its earliest-startDate
+  // member ("Season 1"), sequels count up, prequels count down.
+  const seasonOf = new Map<number, number>();
+  const chainNodes = new Set<number>([...prequelsOf.keys(), ...sequelsOf.keys()]);
+  const seen = new Set<number>();
+  const components: number[][] = [];
+  for (const start of chainNodes) {
+    if (seen.has(start)) continue;
+    const component: number[] = [];
+    const queue = [start];
+    seen.add(start);
+    while (queue.length) {
+      const cur = queue.pop()!;
+      component.push(cur);
+      for (const next of [
+        ...(prequelsOf.get(cur) || []),
+        ...(sequelsOf.get(cur) || []),
+      ]) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    components.push(component);
+  }
+  components.sort((a, b) => {
+    const da = Math.min(...a.map((id) => startDateKey(byId.get(id)!)));
+    const db = Math.min(...b.map((id) => startDateKey(byId.get(id)!)));
+    return da - db;
+  });
+
+  for (const component of components) {
+    let anchor = component[0];
+    for (const id of component) {
+      if (startDateKey(byId.get(id)!) < startDateKey(byId.get(anchor)!)) anchor = id;
+    }
+    seasonOf.set(anchor, 1);
+    const queue = [anchor];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      const season = seasonOf.get(cur)!;
+      for (const parent of prequelsOf.get(cur) || []) {
+        if (seasonOf.has(parent)) continue;
+        seasonOf.set(parent, season - 1);
+        queue.push(parent);
+      }
+      for (const child of sequelsOf.get(cur) || []) {
+        if (seasonOf.has(child)) continue;
+        seasonOf.set(child, season + 1);
+        queue.push(child);
+      }
+    }
+  }
+
+  return { prequelsOf, sequelsOf, seasonOf };
+}
+
+/** 1,2,3 → "S1–S3"; 1,3 → "S1, S3" */
+function seasonRunsLabel(seasons: number[]): string {
+  const unique = [...new Set(seasons)].sort((a, b) => a - b);
+  const runs: string[] = [];
+  let i = 0;
+  while (i < unique.length) {
+    let j = i;
+    while (j + 1 < unique.length && unique[j + 1] === unique[j] + 1) j++;
+    runs.push(unique[i] === unique[j] ? `S${unique[i]}` : `S${unique[i]}–S${unique[j]}`);
+    i = j + 1;
+  }
+  return runs.join(", ");
+}
+
+/** "S1–S3 · Prequel · OVA/Movie" summary for the group heading. */
+function franchiseDetail(
+  members: Anime[],
+  seasonOf: Map<number, number>,
+  single: boolean
+): string | undefined {
+  const seasons: number[] = [];
+  const formats: string[] = [];
+  let prequels = 0;
+  for (const m of members) {
+    const season = seasonOf.get(m.id);
+    if (season === undefined) formats.push(formatLabel(m));
+    else if (season >= 1) seasons.push(season);
+    else prequels++;
+  }
+  if (single) return formats[0] || undefined;
+
+  const parts: string[] = [];
+  if (seasons.length > 0) parts.push(seasonRunsLabel(seasons));
+  if (prequels > 0) parts.push(prequels > 1 ? `Prequel ×${prequels}` : "Prequel");
+  const uniqueFormats = [...new Set(formats)];
+  if (uniqueFormats.length > 0) {
+    const shown = uniqueFormats.slice(0, 3).join("/");
+    const rest = uniqueFormats.length - 3;
+    parts.push(rest > 0 ? `${shown} +${rest}` : shown);
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function buildFranchiseGroup(members: Anime[], options?: FranchiseGroupOptions): SeasonGroup {
+  const { seasonOf } = buildSeasonChain(members);
+
+  // Anchor: earliest startDate in the cluster (ties → first in fetch order).
+  let root = 0;
+  for (let i = 1; i < members.length; i++) {
+    if (startDateKey(members[i]) < startDateKey(members[root])) root = i;
+  }
+
+  const indexed = members.map((anime, index) => ({ anime, index, season: seasonOf.get(anime.id) }));
+  if (!options?.preserveOrder) {
+    indexed.sort((a, b) => {
+      // 0 = main chain seasons (S1, S2, …), 1 = prequels, 2 = unlinked extras.
+      const bucketOf = (s: number | undefined) => (s === undefined ? 2 : s >= 1 ? 0 : 1);
+      const ba = bucketOf(a.season);
+      const bb = bucketOf(b.season);
+      if (ba !== bb) return ba - bb;
+      if (a.season !== b.season && a.season !== undefined && b.season !== undefined) {
+        return a.season - b.season;
+      }
+      const da = startDateKey(a.anime);
+      const db = startDateKey(b.anime);
+      if (da !== db) return da - db;
+      return a.index - b.index;
+    });
+  }
+
+  const items = indexed.map((entry) => entry.anime);
+  return {
+    label: members[root].title,
+    items,
+    detail: franchiseDetail(members, seasonOf, members.length === 1),
+  };
+}
+
+/**
+ * Cluster search results into franchises: every result linked to another
+ * result through an AniList relation edge lands in the same group (seasons,
+ * prequels, sequels, ONA/OVA spin-offs together), standalone titles become
+ * single-item groups. Group order = first appearance in the fetched order.
+ */
+export function groupByFranchise(
+  items: Anime[],
+  options?: FranchiseGroupOptions
+): SeasonGroup[] {
+  if (items.length === 0) return [];
+  return clusterByFranchise(items).map((members) => buildFranchiseGroup(members, options));
 }

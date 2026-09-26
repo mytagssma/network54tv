@@ -26,6 +26,12 @@ export interface AniListRelation {
   relationType: string;
 }
 
+/** AniList MediaRelation edge as consumed by app code (franchise grouping). */
+export interface AnimeRelation {
+  id: number;
+  relationType: string;
+}
+
 export interface AniListMedia {
   id: number;
   idMal?: number;
@@ -132,6 +138,10 @@ export interface Anime {
   studios: string[];
   trending: number;
   color?: string;
+  /** First air/release date as YYYYMMDD (from AniList startDate { year month day }). */
+  startDate?: number;
+  /** MediaRelation edges — used to cluster search results into franchises. */
+  relations?: AnimeRelation[];
 }
 
 export interface Episode {
