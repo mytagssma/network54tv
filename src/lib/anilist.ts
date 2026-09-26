@@ -874,3 +874,42 @@ export async function getAnimeByIdClient(id: number): Promise<Anime | null> {
     return null;
   }
 }
+
+// ─── Group by release season (queue#19b) ─────────────────────────────────
+
+export interface SeasonGroup {
+  label: string;
+  items: Anime[];
+}
+
+/** Single anime → "Fall 2024", "Spring", "2019" or "Other". */
+function releaseSeasonLabel(anime: Anime): string {
+  const season = anime.season
+    ? anime.season.charAt(0).toUpperCase() + anime.season.slice(1).toLowerCase()
+    : "";
+  const year = anime.seasonYear ? String(anime.seasonYear) : "";
+  if (season && year) return `${season} ${year}`;
+  return season || year || "Other";
+}
+
+/**
+ * Bucket results by release season/year, preserving the order in which each
+ * season first appears — so the result order (default latest-updates order,
+ * fuzzy tiers or an explicit sort) is kept inside every group and the groups
+ * follow that same order (newest season first for the default ordering).
+ */
+export function groupByReleaseSeason(items: Anime[]): SeasonGroup[] {
+  const groups: SeasonGroup[] = [];
+  const byLabel = new Map<string, SeasonGroup>();
+  for (const item of items) {
+    const label = releaseSeasonLabel(item);
+    let group = byLabel.get(label);
+    if (!group) {
+      group = { label, items: [] };
+      byLabel.set(label, group);
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  return groups;
+}

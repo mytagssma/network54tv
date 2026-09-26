@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, FormEvent } from "react";
-import { searchAnimeClient, getRecentlyAiredClient, GENRES, type SearchFilters, type TagFilter } from "@/lib/anilist";
+import { searchAnimeClient, getRecentlyAiredClient, GENRES, groupByReleaseSeason, type SearchFilters, type TagFilter } from "@/lib/anilist";
 import AnimeCard from "@/components/anime/AnimeCard";
 import type { Anime } from "@/types/anime";
 
@@ -37,6 +37,8 @@ export default function Home() {
   const [filterSort, setFilterSort] = useState("");
   const [filterTags, setFilterTags] = useState<Record<string, "include" | "exclude">>({});
   const [filterTagMode, setFilterTagMode] = useState<"OR" | "AND">("OR");
+  // View toggle: bucket results by release season/year (queue#19b)
+  const [filterGroupSeason, setFilterGroupSeason] = useState(false);
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
 
   const hasActiveFilters = Boolean(
@@ -320,6 +322,23 @@ export default function Home() {
                   </select>
                 </div>
 
+                {/* Grouping (view toggle, queue#19b) */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">Grouping</label>
+                  <button
+                    type="button"
+                    onClick={() => setFilterGroupSeason((prev) => !prev)}
+                    aria-pressed={filterGroupSeason}
+                    className={`px-3 py-1.5 text-sm font-mono border transition-colors rounded-none ${
+                      filterGroupSeason
+                        ? "bg-[var(--accent)] border-[var(--accent)] text-black"
+                        : "bg-[var(--background)] border-[var(--accent)]/20 text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                    }`}
+                  >
+                    Group by Season
+                  </button>
+                </div>
+
                 {/* Genre tags — full width row */}
                 <div className="flex flex-col gap-2 pt-2 border-t border-[var(--accent)]/10 w-full">
                   <div className="flex items-center justify-between">
@@ -391,11 +410,28 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 text-[var(--accent)] uppercase tracking-wider">
               // {hasSearched ? "Search Results" : "Latest Releases"}
             </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-              {results.map((anime) => (
-                <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} loading={anime.id === navigatingId} onClick={() => setNavigatingId(anime.id)} />
-              ))}
-            </div>
+            {filterGroupSeason ? (
+              groupByReleaseSeason(results).map((group) => (
+                <section key={group.label} className="mb-8 last:mb-0">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="h-4 w-1 bg-[var(--accent)]/60" />
+                    <h3 className="text-sm font-black text-[var(--accent)]/80 uppercase tracking-wider font-mono">// {group.label}</h3>
+                    <span className="text-[11px] text-[var(--text-decorative)] font-mono">{group.items.length} title{group.items.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                    {group.items.map((anime) => (
+                      <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} loading={anime.id === navigatingId} onClick={() => setNavigatingId(anime.id)} />
+                    ))}
+                  </div>
+                </section>
+              ))
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                {results.map((anime) => (
+                  <AnimeCard key={anime.id} anime={mapAnimeToCard(anime)} loading={anime.id === navigatingId} onClick={() => setNavigatingId(anime.id)} />
+                ))}
+              </div>
+            )}
 
             {/* Load More */}
             {hasNextPage && (

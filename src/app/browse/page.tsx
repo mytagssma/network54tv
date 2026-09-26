@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { searchAnimeClient, getTrendingClient } from "@/lib/anilist";
+import { searchAnimeClient, getTrendingClient, groupByReleaseSeason } from "@/lib/anilist";
 import type { Anime } from "@/types/anime";
 import AnimeCard from "@/components/anime/AnimeCard";
 
@@ -23,6 +23,8 @@ function BrowseContent() {
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
   // "" = default sort: home page's latest-updates order (queue#8)
   const [sort, setSort] = useState("");
+  // Search filter: bucket results by release season/year (queue#19b)
+  const [groupBySeason, setGroupBySeason] = useState(false);
 
   const toCard = (a: Anime) => ({
     id: a.id,
@@ -101,6 +103,12 @@ function BrowseContent() {
 
   const title = query ? `Search: ${query}` : "Browse Anime";
 
+  const renderCardGrid = (items: Anime[]) => (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+      {items.map((a) => <AnimeCard key={a.id} anime={toCard(a)} loading={a.id === navigatingId} onClick={() => setNavigatingId(a.id)} />)}
+    </div>
+  );
+
   let resultsNode: React.ReactNode = null;
   if (loading) {
     resultsNode = <div className="text-center py-12 text-[var(--text-decorative)] font-mono text-sm uppercase tracking-wider">Loading...</div>;
@@ -109,9 +117,20 @@ function BrowseContent() {
   } else if (query) {
     resultsNode = results.length > 0 ? (
       <div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-          {results.map((a) => <AnimeCard key={a.id} anime={toCard(a)} loading={a.id === navigatingId} onClick={() => setNavigatingId(a.id)} />)}
-        </div>
+        {groupBySeason ? (
+          groupByReleaseSeason(results).map((group) => (
+            <section key={group.label} className="mb-8 last:mb-0">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-4 w-1 bg-[var(--accent)]/60" />
+                <h3 className="text-sm font-black text-[var(--accent)]/80 uppercase tracking-wider font-mono">// {group.label}</h3>
+                <span className="text-[11px] text-[var(--text-decorative)] font-mono">{group.items.length} title{group.items.length === 1 ? "" : "s"}</span>
+              </div>
+              {renderCardGrid(group.items)}
+            </section>
+          ))
+        ) : (
+          renderCardGrid(results)
+        )}
         {hasNextPage && (
           <div className="flex justify-center mt-8">
             <button type="button" onClick={loadMore} disabled={loadingMore} className="bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none min-h-[44px] sm:min-h-0">
@@ -173,6 +192,7 @@ function BrowseContent() {
         <SearchBar initialQuery={query} />
         {query && (
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 p-3 bg-[var(--panel)] border border-[var(--accent)]/20 rounded-none">
+            <span className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">// Filters</span>
             <div className="flex items-center gap-2">
               <label htmlFor="browse-sort" className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">Sort</label>
               <select
@@ -188,6 +208,21 @@ function BrowseContent() {
                 <option value="START_DATE_DESC">Newest Release</option>
               </select>
             </div>
+            <button
+              type="button"
+              onClick={() => setGroupBySeason((prev) => !prev)}
+              aria-pressed={groupBySeason}
+              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 font-mono uppercase tracking-wider border transition-colors rounded-none min-h-[36px] ${
+                groupBySeason
+                  ? "bg-[var(--accent)] border-[var(--accent)] text-black"
+                  : "bg-transparent border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10"
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
+              </svg>
+              Group by Season
+            </button>
           </div>
         )}
       </div>
