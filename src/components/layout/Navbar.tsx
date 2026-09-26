@@ -49,25 +49,9 @@ export default function Navbar() {
             n54tv
           </Link>
 
-          {/* Right side: accent selector + search */}
+          {/* Right side: accent selector */}
           <div className="flex items-center gap-2 sm:gap-3">
             <AccentColorSelector />
-            <Link
-              href="/"
-              className="flex items-center gap-1.5 text-[var(--text-secondary)] hover:text-[var(--accent)] text-xs font-medium uppercase tracking-wider transition-colors py-2 min-h-[44px] sm:min-h-0"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                aria-hidden="true"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              Search
-            </Link>
           </div>
         </div>
       </div>
