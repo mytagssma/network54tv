@@ -1,17 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" fill="#0a0a0f"/>
-  <!-- N: two vertical bars + diagonal stroke -->
-  <rect x="2" y="3" width="5" height="26" fill="#e8ff00"/>
-  <rect x="13" y="3" width="5" height="26" fill="#e8ff00"/>
-  <polygon points="2,3 7,3 18,29 13,29" fill="#e8ff00"/>
-  <!-- 5: blocky geometric -->
-  <rect x="19" y="3" width="10" height="4" fill="#e8ff00"/>
-  <rect x="19" y="3" width="4" height="6" fill="#e8ff00"/>
-  <rect x="19" y="8" width="10" height="4" fill="#e8ff00"/>
-  <rect x="25" y="8" width="4" height="7" fill="#e8ff00"/>
-  <rect x="19" y="14" width="10" height="4" fill="#e8ff00"/>
-  <!-- 4: left vertical + right vertical (short) + horizontal crossbar -->
-  <rect x="19" y="18" width="4" height="11" fill="#e8ff00"/>
-  <rect x="26" y="18" width="4" height="8" fill="#e8ff00"/>
-  <rect x="19" y="23" width="11" height="4" fill="#e8ff00"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="N54">
+  <title>N54 // n54tv</title>
+  <!-- rounded-none badge on the site background -->
+  <rect width="32" height="32" fill="#0a0a0f" />
+  <!-- accent letterforms: uniform 3u strokes, 8u cells, y6..y26 -->
+  <g fill="#e8ff00">
+    <!-- N: cells x2..x10 -->
+    <rect x="2" y="6" width="3" height="20" />
+    <polygon points="2,6 5,6 10,26 7,26" />
+    <rect x="7" y="6" width="3" height="20" />
+    <!-- 5: cells x12..x20 -->
+    <rect x="12" y="6" width="8" height="3" />
+    <rect x="12" y="6" width="3" height="11" />
+    <rect x="12" y="14" width="8" height="3" />
+    <rect x="17" y="14" width="3" height="12" />
+    <rect x="12" y="23" width="8" height="3" />
+    <!-- 4: cells x22..x30 -->
+    <rect x="22" y="6" width="3" height="11" />
+    <rect x="22" y="14" width="8" height="3" />
+    <rect x="27" y="6" width="3" height="20" />
+  </g>
 </svg>

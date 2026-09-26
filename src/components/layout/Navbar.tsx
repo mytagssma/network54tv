@@ -43,9 +43,10 @@ export default function Navbar() {
           {/* Site name */}
           <Link
             href="/"
-            className="text-[var(--accent)] font-bold text-lg tracking-wider uppercase hover:accent-shadow-sm transition-shadow"
+            className="flex items-center gap-2 text-[var(--accent)] font-bold text-lg tracking-wider uppercase hover:accent-shadow-sm transition-shadow"
             style={{ letterSpacing: "0.15em" }}
           >
+            <N54Mark />
             n54tv
           </Link>
 
@@ -56,5 +57,40 @@ export default function Navbar() {
         </div>
       </div>
     </nav>
+  );
+}
+
+/**
+ * Inline copy of public/favicon.svg — same N54 badge, but painted with the
+ * theme vars so it tracks the user-selected accent color.
+ */
+function N54Mark({ size = 22 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 32 32"
+      className="shrink-0"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect width="32" height="32" fill="var(--background)" />
+      <g fill="var(--accent)">
+        {/* N */}
+        <rect x="2" y="6" width="3" height="20" />
+        <polygon points="2,6 5,6 10,26 7,26" />
+        <rect x="7" y="6" width="3" height="20" />
+        {/* 5 */}
+        <rect x="12" y="6" width="8" height="3" />
+        <rect x="12" y="6" width="3" height="11" />
+        <rect x="12" y="14" width="8" height="3" />
+        <rect x="17" y="14" width="3" height="12" />
+        <rect x="12" y="23" width="8" height="3" />
+        {/* 4 */}
+        <rect x="22" y="6" width="3" height="11" />
+        <rect x="22" y="14" width="8" height="3" />
+        <rect x="27" y="6" width="3" height="20" />
+      </g>
+    </svg>
   );
 }
