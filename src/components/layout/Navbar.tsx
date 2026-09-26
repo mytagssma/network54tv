@@ -40,15 +40,38 @@ export default function Navbar() {
     >
       <div className="max-w-7xl mx-auto px-4">
         <div className="flex items-center justify-between h-14">
-          {/* Site name */}
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-[var(--accent)] font-bold text-lg tracking-wider uppercase hover:accent-shadow-sm transition-shadow"
-            style={{ letterSpacing: "0.15em" }}
-          >
-            <N54Mark />
-            n54tv
-          </Link>
+          {/* Brand mark + search */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            <Link
+              href="/"
+              aria-label="n54tv"
+              className="flex items-center p-1 -m-1 text-[var(--accent)] hover:accent-shadow-sm transition-shadow"
+            >
+              <N54Mark />
+            </Link>
+
+            <Link
+              href="/browse"
+              aria-label="Search"
+              className="flex items-center justify-center h-9 w-9 rounded-none border border-[var(--accent)]/30 text-[var(--accent)] font-mono uppercase transition-colors hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/60 hover:accent-shadow-sm"
+            >
+              <svg
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+            </Link>
+          </div>
 
           {/* Right side: accent selector */}
           <div className="flex items-center gap-2 sm:gap-3">
