@@ -503,6 +503,191 @@ function filterAvailableEpisodes(
   }));
 }
 
+// ─── Sub/Dub Availability ────────────────────────────────────────────
+
+/**
+ * Sub/dub availability per episode.
+ *
+ * Most providers put `hasSub`/`hasDub` on every episode they list — megaplay
+ * does not: it builds its episode list from AniZip metadata and hardcodes
+ * `hasSub: null, hasDub: null` (upstream comment: "we dont know"), because
+ * megaplay addresses audio with a `sub`/`dub` version segment in its embed URL
+ * (`/stream/ani/{anilistId}/{episode}/{sub|dub}`) instead of a per-episode flag.
+ * Megaplay is our preferred provider whenever an AniList ID is available, so
+ * every listed episode arrived with `hasDub: null` and the dub count was always 0.
+ *
+ * `probeMegaPlayAudio` recovers the flags cheaply: one GET of that embed URL per
+ * (episode, version) — a 200 page whose `<title>` is "Error - MegaPlay" means
+ * "no mapping for this version", anything else means the audio exists. Measured
+ * ~50 ms/request at concurrency 12 (56 requests for a 28-episode title took
+ * 1.2 s total), so it stays OFF the episode-list hot path: it only runs when the
+ * client asks for `?audio=1`, and results are cached per AniList ID so every
+ * later request — including the fast path — reuses them with zero I/O.
+ *
+ * Unknown stays unknown: a network failure yields `null`, never `false`, and a
+ * count is only reported when every listed episode is known.
+ */
+const MEGAPLAY_EMBED_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0";
+/** Titles with more episodes than this are not probed (cost > value). */
+const AUDIO_PROBE_MAX_EPISODES = 60;
+const AUDIO_PROBE_CONCURRENCY = 12;
+const AUDIO_PROBE_TIMEOUT_MS = 6000;
+const AUDIO_PROBE_BUDGET_MS = 8000;
+const AUDIO_FLAG_CACHE_MAX = 100;
+
+type AudioFlag = { sub: boolean | null; dub: boolean | null };
+
+/** anilistId → episode number → verified audio flags. */
+const audioFlagCache = new Map<number, Map<number, AudioFlag>>();
+
+export interface AudioSummary {
+  /** Episodes verified to carry subtitle audio — `null` when any is unknown. */
+  subCount: number | null;
+  /** Episodes verified to carry dub audio — `null` when any is unknown. */
+  dubCount: number | null;
+  /** A megaplay probe could resolve the remaining unknowns (needs AniList ID). */
+  canProbe: boolean;
+  /** This response actually ran the probe. */
+  probed: boolean;
+}
+
+/** Light probe: does megaplay map this (episode, version)? true/false, or null if we couldn't tell. */
+async function probeMegaPlayVersion(
+  anilistId: number,
+  episode: number,
+  version: "sub" | "dub"
+): Promise<boolean | null> {
+  try {
+    const res = await fetch(`https://megaplay.buzz/stream/ani/${anilistId}/${episode}/${version}`, {
+      headers: { "User-Agent": MEGAPLAY_EMBED_UA, Referer: "https://megaplay.buzz/" },
+      signal: AbortSignal.timeout(AUDIO_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    // The embed answers 200 for both outcomes; the 404 page carries an Error title.
+    return !/<title>\s*(Unavailable|Error)/i.test(html);
+  } catch {
+    return null; // timeout / network — unknown, never "no"
+  }
+}
+
+/** Run `jobs` with a bounded number in flight. */
+async function runPool(jobs: (() => Promise<void>)[], concurrency: number): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+    while (next < jobs.length) {
+      const job = jobs[next++];
+      await job();
+    }
+  });
+  await Promise.all(workers);
+}
+
+/** Probe (sub + dub) for every episode whose flags are still unknown, within a time budget. */
+async function probeMegaPlayAudio(
+  anilistId: number,
+  episodes: Episode[]
+): Promise<Map<number, AudioFlag>> {
+  let cached = audioFlagCache.get(anilistId);
+  if (!cached) {
+    cached = new Map<number, AudioFlag>();
+    if (audioFlagCache.size >= AUDIO_FLAG_CACHE_MAX) {
+      const oldest = audioFlagCache.keys().next().value;
+      if (oldest !== undefined) audioFlagCache.delete(oldest);
+    }
+    audioFlagCache.set(anilistId, cached);
+  }
+  const flags: Map<number, AudioFlag> = cached;
+
+  const deadline = Date.now() + AUDIO_PROBE_BUDGET_MS;
+  const jobs: (() => Promise<void>)[] = [];
+  for (const ep of episodes) {
+    for (const version of ["sub", "dub"] as const) {
+      const known = flags.get(ep.number);
+      if (known && known[version] !== null) continue;
+      jobs.push(async () => {
+        if (Date.now() > deadline) return; // out of budget ⇒ stays unknown
+        const result = await probeMegaPlayVersion(anilistId, ep.number, version);
+        if (result === null) return; // stay unknown
+        const prev = flags.get(ep.number) ?? { sub: null, dub: null };
+        flags.set(ep.number, version === "sub" ? { ...prev, sub: result } : { ...prev, dub: result });
+      });
+    }
+  }
+
+  await runPool(jobs, AUDIO_PROBE_CONCURRENCY);
+  return flags;
+}
+
+function canProbeAudio(episodes: Episode[], anilistId?: number): boolean {
+  if (!anilistId || episodes.length === 0) return false;
+  // Probe cost is 2 requests per episode — only worth it when we can finish the set.
+  if (episodes.length > AUDIO_PROBE_MAX_EPISODES) return false;
+  // The probe URL is keyed by AniList ID + episode number, so it only describes
+  // megaplay's own listing (it would misreport any provider with its own numbering).
+  return episodes.every(
+    (ep) => ep.providerId === "megaplay" && Number.isInteger(ep.number) && ep.number > 0
+  );
+}
+
+function countKnown(episodes: Episode[], key: "hasSub" | "hasDub"): number | null {
+  let count = 0;
+  for (const ep of episodes) {
+    const value = ep[key];
+    if (value === null || value === undefined) return null; // one unknown ⇒ no honest total
+    if (value) count++;
+  }
+  return count;
+}
+
+/**
+ * Resolve sub/dub flags for a freshly fetched episode list.
+ *
+ * Without `probe` this is pure bookkeeping (no I/O): it folds in flags an
+ * earlier probe already learned and summarizes what is known. With `probe` it
+ * also hits megaplay once per unknown (episode, version), up to
+ * `AUDIO_PROBE_MAX_EPISODES`. Returns a NEW array when flags change — the
+ * caller's array may be the shared availability cache.
+ */
+export async function getAudioFlags(
+  episodes: Episode[],
+  anilistId?: number,
+  probe = false
+): Promise<{ episodes: Episode[]; audio: AudioSummary }> {
+  const merge = (list: Episode[], flags: Map<number, AudioFlag>): Episode[] =>
+    list.map((ep) => {
+      // Probe results describe megaplay's listing only — never tag another
+      // provider's episodes with them.
+      if (ep.providerId !== "megaplay") return ep;
+      const flag = flags.get(ep.number);
+      if (!flag) return ep;
+      return { ...ep, hasSub: ep.hasSub ?? flag.sub, hasDub: ep.hasDub ?? flag.dub };
+    });
+
+  let resolved = episodes;
+  const cached = anilistId ? audioFlagCache.get(anilistId) : undefined;
+  if (cached && cached.size > 0) resolved = merge(resolved, cached);
+
+  const canProbe = canProbeAudio(resolved, anilistId);
+  let probed = false;
+  if (probe && canProbe && anilistId) {
+    const flags = await probeMegaPlayAudio(anilistId, resolved);
+    resolved = merge(resolved, flags);
+    probed = true;
+  }
+
+  return {
+    episodes: resolved,
+    audio: {
+      subCount: countKnown(resolved, "hasSub"),
+      dubCount: countKnown(resolved, "hasDub"),
+      canProbe,
+      probed,
+    },
+  };
+}
+
 // ─── Public API ───────────────────────────────────────────────────────
 
 /**

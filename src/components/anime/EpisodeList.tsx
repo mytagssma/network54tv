@@ -19,6 +19,9 @@ export default function EpisodeList({ episodes, animeId, provider }: EpisodeList
       {episodes.map((episode) => {
         const isAvailable = episode.available !== false;
         const isClicked = clickedEp === episode.number;
+        // Only tag what is actually known — unknown availability renders no chip.
+        const hasSub = episode.hasSub === true;
+        const hasDub = episode.hasDub === true;
 
         return isAvailable ? (
           <Link
@@ -39,6 +42,20 @@ export default function EpisodeList({ episodes, animeId, provider }: EpisodeList
                 {episode.title || `Episode ${episode.number}`}
               </p>
             </div>
+            {(hasSub || hasDub) && (
+              <span className="flex items-center gap-1 shrink-0">
+                {hasSub && (
+                  <span className="border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
+                    SUB
+                  </span>
+                )}
+                {hasDub && (
+                  <span className="border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
+                    DUB
+                  </span>
+                )}
+              </span>
+            )}
             {isClicked ? (
               <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin shrink-0" />
             ) : (
