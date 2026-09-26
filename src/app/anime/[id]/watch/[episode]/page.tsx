@@ -2,7 +2,7 @@ import { getAnimeById } from "@/lib/anilist";
 import { getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
 import Player from "@/components/player/Player";
-import EpisodeSelector from "@/components/watch/EpisodeSelector";
+import EpisodeBrowser from "@/components/watch/EpisodeBrowser";
 import Link from "next/link";
 
 export const revalidate = 0;
@@ -127,10 +127,10 @@ export default async function WatchPage({ params, searchParams }: Props) {
         </div>
       </div>
 
-      {/* Paged episode selector — bounded height, scrolls internally */}
+      {/* Section bar + paged episode selector — bounded, scrolls internally */}
       {episodes.length > 0 && (
         <div className="mt-8">
-          <EpisodeSelector
+          <EpisodeBrowser
             episodes={episodes}
             animeId={animeId}
             provider={provider}

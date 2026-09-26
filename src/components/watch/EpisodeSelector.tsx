@@ -113,7 +113,7 @@ export default function EpisodeSelector({
               onClick={() => setPage(currentPage - 1)}
               disabled={currentPage === 0}
               aria-label="Previous page of episodes"
-              className="h-7 w-7 grid place-items-center rounded-none border border-[var(--accent)]/25 text-base leading-none text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:text-[var(--accent)] disabled:opacity-30 disabled:pointer-events-none"
+              className="h-11 w-11 sm:h-7 sm:w-7 grid place-items-center rounded-none border border-[var(--accent)]/25 text-base leading-none text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:text-[var(--accent)] disabled:opacity-30 disabled:pointer-events-none"
             >
               <span aria-hidden="true">‹</span>
             </button>
@@ -125,7 +125,7 @@ export default function EpisodeSelector({
               onClick={() => setPage(currentPage + 1)}
               disabled={currentPage >= pageCount - 1}
               aria-label="Next page of episodes"
-              className="h-7 w-7 grid place-items-center rounded-none border border-[var(--accent)]/25 text-base leading-none text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:text-[var(--accent)] disabled:opacity-30 disabled:pointer-events-none"
+              className="h-11 w-11 sm:h-7 sm:w-7 grid place-items-center rounded-none border border-[var(--accent)]/25 text-base leading-none text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:text-[var(--accent)] disabled:opacity-30 disabled:pointer-events-none"
             >
               <span aria-hidden="true">›</span>
             </button>
