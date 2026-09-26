@@ -139,6 +139,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [actionGlyph, setActionGlyph] = useState<{ id: number; action: "play" | "pause" } | null>(null);
   const glyphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Control row: a strip that scrolls horizontally inside the bar.
+  // Deliberately NOT an `overflow-x-auto` container: the settings dropdowns
+  // open upward from inside the row, and a scroll container would clip them.
+  // The strip is translated instead — the player's `overflow-hidden` still
+  // clips it at the bar edge, so nothing leaks to the page.
+  const rowWrapRef = useRef<HTMLDivElement>(null); // viewport (bar content box)
+  const rowScrollRef = useRef<HTMLDivElement>(null); // strip (content being moved)
+  const [rowScroll, setRowScroll] = useState({ offset: 0, max: 0, canLeft: false, canRight: false });
+  const [rowDragging, setRowDragging] = useState(false);
+  const rowDragRef = useRef<{ id: number; startX: number; startOffset: number; active: boolean; moved: boolean } | null>(null);
+  const rowClickGuardRef = useRef(false); // swallows the click that ends a drag
+
   // Audio type (sub / dub)
   const [audioType, setAudioType] = useState<"sub" | "dub">("sub");
   const [dubAvailable, setDubAvailable] = useState(false);
@@ -998,6 +1010,119 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
   }, [playing]);
 
+  // ─── Control-row overflow: measurement + edge chevrons ────────
+  // Single writer for the offset: clamps to the measured range and derives
+  // which chevrons are live, bailing out when nothing changed so resize
+  // bursts (hover animations, font swap) don't spam re-renders.
+  const setRowOffset = useCallback((next: number | ((prevOffset: number) => number)) => {
+    setRowScroll((prev) => {
+      const target = typeof next === "function" ? next(prev.offset) : next;
+      const offset = Math.max(0, Math.min(target, prev.max));
+      const canLeft = offset > 1;
+      const canRight = offset < prev.max - 1;
+      if (offset === prev.offset && canLeft === prev.canLeft && canRight === prev.canRight) return prev;
+      return { ...prev, offset, canLeft, canRight };
+    });
+  }, []);
+
+  // The strip is transform-scrolled, so there are no scroll events to listen
+  // for — width of strip vs width of viewport is the whole story.
+  const measureRow = useCallback(() => {
+    const wrap = rowWrapRef.current;
+    const strip = rowScrollRef.current;
+    if (!wrap || !strip) return;
+    const max = Math.max(0, strip.offsetWidth - wrap.clientWidth);
+    setRowScroll((prev) => {
+      const offset = Math.min(prev.offset, max);
+      const canLeft = offset > 1;
+      const canRight = offset < max - 1;
+      if (offset === prev.offset && max === prev.max &&
+          canLeft === prev.canLeft && canRight === prev.canRight) return prev;
+      return { offset, max, canLeft, canRight };
+    });
+  }, []);
+
+  // Pure CSS can't detect overflow, so a ResizeObserver drives the chevron:
+  // watch the viewport (bar width) and the strip (items appearing/disappearing
+  // as breakpoints flip the control set). Scrolling itself is a transform.
+  useEffect(() => {
+    const wrap = rowWrapRef.current;
+    const strip = rowScrollRef.current;
+    measureRow();
+    if (wrap && strip && typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => measureRow());
+      ro.observe(wrap);
+      ro.observe(strip);
+      window.addEventListener("resize", measureRow);
+      // Iosevka can swap in after first paint and change the time chip's width
+      document.fonts?.ready.then(() => measureRow()).catch(() => {});
+      return () => {
+        ro.disconnect();
+        window.removeEventListener("resize", measureRow);
+      };
+    }
+    window.addEventListener("resize", measureRow);
+    return () => window.removeEventListener("resize", measureRow);
+  }, [measureRow]);
+
+  // Chevron click: scroll one step; the direction flips at each edge
+  const scrollRow = (dir: 1 | -1) => {
+    const wrap = rowWrapRef.current;
+    if (!wrap) return;
+    const step = Math.max(160, Math.round(wrap.clientWidth * 0.55));
+    setRowOffset((offset) => offset + dir * step);
+  };
+
+  // Horizontal wheel / shift+wheel over the row scrolls it too
+  const handleRowWheel = (e: React.WheelEvent) => {
+    const delta =
+      Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+    if (delta) setRowOffset((offset) => offset + delta);
+  };
+
+  // ─── Drag-to-scroll (touch, and mouse without a button press) ──
+  // Capture is only taken once the pointer has clearly moved, so plain taps
+  // on the controls keep their normal click behaviour.
+  const handleStripPointerDown = (e: React.PointerEvent) => {
+    if (e.target instanceof HTMLInputElement) return; // leave the volume slider alone
+    rowDragRef.current = {
+      id: e.pointerId,
+      startX: e.clientX,
+      startOffset: rowScroll.offset,
+      active: false,
+      moved: false,
+    };
+  };
+
+  const handleStripPointerMove = (e: React.PointerEvent) => {
+    const drag = rowDragRef.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    const dx = e.clientX - drag.startX;
+    if (!drag.active) {
+      if (Math.abs(dx) < 8) return;
+      drag.active = true;
+      drag.moved = true;
+      try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+      setRowDragging(true);
+    }
+    setRowOffset(drag.startOffset - dx);
+  };
+
+  const handleStripPointerEnd = (e: React.PointerEvent) => {
+    const drag = rowDragRef.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    if (drag.moved) rowClickGuardRef.current = true;
+    rowDragRef.current = null;
+    setRowDragging(false);
+  };
+
+  const handleStripClickCapture = (e: React.MouseEvent) => {
+    if (!rowClickGuardRef.current) return;
+    rowClickGuardRef.current = false;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   // ─── Close menus on outside click ───────────────────────
   useEffect(() => {
     const closeIfOutside = (e: PointerEvent) => {
@@ -1541,6 +1666,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         @media (prefers-reduced-motion: reduce) {
           .n54-action-glyph { animation: n54-glyph-fade 620ms linear forwards; }
         }
+        /* Control-row strip: eased slide for chevron clicks, dead during a drag */
+        .n54-row-strip {
+          transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+          will-change: transform;
+        }
+        .n54-row-strip.is-dragging { transition: none; }
+        @media (prefers-reduced-motion: reduce) {
+          .n54-row-strip { transition: none; }
+        }
       `}</style>
 
       {/* Video element */}
@@ -1743,17 +1877,32 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           />
         </div>
 
-        {/* Controls row */}
-        <div className="flex items-center justify-between">
-          {/* Left group: prev/next episode, transport, volume, time */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Previous episode */}
+        {/* Controls row — the strip scrolls horizontally inside the bar and is
+            clipped by the player, so a narrow viewport never spills sideways.
+            The edge chevrons only render while there is something to reveal. */}
+        <div ref={rowWrapRef} className="relative" onWheel={handleRowWheel}>
+          <div
+            ref={rowScrollRef}
+            className={`n54-row-strip flex w-full min-w-max items-center justify-between gap-4 sm:gap-6 select-none touch-pan-y ${
+              rowDragging ? "is-dragging" : ""
+            }`}
+            style={{ transform: `translate3d(${-rowScroll.offset}px, 0, 0)` }}
+            onPointerDown={handleStripPointerDown}
+            onPointerMove={handleStripPointerMove}
+            onPointerUp={handleStripPointerEnd}
+            onPointerCancel={handleStripPointerEnd}
+            onClickCapture={handleStripClickCapture}
+          >
+          {/* Left group: prev/next episode, transport, volume, time — the
+              essentials, always first so they are on screen at offset 0 */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Previous episode — first thing to go when the row gets tight */}
             <button
               onClick={() => { if (prevEpisodeTarget) goToEpisode(prevEpisodeTarget); }}
               disabled={!prevEpisodeTarget}
               title={prevEpisodeTarget ? `Episode ${prevEpisodeTarget}` : "First episode"}
               aria-label="Previous episode"
-              className={`hidden lg:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
+              className={`hidden sm:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
                 prevEpisodeTarget
                   ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
                   : "text-[var(--accent)]/50 opacity-30 cursor-not-allowed"
@@ -1811,7 +1960,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               disabled={!nextEpisodeTarget}
               title={nextEpisodeTarget ? `Episode ${nextEpisodeTarget}` : "No next episode"}
               aria-label="Next episode"
-              className={`hidden lg:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
+              className={`hidden sm:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
                 nextEpisodeTarget
                   ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
                   : "text-[var(--accent)]/50 opacity-30 cursor-not-allowed"
@@ -1859,10 +2008,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </span>
           </div>
 
-          {/* Right group: gear (mobile), fullscreen */}
+          {/* Right group: pickers, gear, fullscreen */}
           <div className="flex items-center gap-1.5 justify-end shrink-0">
-            {/* Desktop pickers: hidden on mobile */}
-            <div className="hidden sm:contents">
+            {/* Settings pickers — low priority: below lg they collapse into
+                the gear, which opens the same settings panel */}
+            <div className="hidden lg:contents">
             {/* Sub / Dub segmented toggle */}
             {dubAvailable && (
               <div className="flex items-center bg-black/40 border border-[var(--accent)]/20 overflow-hidden rounded-none">
@@ -1892,7 +2042,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
             {/* Provider picker */}
             <div ref={providerWrapRef} className="relative h-full flex items-center gap-1">
-              <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden sm:inline">Pv</span>
+              <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden xl:inline">Pv</span>
               <button
                 onClick={() => { setShowProviderPicker(!showProviderPicker); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                 className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
@@ -1930,7 +2080,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Server/Session picker */}
             {availableServers.length > 0 && (
               <div ref={serverWrapRef} className="relative h-full flex items-center gap-1">
-                <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden sm:inline">Srv</span>
+                <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden xl:inline">Srv</span>
                 <button
                   onClick={() => { setShowServerPicker(!showServerPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                   className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
@@ -2145,11 +2295,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
             </div>
 
-            {/* Settings gear (mobile only) */}
+            {/* Settings gear — below lg this stands in for the pickers above */}
             <button
               ref={gearRef}
               onClick={() => { setShowSettings(!showSettings); setShowServerPicker(false); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowFilterPicker(false); }}
-              className="w-11 h-11 sm:hidden flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors rounded-none"
+              className="w-11 h-11 lg:hidden flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors rounded-none"
             >
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" />
@@ -2166,6 +2316,34 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             )}
 
           </div>
+          </div>
+
+          {/* Edge chevrons — a ">" hovers at the right edge while there is more
+              to reveal; once scrolled it flips to a "<" at the left edge */}
+          {rowScroll.canLeft && (
+            <button
+              type="button"
+              onClick={() => scrollRow(-1)}
+              aria-label="Scroll controls left"
+              className="absolute -left-3 top-1/2 z-10 flex h-11 w-8 -translate-y-1/2 items-center justify-center bg-gradient-to-r from-black/95 via-black/75 to-transparent text-[var(--accent)]/60 hover:text-[var(--accent)] transition-colors"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
+              </svg>
+            </button>
+          )}
+          {rowScroll.canRight && (
+            <button
+              type="button"
+              onClick={() => scrollRow(1)}
+              aria-label="Scroll controls right"
+              className="absolute -right-3 top-1/2 z-10 flex h-11 w-8 -translate-y-1/2 items-center justify-center bg-gradient-to-l from-black/95 via-black/75 to-transparent text-[var(--accent)]/60 hover:text-[var(--accent)] transition-colors"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
         </div>
 
       </div>
@@ -2185,9 +2363,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       )}
     </div>
 
-    {/* Mobile settings panel — outside overflow-hidden so it isn't clipped */}
+    {/* Settings panel — outside overflow-hidden so it isn't clipped.
+        Shown below lg, where it stands in for the collapsed pickers. */}
     {showSettings && (
-      <div ref={settingsPanelRef} className="sm:hidden bg-[#131318] border border-[var(--accent)]/20 border-b-0 mx-0 mb-0 max-h-[60vh] overflow-y-auto rounded-none">
+      <div ref={settingsPanelRef} className="lg:hidden bg-[#131318] border border-[var(--accent)]/20 border-b-0 mx-0 mb-0 max-h-[60vh] overflow-y-auto rounded-none">
         {/* Close button */}
         <div className="sticky top-0 z-10 flex justify-end px-2 pt-2 bg-[#131318]">
           <button
