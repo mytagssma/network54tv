@@ -21,8 +21,7 @@ import EpisodeSelector from "./EpisodeSelector";
  *   2. Otherwise cours-style blocks (12/24/26/50/100 — smallest that keeps
  *      the tab strip ≤12 tabs), with a tiny tail folded into its neighbour.
  *
- * Tabs filter the list; "Group by section" switches to a grouped view where
- * section headers sit sticky inside the same bounded, scrolling panel.
+ * Tabs filter the list — one flat, paged run at a time (no grouped view).
  */
 
 export interface EpisodeSection {
@@ -142,38 +141,14 @@ export default function EpisodeBrowser({
   const sections = useMemo(() => buildEpisodeSections(sorted), [sorted]);
 
   const [activeSection, setActiveSection] = useState<number | null>(null);
-  const [grouped, setGrouped] = useState(false);
 
   const showBar = sections.length > 1;
   const active =
     activeSection !== null && activeSection < sections.length ? activeSection : null;
   const visible = active === null ? sorted : sections[active].episodes;
 
-  const sectionByNumber = useMemo(() => {
-    const map = new Map<number, EpisodeSection>();
-    if (grouped) {
-      for (const section of sections) {
-        for (const ep of section.episodes) map.set(ep.number, section);
-      }
-    }
-    return map;
-  }, [grouped, sections]);
-
-  const getSectionLabel = grouped
-    ? (ep: Episode) => {
-        const section = sectionByNumber.get(ep.number);
-        if (!section) return null;
-        return `${section.label} · ${section.rangeLabel}${
-          section.hint ? ` · ${section.hint}` : ""
-        }`;
-      }
-    : undefined;
-
-  const heading = grouped
-    ? "// Episodes · grouped"
-    : active !== null
-      ? `// Episodes · section ${pad(active + 1)}`
-      : "// Episodes";
+  const heading =
+    active !== null ? `// Episodes · section ${pad(active + 1)}` : "// Episodes";
 
   const tabClass = (isActive: boolean) =>
     isActive
@@ -184,63 +159,46 @@ export default function EpisodeBrowser({
     <div>
       {showBar && (
         <div className="mb-3">
-          <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider shrink-0">
-              // Sections
-            </h2>
-            <button
-              type="button"
-              onClick={() => setGrouped((g) => !g)}
-              aria-pressed={grouped}
-              className={`ml-auto shrink-0 rounded-none border px-3 py-2 sm:px-2.5 sm:py-1 min-h-[36px] sm:min-h-0 font-mono text-[10px] uppercase tracking-wider transition-colors ${
-                grouped
-                  ? "border-[var(--accent)]/60 bg-[var(--accent)]/15 text-[var(--accent)]"
-                  : "border-[var(--accent)]/20 text-[var(--accent)]/50 hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
-              }`}
-            >
-              {grouped ? "[−] grouped" : "[+] group by section"}
-            </button>
-          </div>
+          <h2 className="mb-2 text-sm font-semibold text-[var(--accent)] uppercase tracking-wider">
+            // Sections
+          </h2>
 
-          {!grouped && (
-            <div className="overflow-x-auto pb-0.5">
-              <div className="flex w-max gap-1.5">
+          <div className="overflow-x-auto pb-0.5">
+            <div className="flex w-max gap-1.5">
+              <button
+                type="button"
+                onClick={() => setActiveSection(null)}
+                className={tabClass(active === null)}
+              >
+                all · {pad(sorted.length)}
+              </button>
+              {sections.map((section, i) => (
                 <button
+                  key={section.label}
                   type="button"
-                  onClick={() => setActiveSection(null)}
-                  className={tabClass(active === null)}
+                  onClick={() => setActiveSection(i)}
+                  className={tabClass(active === i)}
                 >
-                  all · {pad(sorted.length)}
+                  <span className="font-bold">{pad(i + 1)}</span>
+                  {" · "}
+                  {section.rangeLabel}
+                  {section.hint && (
+                    <span className="text-[#6b6b70]"> · {section.hint}</span>
+                  )}
                 </button>
-                {sections.map((section, i) => (
-                  <button
-                    key={section.label}
-                    type="button"
-                    onClick={() => setActiveSection(i)}
-                    className={tabClass(active === i)}
-                  >
-                    <span className="font-bold">{pad(i + 1)}</span>
-                    {" · "}
-                    {section.rangeLabel}
-                    {section.hint && (
-                      <span className="text-[#6b6b70]"> · {section.hint}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
+              ))}
             </div>
-          )}
+          </div>
         </div>
       )}
 
       <EpisodeSelector
-        key={grouped ? "grouped" : `section-${active ?? "all"}`}
+        key={`section-${active ?? "all"}`}
         episodes={visible}
         animeId={animeId}
         provider={provider}
         currentEpisode={currentEpisode}
         heading={heading}
-        getSectionLabel={getSectionLabel}
       />
     </div>
   );
