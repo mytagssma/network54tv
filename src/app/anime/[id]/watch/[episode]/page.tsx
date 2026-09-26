@@ -2,6 +2,7 @@ import { getAnimeById } from "@/lib/anilist";
 import { getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
 import Player from "@/components/player/Player";
+import EpisodeSelector from "@/components/watch/EpisodeSelector";
 import Link from "next/link";
 
 export const revalidate = 0;
@@ -126,41 +127,15 @@ export default async function WatchPage({ params, searchParams }: Props) {
         </div>
       </div>
 
-      {/* Episode grid */}
+      {/* Paged episode selector — bounded height, scrolls internally */}
       {episodes.length > 0 && (
         <div className="mt-8">
-          <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider mb-3">
-            // Episodes
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
-            {episodes.map((ep) => {
-              const isAvailable = ep.available !== false;
-              const isCurrent = ep.number === episodeNumber;
-              if (isAvailable) {
-                return (
-                  <Link
-                    key={ep.number}
-                    href={`/anime/${animeId}/watch/${ep.number}${providerQs}`}
-                    className={`text-center py-3 text-xs sm:py-2 font-mono border transition-all duration-200 rounded-none min-h-[44px] flex items-center justify-center ${
-                      isCurrent
-                        ? "bg-[var(--accent)] border-[var(--accent)] text-black font-bold"
-                        : "border-[var(--accent)]/10 text-[var(--accent)]/50 hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
-                    }`}
-                  >
-                    {String(ep.number).padStart(2, "0")}
-                  </Link>
-                );
-              }
-              return (
-                <div
-                  key={ep.number}
-                  className="text-center py-3 text-xs sm:py-2 font-mono border border-[#6b6b70]/10 text-[#6b6b70] rounded-none opacity-50 cursor-not-allowed min-h-[44px] flex items-center justify-center"
-                >
-                  {String(ep.number).padStart(2, "0")}
-                </div>
-              );
-            })}
-          </div>
+          <EpisodeSelector
+            episodes={episodes}
+            animeId={animeId}
+            provider={provider}
+            currentEpisode={episodeNumber}
+          />
         </div>
       )}
     </div>
