@@ -36,12 +36,12 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
     <Link
       href={baseHref}
       onClick={() => onClick?.()}
-      className="block bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
+      className="flex flex-col bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
                  transition-all duration-200 hover:border-[var(--accent)]/50 hover:-translate-y-0.5
                  rounded-none accent-card-hover"
     >
       {/* Cover image */}
-      <div className="aspect-[3/4] relative overflow-hidden bg-[var(--background)] rounded-none">
+      <div className="aspect-[3/4] shrink-0 relative overflow-hidden bg-[var(--background)] rounded-none">
         {loading ? (
           <>
             {/* Diagonal 4-part pulse loading overlay */}
@@ -80,14 +80,17 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
         )}
       </div>
 
-      {/* Info */}
-      <div className="p-3 space-y-1">
-        <h3 className="text-sm font-bold text-white line-clamp-2 leading-tight uppercase tracking-wider">
+      {/* Info — flex column so the meta row can pin to the card bottom; every
+          card in a row then shares the same title / genres / meta baselines */}
+      <div className="flex flex-1 flex-col p-3">
+        {/* Fixed 2-line slot (line-clamp-2 + leading-tight = 17.5px/line) so
+            1-line and 2-line titles push the rows below them the same way */}
+        <h3 className="min-h-[2.5em] text-sm font-bold text-white line-clamp-2 leading-tight uppercase tracking-wider">
           {loading ? "\u00A0" : anime.title}
         </h3>
 
         {!loading && anime.genres && anime.genres.length > 0 && (
-          <div className="flex flex-wrap gap-1">
+          <div className="mt-1.5 mb-1.5 flex flex-wrap gap-1">
             {anime.genres.slice(0, 3).map((genre) => (
               <span
                 key={genre}
@@ -99,15 +102,14 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
           </div>
         )}
 
-        {/* Meta row: rating + episode count */}
+        {/* Meta row: ★ score and episode count share one baseline; pinned to
+            the bottom of the card so rows line up across the grid */}
         {!loading && hasMeta && (
-          <div className="flex items-center justify-between gap-2 text-[10px] leading-none tracking-wide">
-            <span className="inline-flex items-center gap-1 text-[var(--accent)] font-semibold">
+          <div className="mt-auto flex items-baseline justify-between gap-2 pt-1 text-[10px] leading-none tracking-wide">
+            <span className="inline-flex items-baseline gap-1 text-[var(--accent)] font-semibold">
               {ratingLabel && (
                 <>
-                  <span aria-hidden="true" className="text-[9px] leading-none">
-                    ★
-                  </span>
+                  <span aria-hidden="true">★</span>
                   <span className="tabular-nums">{ratingLabel}</span>
                 </>
               )}
@@ -119,7 +121,7 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
         )}
 
         {loading && (
-          <>
+          <div className="mt-auto flex flex-col gap-1 pt-1">
             <div className="flex gap-1">
               <div className="h-2.5 w-12 bg-[var(--accent)]/10 rounded-none animate-pulse" />
               <div className="h-2.5 w-8 bg-[var(--accent)]/10 rounded-none animate-pulse" />
@@ -128,7 +130,7 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
               <div className="h-2.5 w-7 bg-[var(--accent)]/10 rounded-none animate-pulse" />
               <div className="h-2.5 w-9 bg-[var(--accent)]/10 rounded-none animate-pulse" />
             </div>
-          </>
+          </div>
         )}
       </div>
     </Link>
