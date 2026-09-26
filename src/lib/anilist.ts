@@ -190,9 +190,9 @@ function anilistMediaToAnime(media: any): Anime {
     nativeTitle: media.title?.native,
     coverImage: media.coverImage?.extraLarge || media.coverImage?.large || "",
     bannerImage: media.bannerImage,
-    description: media.description
-      ?.replace(/<[^>]*>/g, "")
-      ?.substring(0, 300),
+    // Strip AniList HTML only — never truncate: a 300-char cut was slicing
+    // synopses mid-word (the detail page clamps + modal handles length).
+    description: media.description?.replace(/<[^>]*>/g, ""),
     score: media.averageScore,
     episodes: media.episodes,
     duration: media.duration,
