@@ -36,6 +36,7 @@ query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season
     media(search: $search, type: ANIME, isAdult: false, format: $format, season: $season, status: $status, status_not: $status_not, genre_in: $genre_in, genre_not_in: $genre_not_in, sort: $sort, startDate_greater: $startDate_greater) {
       id
       title { romaji english native }
+      synonyms
       coverImage { large extraLarge color }
       bannerImage
       description
@@ -199,6 +200,352 @@ function anilistMediaToAnime(media: any): Anime {
   };
 }
 
+// ─── Fuzzy title matching (queue#5) ──────────────────────────────────────
+// AniList's `search` argument is resolved server-side and is only
+// approximate: it happily returns near-misses, misspellings and loosely
+// related titles in a fixed order. The helpers below score every fetched
+// title (romaji/english/native + synonyms) with a lightweight, dependency
+// free subsequence/edit-distance pass so close matches and typos can be
+// re-ranked above weaker hits. Nothing leaves the process — no embeddings,
+// no external services.
+
+interface SearchableTitle {
+  title?: {
+    romaji?: string | null;
+    english?: string | null;
+    native?: string | null;
+  } | null;
+  synonyms?: (string | null)[] | null;
+}
+
+// Characters that separate words in titles (ASCII punctuation + common
+// typographic/CJK separators). Anything else is treated as word content so
+// non-latin scripts survive normalization.
+const TITLE_SEPARATORS = new Set(
+  "\u00d7\u00b7\u30fb\u3001\u3002\u300c\u300d\u2010\u2011\u2013\u2014\u2018\u2019\u201c\u201d\uff01\uff08\uff09\uff1a\uff1b\uff1f".split("")
+);
+
+function isTitleSeparator(ch: string): boolean {
+  if (TITLE_SEPARATORS.has(ch)) return true;
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 33 && code <= 47) || // !"#$%&'()*+,-./
+    (code >= 58 && code <= 64) || // :;<=>?@
+    (code >= 91 && code <= 96) || // [\]^_`
+    (code >= 123 && code <= 126) // {|}~
+  );
+}
+
+/** Lowercase, strip accents/punctuation, collapse whitespace. */
+function normalizeTitle(value: string): string {
+  const decomposed = value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "");
+  let out = "";
+  let pendingSpace = false;
+  for (const ch of decomposed) {
+    if (isTitleSeparator(ch)) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (pendingSpace) {
+      out += " ";
+      pendingSpace = false;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/** Levenshtein distance; strings far apart in length short-circuit to "unrelated". */
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const maxLen = Math.max(m, n);
+  if (Math.abs(m - n) > maxLen * 0.55) return maxLen;
+
+  let prev = new Array<number>(n + 1);
+  let cur = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    const swap = prev;
+    prev = cur;
+    cur = swap;
+  }
+  return prev[n];
+}
+
+/** Does every character of `query` appear in `text` in order? (abbreviation-style match) */
+function isSubsequence(query: string, text: string): boolean {
+  let i = 0;
+  for (let j = 0; j < text.length && i < query.length; j++) {
+    if (query.charCodeAt(i) === text.charCodeAt(j)) i++;
+  }
+  return i === query.length;
+}
+
+function wordSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  const dist = editDistance(a, b);
+  return 1 - dist / Math.max(a.length, b.length);
+}
+
+/** Greedy, order-independent alignment of query words against title words. */
+function alignWords(
+  queryWords: string[],
+  titleWords: string[]
+): { matched: number; coverage: number; all: boolean } {
+  if (queryWords.length === 0) return { matched: 0, coverage: 0, all: false };
+  const used = new Array<boolean>(titleWords.length).fill(false);
+  let sum = 0;
+  let matched = 0;
+  for (const qw of queryWords) {
+    let bestIdx = -1;
+    let bestSim = 0;
+    for (let i = 0; i < titleWords.length; i++) {
+      if (used[i]) continue;
+      const sim = wordSimilarity(qw, titleWords[i]);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx >= 0 && bestSim >= 0.72) {
+      used[bestIdx] = true;
+      matched++;
+      sum += bestSim;
+    }
+  }
+  return {
+    matched,
+    coverage: sum / queryWords.length,
+    all: matched === queryWords.length,
+  };
+}
+
+/** Similarity of one normalized query against one normalized title, in [0, 1]. */
+function scoreTitle(queryNorm: string, queryWords: string[], titleNorm: string): number {
+  if (!titleNorm) return 0;
+  if (titleNorm === queryNorm) return 1;
+
+  const ratio = Math.min(1, queryNorm.length / titleNorm.length);
+  let best = 0;
+
+  // Substring containment (with a word-boundary bonus).
+  const idx = titleNorm.indexOf(queryNorm);
+  if (idx === 0) {
+    best = 0.92 + 0.07 * ratio;
+  } else if (idx > 0) {
+    const boundary = titleNorm.charAt(idx - 1) === " ";
+    best = (boundary ? 0.82 : 0.7) + 0.1 * ratio;
+  }
+
+  // Word-level match (handles swapped words and per-word typos).
+  const words = alignWords(queryWords, titleNorm.split(" "));
+  if (words.all) {
+    // Every query word is present — but titles that are much longer than the
+    // query (a word appearing somewhere inside) rank below near-equal titles.
+    best = Math.max(best, 0.62 + 0.2 * words.coverage + 0.14 * ratio);
+  } else if (words.matched > 0) {
+    best = Math.max(best, 0.4 + 0.35 * words.coverage);
+  }
+
+  // Whole-string fuzzy similarity (catches typos across the full query).
+  const dist = editDistance(queryNorm, titleNorm);
+  const sim = 1 - dist / Math.max(queryNorm.length, titleNorm.length);
+  if (sim >= 0.6) best = Math.max(best, 0.55 + 0.35 * sim);
+
+  // Abbreviation / subsequence style matches ("aot" → "attack on titan").
+  if (isSubsequence(queryNorm, titleNorm)) {
+    best = Math.max(best, 0.55 + 0.35 * ratio);
+  }
+
+  return Math.min(best, 1);
+}
+
+/** Best score across romaji/english/native titles and synonyms. */
+function mediaTitleScore(
+  queryNorm: string,
+  queryWords: string[],
+  media: SearchableTitle
+): number {
+  const fields = [
+    media.title?.romaji,
+    media.title?.english,
+    media.title?.native,
+    ...(media.synonyms || []),
+  ];
+  let best = 0;
+  for (const field of fields) {
+    if (!field) continue;
+    const normalized = normalizeTitle(field);
+    if (!normalized) continue;
+    const score = scoreTitle(queryNorm, queryWords, normalized);
+    if (score > best) {
+      best = score;
+      if (best >= 1) break;
+    }
+  }
+  return best;
+}
+
+// Match buckets: strong hits (exact/typo'd close matches) surface first,
+// then partial matches, then the rest — within each bucket the fetched
+// (server-side) order is preserved.
+const STRONG_MATCH = 0.85;
+const PARTIAL_MATCH = 0.6;
+
+function matchTier(score: number): number {
+  if (score >= STRONG_MATCH) return 0;
+  if (score >= PARTIAL_MATCH) return 1;
+  return 2;
+}
+
+/**
+ * Stable, tiered re-rank of a fetched search page by title similarity.
+ * Returns the input untouched when there is nothing to score (empty query,
+ * single result) or when the user explicitly picked a sort order.
+ */
+export function rankSearchResults(
+  rawMedia: any[],
+  query: string,
+  filters?: SearchFilters
+): any[] {
+  if (filters?.sort) return rawMedia; // explicit user sort wins
+  const trimmed = query.trim();
+  if (trimmed.length < 2 || rawMedia.length < 2) return rawMedia;
+
+  const queryNorm = normalizeTitle(trimmed);
+  if (queryNorm.length < 2) return rawMedia;
+  const queryWords = queryNorm.split(" ");
+
+  const ranked = rawMedia.map((media, index) => ({
+    media,
+    index,
+    tier: matchTier(mediaTitleScore(queryNorm, queryWords, media)),
+  }));
+  ranked.sort((a, b) => a.tier - b.tier || a.index - b.index);
+  return ranked.map((entry) => entry.media);
+}
+
+// ─── Search pipeline ─────────────────────────────────────────────────────
+
+type MediaFetcher = (query: string, variables: Record<string, any>) => Promise<any>;
+
+// When the server-side search comes back nearly empty (AniList's `search`
+// resolves server-side and a typo'd query can return nothing at all), retry
+// with the individual query words so the fuzzy re-rank has candidates to
+// surface. First page only, capped attempts, best effort — pagination stays
+// untouched because later pages are always plain server-side pages.
+const FUZZY_POOL_MIN = 6;
+const FUZZY_POOL_ATTEMPTS = 2;
+
+async function widenSearchPool(
+  fetcher: MediaFetcher,
+  variables: Record<string, any>,
+  query: string,
+  rawMedia: any[]
+): Promise<any[]> {
+  const words = normalizeTitle(query).split(" ").filter((w) => w.length >= 3);
+  if (words.length < 2) return rawMedia;
+  // Longest words first — they are the most distinctive part of a query.
+  words.sort((a, b) => b.length - a.length);
+  const seen = new Set(rawMedia.map((m: any) => m.id));
+  for (const word of words.slice(0, FUZZY_POOL_ATTEMPTS)) {
+    if (rawMedia.length >= FUZZY_POOL_MIN) break;
+    try {
+      const data = await fetcher(SEARCH_QUERY, { ...variables, search: word, page: 1 });
+      const extra: any[] = data?.Page?.media || [];
+      for (const media of extra) {
+        if (!media || media.id == null || seen.has(media.id)) continue;
+        seen.add(media.id);
+        rawMedia.push(media);
+      }
+    } catch {
+      // Widening is a refinement — never fail the search over it.
+    }
+  }
+  return rawMedia;
+}
+
+async function executeSearch(
+  fetcher: MediaFetcher,
+  query: string,
+  page: number,
+  perPage: number,
+  filters?: SearchFilters
+): Promise<{ media: Anime[]; hasNextPage: boolean }> {
+  const variables: Record<string, any> = { page, perPage };
+  if (query) variables.search = query;
+  if (filters?.format) variables.format = filters.format.toUpperCase();
+  if (filters?.season) variables.season = filters.season.toUpperCase();
+  if (filters?.seasonYear) variables.seasonYear = filters.seasonYear;
+  if (filters?.status) variables.status = STATUS_API_MAP[filters.status] || filters.status.toUpperCase();
+  if (filters?.status_not) variables.status_not = filters.status_not.toUpperCase();
+  if (filters?.genres?.length) variables.genre_in = filters.genres;
+  if (filters?.tagFilter) {
+    const { include, exclude } = filters.tagFilter;
+    if (include.length > 0) variables.genre_in = include;
+    if (exclude.length > 0) variables.genre_not_in = exclude;
+  }
+  if (filters?.sort) variables.sort = [filters.sort];
+  if (filters?.timeRange) {
+    const now = new Date();
+    let start = new Date(now);
+    switch (filters.timeRange) {
+      case 'week': start.setDate(now.getDate() - 7); break;
+      case 'month': start.setMonth(now.getMonth() - 1); break;
+      case '3months': start.setMonth(now.getMonth() - 3); break;
+      case '6months': start.setMonth(now.getMonth() - 6); break;
+      case 'year': start.setFullYear(now.getFullYear() - 1); break;
+    }
+    const y = start.getFullYear();
+    const m = start.getMonth() + 1;
+    const d = start.getDate();
+    variables.startDate_greater = y * 10000 + m * 100 + d;
+  }
+
+  const data = await fetcher(SEARCH_QUERY, variables);
+  const pageData = data.Page;
+  let rawMedia: any[] = pageData.media || [];
+
+  // Sparse first page + a real query → widen the pool so fuzzy matching has
+  // something to work with (queue#5).
+  if (page === 1 && !filters?.sort && query.trim() && rawMedia.length < FUZZY_POOL_MIN) {
+    rawMedia = await widenSearchPool(fetcher, variables, query, rawMedia);
+  }
+
+  // Client-side AND mode: keep only media matching ALL included genres
+  if (filters?.tagFilter?.mode === "AND" && filters.tagFilter.include.length > 1) {
+    const required = new Set(filters.tagFilter.include);
+    rawMedia = rawMedia.filter((m: any) => {
+      const animeGenres = new Set(m.genres || []);
+      return [...required].every((g) => animeGenres.has(g));
+    });
+  }
+
+  rawMedia = rankSearchResults(rawMedia, query, filters);
+  const media = rawMedia.map(anilistMediaToAnime);
+
+  return {
+    media,
+    hasNextPage: pageData.pageInfo.hasNextPage && media.length > 0,
+  };
+}
+
 async function fetchGraphQL(query: string, variables: Record<string, any>) {
   const res = await fetch(ANILIST_API, {
     method: "POST",
@@ -268,57 +615,7 @@ export async function searchAnime(
   perPage = 20,
   filters?: SearchFilters
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
-  const variables: Record<string, any> = { page, perPage };
-  if (query) variables.search = query;
-  if (filters?.format) variables.format = filters.format.toUpperCase();
-  if (filters?.season) variables.season = filters.season.toUpperCase();
-  if (filters?.seasonYear) variables.seasonYear = filters.seasonYear;
-  if (filters?.status) variables.status = STATUS_API_MAP[filters.status] || filters.status.toUpperCase();
-  if (filters?.status_not) variables.status_not = filters.status_not.toUpperCase();
-  if (filters?.genres?.length) variables.genre_in = filters.genres;
-  if (filters?.tagFilter) {
-    const { include, exclude, mode } = filters.tagFilter;
-    if (include.length > 0) {
-      variables.genre_in = include;
-    }
-    if (exclude.length > 0) {
-      variables.genre_not_in = exclude;
-    }
-  }
-  if (filters?.sort) variables.sort = [filters.sort];
-  if (filters?.timeRange) {
-    const now = new Date();
-    let start = new Date(now);
-    switch (filters.timeRange) {
-      case 'week': start.setDate(now.getDate() - 7); break;
-      case 'month': start.setMonth(now.getMonth() - 1); break;
-      case '3months': start.setMonth(now.getMonth() - 3); break;
-      case '6months': start.setMonth(now.getMonth() - 6); break;
-      case 'year': start.setFullYear(now.getFullYear() - 1); break;
-    }
-    const y = start.getFullYear();
-    const m = start.getMonth() + 1;
-    const d = start.getDate();
-    variables.startDate_greater = y * 10000 + m * 100 + d;
-  }
-
-  const data = await fetchGraphQL(SEARCH_QUERY, variables);
-  const pageData = data.Page;
-  let media = pageData.media.map(anilistMediaToAnime);
-
-  // Client-side AND mode: filter to keep only media matching ALL included genres
-  if (filters?.tagFilter?.mode === "AND" && filters.tagFilter.include.length > 1) {
-    const required = new Set(filters.tagFilter.include);
-    media = media.filter((m: Anime) => {
-      const animeGenres = new Set(m.genres || []);
-      return [...required].every((g) => animeGenres.has(g));
-    });
-  }
-
-  return {
-    media,
-    hasNextPage: pageData.pageInfo.hasNextPage && media.length > 0,
-  };
+  return executeSearch(fetchGraphQL, query, page, perPage, filters);
 }
 
 /**
@@ -460,49 +757,7 @@ export async function searchAnimeClient(
   perPage = 20,
   filters?: SearchFilters
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
-  const variables: Record<string, any> = { page, perPage };
-  if (query) variables.search = query;
-  if (filters?.format) variables.format = filters.format.toUpperCase();
-  if (filters?.season) variables.season = filters.season.toUpperCase();
-  if (filters?.seasonYear) variables.seasonYear = filters.seasonYear;
-  if (filters?.status) variables.status = filters.status.toUpperCase();
-  if (filters?.status_not) variables.status_not = filters.status_not.toUpperCase();
-  if (filters?.genres?.length) variables.genre_in = filters.genres;
-  if (filters?.tagFilter?.include?.length) variables.genre_in = filters.tagFilter.include;
-  if (filters?.tagFilter?.exclude?.length) variables.genre_not_in = filters.tagFilter.exclude;
-  if (filters?.sort) variables.sort = [filters.sort];
-  if (filters?.timeRange) {
-    const now = new Date();
-    let start = new Date(now);
-    switch (filters.timeRange) {
-      case "week": start.setDate(now.getDate() - 7); break;
-      case "month": start.setMonth(now.getMonth() - 1); break;
-      case "3months": start.setMonth(now.getMonth() - 3); break;
-      case "6months": start.setMonth(now.getMonth() - 6); break;
-      case "year": start.setFullYear(now.getFullYear() - 1); break;
-    }
-    const y = start.getFullYear();
-    const m = start.getMonth() + 1;
-    const d = start.getDate();
-    variables.startDate_greater = y * 10000 + m * 100 + d;
-  }
-
-  const data = await anilistFetch(SEARCH_QUERY, variables);
-  const pageData = data.Page;
-  let media = pageData.media.map(anilistMediaToAnime);
-
-  if (filters?.tagFilter?.mode === "AND" && filters.tagFilter.include.length > 1) {
-    const required = new Set(filters.tagFilter.include);
-    media = media.filter((m: Anime) => {
-      const animeGenres = new Set(m.genres || []);
-      return [...required].every((g) => animeGenres.has(g));
-    });
-  }
-
-  return {
-    media,
-    hasNextPage: pageData.pageInfo.hasNextPage && media.length > 0,
-  };
+  return executeSearch(anilistFetch, query, page, perPage, filters);
 }
 
 export async function getTrendingClient(
