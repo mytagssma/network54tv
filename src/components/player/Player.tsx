@@ -284,6 +284,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Prev/next episode targets for the control bar (prev never goes below EP 1)
   const prevEpisodeTarget = episodeNumber > 1 && anilistId ? episodeNumber - 1 : null;
   const nextEpisodeTarget = nextEpisodeNumber && anilistId ? nextEpisodeNumber : null;
+  // A row-anchored picker menu is open — the edge chevrons step aside so the
+  // menu is never overlapped by them
+  const rowMenuOpen =
+    showServerPicker || showProviderPicker || showQualityPicker ||
+    showSpeedPicker || showSubPicker || showFilterPicker;
 
   // ─── Attempt watchdog ────────────────────────────────────
   const clearWatchdog = useCallback(() => {
@@ -1879,8 +1884,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
         {/* Controls row — the strip scrolls horizontally inside the bar and is
             clipped by the player, so a narrow viewport never spills sideways.
-            The edge chevrons only render while there is something to reveal. */}
-        <div ref={rowWrapRef} className="relative" onWheel={handleRowWheel}>
+            The edge chevrons only render while there is something to reveal.
+
+            `z-20` is load-bearing: the strip carries a transform (the scroll),
+            which traps the picker menus' `z-50` inside the strip's own stacking
+            context. Without an explicit z-index on this wrapper the menus paint
+            *under* the seekbar input (`relative z-10`) and open behind it. The
+            wrapper lifts the whole row — menus included — above the seekbar. */}
+        <div ref={rowWrapRef} className="relative z-20" onWheel={handleRowWheel}>
           <div
             ref={rowScrollRef}
             className={`n54-row-strip flex w-full min-w-max items-center justify-between gap-4 sm:gap-6 select-none touch-pan-y ${
@@ -2319,8 +2330,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           </div>
 
           {/* Edge chevrons — a ">" hovers at the right edge while there is more
-              to reveal; once scrolled it flips to a "<" at the left edge */}
-          {rowScroll.canLeft && (
+              to reveal; once scrolled it flips to a "<" at the left edge.
+              Hidden while a picker menu is open so the menu owns that corner. */}
+          {!rowMenuOpen && rowScroll.canLeft && (
             <button
               type="button"
               onClick={() => scrollRow(-1)}
@@ -2332,7 +2344,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </svg>
             </button>
           )}
-          {rowScroll.canRight && (
+          {!rowMenuOpen && rowScroll.canRight && (
             <button
               type="button"
               onClick={() => scrollRow(1)}
