@@ -1677,9 +1677,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         </div>
       )}
 
-      {/* Skip intro/outro buttons — only shown when AniSkip timestamps exist */}
+      {/* Skip intro/outro buttons — only shown when AniSkip timestamps exist.
+          Positioned bottom-right above the control bar: bottom-20 (80px) clears
+          the progress bar (80px tall mobile / 68px desktop measured from the
+          bottom) and sits inside the controls gradient. Open right-side picker
+          menus are z-50 + opaque, so they paint over these (z-30) rather than
+          colliding. */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
-        <div className="absolute bottom-12 left-0 right-0 sm:bottom-16 sm:left-auto sm:right-auto flex justify-center sm:justify-center gap-2 sm:gap-3 z-30 px-3">
+        <div className="absolute bottom-20 left-auto right-3 flex justify-end gap-2 sm:gap-3 z-30">
           {inIntro && introSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
