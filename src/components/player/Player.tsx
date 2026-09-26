@@ -256,6 +256,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const inIntro = !!introSegment && currentTime >= introSegment.start && currentTime < introSegment.end && duration > 0;
   const inOutro = !!outroSegment && currentTime >= outroSegment.start && currentTime < outroSegment.end && duration > 0;
+  // Prev/next episode targets for the control bar (prev never goes below EP 1)
+  const prevEpisodeTarget = episodeNumber > 1 && anilistId ? episodeNumber - 1 : null;
+  const nextEpisodeTarget = nextEpisodeNumber && anilistId ? nextEpisodeNumber : null;
 
   // ─── Attempt watchdog ────────────────────────────────────
   const clearWatchdog = useCallback(() => {
@@ -1070,6 +1073,23 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   };
 
+  // ─── Skip ±10s (control-bar buttons) ─────────────────────
+  const seekBy = (delta: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const max = isFinite(video.duration) && video.duration > 0 ? video.duration : Number.MAX_SAFE_INTEGER;
+    video.currentTime = Math.max(0, Math.min(max, video.currentTime + delta));
+    setCurrentTime(video.currentTime);
+    resetControlsTimer();
+  };
+
+  // ─── Episode navigation (control-bar prev/next) ──────────
+  const goToEpisode = (n: number) => {
+    if (!anilistId) return;
+    saveProgress(); // SPA navigation never fires beforeunload — persist here
+    router.push(`/anime/${anilistId}/watch/${n}`);
+  };
+
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     const doc = document as any;
@@ -1645,8 +1665,39 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
         {/* Controls row */}
         <div className="flex items-center justify-between">
-          {/* Left group: play, volume, time */}
+          {/* Left group: prev/next episode, transport, volume, time */}
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Previous episode */}
+            <button
+              onClick={() => { if (prevEpisodeTarget) goToEpisode(prevEpisodeTarget); }}
+              disabled={!prevEpisodeTarget}
+              title={prevEpisodeTarget ? `Episode ${prevEpisodeTarget}` : "First episode"}
+              aria-label="Previous episode"
+              className={`hidden lg:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
+                prevEpisodeTarget
+                  ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  : "text-[var(--accent)]/50 opacity-30 cursor-not-allowed"
+              }`}
+            >
+              <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+              </svg>
+            </button>
+
+            {/* Skip back 10s */}
+            <button
+              onClick={() => seekBy(-10)}
+              title="Back 10 seconds"
+              aria-label="Skip back 10 seconds"
+              className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-11 h-11 sm:w-8 sm:h-8"
+            >
+              <svg className="w-6 h-6 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 4.8a7.2 7.2 0 1 0 7.2 7.2" />
+                <path d="M12 1.8 12 7.8 8.4 4.8z" fill="currentColor" stroke="none" />
+                <text x="12" y="12.2" textAnchor="middle" dominantBaseline="central" fontSize="7.6" fontWeight="700" fill="currentColor" stroke="none">10</text>
+              </svg>
+            </button>
+
             {/* Play/Pause */}
             <button onClick={togglePlay} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-11 h-11 sm:w-8 sm:h-8">
               {playing ? (
@@ -1658,6 +1709,37 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   <path d="M8 5v14l11-7z" />
                 </svg>
               )}
+            </button>
+
+            {/* Skip forward 10s */}
+            <button
+              onClick={() => seekBy(10)}
+              title="Forward 10 seconds"
+              aria-label="Skip forward 10 seconds"
+              className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-11 h-11 sm:w-8 sm:h-8"
+            >
+              <svg className="w-6 h-6 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 4.8a7.2 7.2 0 1 1-7.2 7.2" />
+                <path d="M12 1.8 12 7.8 15.6 4.8z" fill="currentColor" stroke="none" />
+                <text x="12" y="12.2" textAnchor="middle" dominantBaseline="central" fontSize="7.6" fontWeight="700" fill="currentColor" stroke="none">10</text>
+              </svg>
+            </button>
+
+            {/* Next episode */}
+            <button
+              onClick={() => { if (nextEpisodeTarget) goToEpisode(nextEpisodeTarget); }}
+              disabled={!nextEpisodeTarget}
+              title={nextEpisodeTarget ? `Episode ${nextEpisodeTarget}` : "No next episode"}
+              aria-label="Next episode"
+              className={`hidden lg:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
+                nextEpisodeTarget
+                  ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  : "text-[var(--accent)]/50 opacity-30 cursor-not-allowed"
+              }`}
+            >
+              <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+              </svg>
             </button>
 
             {/* Volume */}
