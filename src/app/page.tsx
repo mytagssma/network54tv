@@ -298,10 +298,12 @@ export default function Home() {
                     onChange={(e) => setFilterSort(e.target.value)}
                     className="bg-[var(--background)] border border-[var(--accent)]/20 px-3 py-1.5 text-sm text-[var(--accent)] focus:outline-none focus:border-[var(--accent)] transition-colors rounded-none"
                   >
-                    <option value="">Popularity</option>
+                    {/* Default matches the home page's Latest Releases order (queue#8) */}
+                    <option value="">Latest Updates</option>
                     <option value="SCORE_DESC">Score</option>
                     <option value="TRENDING_DESC">Trending</option>
-                    <option value="START_DATE_DESC">Recently Updated</option>
+                    <option value="POPULARITY_DESC">Popularity</option>
+                    <option value="START_DATE_DESC">Newest Release</option>
                   </select>
                 </div>
 

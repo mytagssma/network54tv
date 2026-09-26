@@ -21,6 +21,8 @@ function BrowseContent() {
   const [trendingHasNext, setTrendingHasNext] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
+  // "" = default sort: home page's latest-updates order (queue#8)
+  const [sort, setSort] = useState("");
 
   const toCard = (a: Anime) => ({
     id: a.id,
@@ -41,7 +43,7 @@ function BrowseContent() {
       setTrendingPage(1);
       if (query) {
         try {
-          const data = await searchAnimeClient(query, 1, 24);
+          const data = await searchAnimeClient(query, 1, 24, sort ? { sort } : undefined);
           if (!cancelled) {
             setResults(data.media);
             setHasNextPage(data.hasNextPage);
@@ -72,14 +74,14 @@ function BrowseContent() {
     }
     load();
     return () => { cancelled = true; };
-  }, [query]);
+  }, [query, sort]);
 
   async function loadMore() {
     setLoadingMore(true);
     try {
       if (query) {
         const nextPage = page + 1;
-        const data = await searchAnimeClient(query, nextPage, 24);
+        const data = await searchAnimeClient(query, nextPage, 24, sort ? { sort } : undefined);
         setResults((prev) => [...prev, ...data.media]);
         setHasNextPage(data.hasNextPage);
         setPage(nextPage);
@@ -169,6 +171,25 @@ function BrowseContent() {
           // {title}
         </h1>
         <SearchBar initialQuery={query} />
+        {query && (
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 p-3 bg-[var(--panel)] border border-[var(--accent)]/20 rounded-none">
+            <div className="flex items-center gap-2">
+              <label htmlFor="browse-sort" className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">Sort</label>
+              <select
+                id="browse-sort"
+                value={sort}
+                onChange={(e) => setSort(e.target.value)}
+                className="bg-[var(--background)] border border-[var(--accent)]/20 px-3 py-1.5 text-sm text-[var(--accent)] focus:outline-none focus:border-[var(--accent)] transition-colors rounded-none"
+              >
+                <option value="">Latest Updates</option>
+                <option value="SCORE_DESC">Score</option>
+                <option value="TRENDING_DESC">Trending</option>
+                <option value="POPULARITY_DESC">Popularity</option>
+                <option value="START_DATE_DESC">Newest Release</option>
+              </select>
+            </div>
+          </div>
+        )}
       </div>
       {resultsNode}
     </div>

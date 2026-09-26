@@ -415,30 +415,113 @@ function matchTier(score: number): number {
 }
 
 /**
- * Stable, tiered re-rank of a fetched search page by title similarity.
- * Returns the input untouched when there is nothing to score (empty query,
- * single result) or when the user explicitly picked a sort order.
+ * Re-rank a fetched search page for the default ordering:
+ *
+ * 1. fuzzy title tiers (queue#5) — close matches/typos surface first, but only
+ *    when the user did not pick a sort explicitly;
+ * 2. home "Latest Releases" order (queue#8) — most recently aired episode
+ *    first (airing TIME_DESC), release season as fallback, ties broken by the
+ *    server-side order.
+ *
+ * Operates strictly within the fetched page, so pagination stays intact.
  */
-export function rankSearchResults(
+export async function rankSearchResults(
+  fetcher: MediaFetcher,
   rawMedia: any[],
   query: string,
   filters?: SearchFilters
-): any[] {
-  if (filters?.sort) return rawMedia; // explicit user sort wins
-  const trimmed = query.trim();
-  if (trimmed.length < 2 || rawMedia.length < 2) return rawMedia;
+): Promise<any[]> {
+  // An explicit user-chosen sort must be reflected exactly — no re-ranking.
+  if (filters?.sort) return rawMedia;
+  if (rawMedia.length < 2) return rawMedia;
 
-  const queryNorm = normalizeTitle(trimmed);
-  if (queryNorm.length < 2) return rawMedia;
-  const queryWords = queryNorm.split(" ");
+  const trimmed = query.trim();
+  const queryNorm = trimmed.length >= 2 ? normalizeTitle(trimmed) : "";
+  const queryWords = queryNorm ? queryNorm.split(" ") : [];
+  const useFuzzy = queryNorm.length >= 2 && queryWords.length > 0;
+
+  const airedAt = await latestAiredAt(fetcher, rawMedia.map((m: any) => m.id));
 
   const ranked = rawMedia.map((media, index) => ({
     media,
     index,
-    tier: matchTier(mediaTitleScore(queryNorm, queryWords, media)),
+    tier: useFuzzy ? matchTier(mediaTitleScore(queryNorm, queryWords, media)) : 0,
+    recency: airedAt.get(media.id) ?? releaseSeasonEpoch(media),
   }));
-  ranked.sort((a, b) => a.tier - b.tier || a.index - b.index);
+  ranked.sort(
+    (a, b) => a.tier - b.tier || b.recency - a.recency || a.index - b.index
+  );
   return ranked.map((entry) => entry.media);
+}
+
+// ─── Default sort: home page "Latest Releases" order (queue#8) ───────────
+//
+// The home page renders its "Latest Releases" feed from an airing-schedule
+// query sorted with TIME_DESC (see RECENTLY_AIRED_QUERY). AniList's MediaSort
+// enum has no TIME_DESC member — TIME_DESC only exists on AiringSort — so the
+// default search order reproduces that exact ordering with the same
+// `airingSchedules(sort: TIME_DESC)` lookup scoped to the ids on the fetched
+// page. Entries without schedule data (old/special titles) fall back to their
+// release season, which keeps the "most recently updated first" semantics.
+// Any sort the user picks explicitly bypasses all of this.
+export const DEFAULT_SEARCH_SORT = "TIME_DESC";
+
+const LATEST_AIRING_QUERY = `
+query ($mediaId_in: [Int], $airingAt_lesser: Int, $perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    airingSchedules(mediaId_in: $mediaId_in, airingAt_lesser: $airingAt_lesser, sort: TIME_DESC) {
+      airingAt
+      mediaId
+    }
+  }
+}
+`;
+
+const SEASON_START_MONTH: Record<string, number> = {
+  WINTER: 0,
+  SPRING: 3,
+  SUMMER: 6,
+  FALL: 9,
+};
+
+/** Unix seconds for the start of a media's release season (fallback recency key). */
+function releaseSeasonEpoch(media: any): number {
+  const year = media?.seasonYear;
+  if (!year) return 0;
+  const month = SEASON_START_MONTH[String(media.season || "").toUpperCase()] ?? 0;
+  const epoch = Math.floor(Date.UTC(year, month, 1) / 1000);
+  // Never rank a not-yet-aired season above something that already aired today.
+  return Math.min(epoch, Math.floor(Date.now() / 1000));
+}
+
+/**
+ * Most recently aired episode timestamp per media id (TIME_DESC, only
+ * episodes that already aired — the same order the home page uses).
+ * Falls back to an empty map on failure; callers then order by season.
+ */
+async function latestAiredAt(
+  fetcher: MediaFetcher,
+  mediaIds: number[]
+): Promise<Map<number, number>> {
+  const times = new Map<number, number>();
+  if (mediaIds.length === 0) return times;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const data = await fetcher(LATEST_AIRING_QUERY, {
+      mediaId_in: mediaIds,
+      airingAt_lesser: now,
+      perPage: 50,
+    });
+    const schedules = data?.Page?.airingSchedules || [];
+    for (const schedule of schedules) {
+      if (!schedule || typeof schedule.airingAt !== "number") continue;
+      // Sorted TIME_DESC → first sighting of a media is its latest aired episode.
+      if (!times.has(schedule.mediaId)) times.set(schedule.mediaId, schedule.airingAt);
+    }
+  } catch {
+    // Airing lookup is an ordering refinement — never fail the search over it.
+  }
+  return times;
 }
 
 // ─── Search pipeline ─────────────────────────────────────────────────────
@@ -501,7 +584,17 @@ async function executeSearch(
     if (include.length > 0) variables.genre_in = include;
     if (exclude.length > 0) variables.genre_not_in = exclude;
   }
-  if (filters?.sort) variables.sort = [filters.sort];
+  if (filters?.sort) {
+    // Explicit sort chosen by the user — honoured exactly.
+    variables.sort = [filters.sort];
+  } else if (!query) {
+    // Default ordering (queue#8): no search term means the candidate pool
+    // should already be recent releases; ranks are then ordered by the home
+    // "Latest Releases" airing TIME_DESC order in rankSearchResults().
+    // With a search term we keep AniList's relevance ordering as the pool so
+    // fuzzy re-ranking starts from the best matching candidates.
+    variables.sort = ["START_DATE_DESC"];
+  }
   if (filters?.timeRange) {
     const now = new Date();
     let start = new Date(now);
@@ -537,7 +630,7 @@ async function executeSearch(
     });
   }
 
-  rawMedia = rankSearchResults(rawMedia, query, filters);
+  rawMedia = await rankSearchResults(fetcher, rawMedia, query, filters);
   const media = rawMedia.map(anilistMediaToAnime);
 
   return {
