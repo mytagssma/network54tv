@@ -134,6 +134,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [muted, setMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
+  // Center play/pause feedback glyph — keyboard toggles flash this icon
+  // alone instead of the whole control bar
+  const [actionGlyph, setActionGlyph] = useState<{ id: number; action: "play" | "pause" } | null>(null);
+  const glyphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Audio type (sub / dub)
   const [audioType, setAudioType] = useState<"sub" | "dub">("sub");
@@ -194,6 +198,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Refs for keyboard handler and callbacks (stable across renders)
   const playingRef = useRef(playing);
   playingRef.current = playing;
+  const showControlsRef = useRef(showControls);
+  showControlsRef.current = showControls;
   const playbackRateRef = useRef(playbackRate);
   playbackRateRef.current = playbackRate;
   const spaceDownRef = useRef(0);
@@ -962,12 +968,28 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }, 3000);
   }, []);
 
+  // ─── Center action glyph (YouTube-style play/pause feedback) ──
+  const showActionGlyph = useCallback((action: "play" | "pause") => {
+    setActionGlyph((prev) => ({ id: (prev?.id ?? 0) + 1, action }));
+    if (glyphTimerRef.current) clearTimeout(glyphTimerRef.current);
+    glyphTimerRef.current = setTimeout(() => setActionGlyph(null), 750);
+  }, []);
+
   useEffect(() => {
-    resetControlsTimer();
+    // Play/pause must not force the HUD visible — it used to flash the whole
+    // control bar on every keyboard toggle. Only refresh the hide countdown
+    // when the bar is already showing; otherwise leave it alone (the action
+    // glyph carries the feedback instead).
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    if (showControlsRef.current) {
+      controlsTimerRef.current = setTimeout(() => {
+        if (playingRef.current) setShowControls(false);
+      }, 3000);
+    }
     return () => {
       if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     };
-  }, [playing, resetControlsTimer]);
+  }, [playing]);
 
   // ─── Close menus on outside click ───────────────────────
   useEffect(() => {
@@ -1037,15 +1059,17 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     failAttemptRef.current?.();
   };
 
-  const togglePlay = () => {
+  const togglePlay = (showGlyph: boolean = true) => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
       videoRef.current.play().catch(() => {});
       videoRef.current.playbackRate = playbackRateRef.current;
       setPlaying(true);
+      if (showGlyph) showActionGlyph("play");
     } else {
       videoRef.current.pause();
       setPlaying(false);
+      if (showGlyph) showActionGlyph("pause");
     }
   };
 
@@ -1365,8 +1389,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           break;
         case 'k':
           e.preventDefault();
+          // No HUD flash for keyboard toggles — the center glyph is the feedback
           togglePlay();
-          resetControlsTimer();
           break;
         case 'f':
           e.preventDefault();
@@ -1452,9 +1476,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           videoRef.current.playbackRate = playbackRateRef.current;
           longPressRef.current = false;
         } else if (!e.repeat) {
-          // Short tap — toggle play/pause
+          // Short tap — toggle play/pause (glyph feedback, no HUD flash)
           togglePlay();
-          resetControlsTimer();
         }
       }
     };
@@ -1489,6 +1512,27 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
       }}
     >
+      {/* Action-glyph keyframes (inline so they ship with the player) */}
+      <style>{`
+        @keyframes n54-glyph-grow {
+          from { transform: scale(0.7); }
+          to { transform: scale(2.1); }
+        }
+        @keyframes n54-glyph-fade {
+          0% { opacity: 1; }
+          12% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+        .n54-action-glyph {
+          animation:
+            n54-glyph-grow 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards,
+            n54-glyph-fade 620ms linear forwards;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .n54-action-glyph { animation: n54-glyph-fade 620ms linear forwards; }
+        }
+      `}</style>
+
       {/* Video element */}
       <video
         ref={videoRef}
@@ -1507,7 +1551,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }}
         playsInline
         crossOrigin="anonymous"
-        onClick={togglePlay}
+        onClick={() => togglePlay()}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
@@ -1598,6 +1642,27 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 })}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Center action glyph — shown on play/pause instead of flashing the HUD.
+          Grows along a fast-start/decelerating curve while it fades out. */}
+      {actionGlyph && (
+        <div
+          key={actionGlyph.id}
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
+        >
+          <div className="n54-action-glyph flex h-20 w-20 items-center justify-center rounded-full bg-black/45 text-white shadow-[0_4px_24px_rgba(0,0,0,0.45)] backdrop-blur-[2px]">
+            {actionGlyph.action === "pause" ? (
+              <svg className="h-9 w-9" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+              </svg>
+            ) : (
+              <svg className="h-9 w-9" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
           </div>
         </div>
       )}
@@ -1699,7 +1764,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </button>
 
             {/* Play/Pause */}
-            <button onClick={togglePlay} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-11 h-11 sm:w-8 sm:h-8">
+            <button onClick={() => togglePlay(false)} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-11 h-11 sm:w-8 sm:h-8">
               {playing ? (
                 <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
