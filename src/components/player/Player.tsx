@@ -1946,20 +1946,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
       </div>
 
-      {/* Top info bar */}
-      <div
-        className={`absolute top-0 left-0 right-0 p-3 flex items-center gap-3 transition-opacity duration-300 z-20 bg-gradient-to-b from-black/70 to-transparent ${
-          showControls ? "opacity-100" : "opacity-0 pointer-events-none"
-        }`}
-      >
-        <span className="text-xs text-[#9a9aa0] truncate max-w-[60%]">
-          {animeTitle}
-        </span>
-        <span className="text-xs text-[var(--accent)]/50 flex-shrink-0 font-mono font-bold">
-          EP {String(episodeNumber).padStart(2, "0")}
-        </span>
-      </div>
-
       {/* Exit fullscreen button (mobile only, when fullscreen) */}
       {isFullscreen && (
         <button
