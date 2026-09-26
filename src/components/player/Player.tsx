@@ -110,6 +110,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
   const serverWrapRef = useRef<HTMLDivElement>(null);
+  const providerWrapRef = useRef<HTMLDivElement>(null);
   const qualityWrapRef = useRef<HTMLDivElement>(null);
   const speedWrapRef = useRef<HTMLDivElement>(null);
   const subWrapRef = useRef<HTMLDivElement>(null);
@@ -142,6 +143,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [activeServer, setActiveServer] = useState<string | null>(null);
   const [availableServers, setAvailableServers] = useState<string[]>([]);
   const [showServerPicker, setShowServerPicker] = useState(false);
+
+  // Provider dropdown (control bar) — drives the same manual override as the error overlay
+  const [showProviderPicker, setShowProviderPicker] = useState(false);
 
   // Quality / speed state
   const [currentQuality, setCurrentQuality] = useState<string>("auto");
@@ -971,6 +975,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         setShowSettings(false);
       }
       if (showServerPicker && serverWrapRef.current && !serverWrapRef.current.contains(t)) setShowServerPicker(false);
+      if (showProviderPicker && providerWrapRef.current && !providerWrapRef.current.contains(t)) setShowProviderPicker(false);
       if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
       if (showSpeedPicker && speedWrapRef.current && !speedWrapRef.current.contains(t)) setShowSpeedPicker(false);
       if (showSubPicker && subWrapRef.current && !subWrapRef.current.contains(t)) setShowSubPicker(false);
@@ -978,7 +983,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showSettings, showServerPicker, showQualityPicker, showSpeedPicker, showSubPicker, showFilterPicker]);
+  }, [showSettings, showServerPicker, showProviderPicker, showQualityPicker, showSpeedPicker, showSubPicker, showFilterPicker]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -1139,6 +1144,24 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     if (videoRef.current) {
       videoRef.current.playbackRate = rate;
     }
+  };
+
+  // ─── Pick a streaming provider (control-bar dropdown) ───────
+  // Reuses the manual override the error overlay uses: flipping the
+  // override changes `activeProvider`, which re-runs the load effect
+  // and reloads the stream with that provider.
+  const selectProvider = (id: string) => {
+    setShowProviderPicker(false);
+    const current = providerOverride ?? providerId ?? "";
+    if (id === current) {
+      // Already the active provider — on a failed stream, retry it
+      if (streamError) {
+        destroyHls();
+        loadByType(audioType);
+      }
+      return;
+    }
+    setProviderOverride(id);
   };
 
   // ─── Switch sub ↔ dub ─────────────────────────────────
@@ -1368,6 +1391,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         case 'Escape':
           setShowSettings(false);
           setShowServerPicker(false);
+          setShowProviderPicker(false);
           setShowQualityPicker(false);
           setShowSpeedPicker(false);
           setShowSubPicker(false);
@@ -1437,6 +1461,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             !(settingsPanelRef.current && settingsPanelRef.current.contains(next))) {
           setShowSettings(false);
           setShowServerPicker(false);
+          setShowProviderPicker(false);
           setShowQualityPicker(false);
           setShowSpeedPicker(false);
           setShowSubPicker(false);
@@ -1703,12 +1728,49 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </div>
             )}
 
+            {/* Provider picker */}
+            <div ref={providerWrapRef} className="relative h-full flex items-center gap-1">
+              <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden sm:inline">Pv</span>
+              <button
+                onClick={() => { setShowProviderPicker(!showProviderPicker); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
+                title="Streaming provider"
+              >
+                {PROVIDER_OPTIONS.find((p) => p.id === (providerOverride ?? providerId ?? ""))?.label ?? "Auto"}
+                <svg className="w-3 h-3 opacity-50" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M7 10l5 5 5-5z" />
+                </svg>
+              </button>
+              {showProviderPicker && (
+                <div className="absolute right-0 bottom-full mb-1 w-40 bg-[#131318] border border-[var(--accent)]/20 shadow-xl z-50 backdrop-blur-sm py-0.5 rounded-none">
+                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">Provider</div>
+                  {PROVIDER_OPTIONS.map((p) => {
+                    const current = providerOverride ?? providerId ?? "";
+                    const isActive = current === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => selectProvider(p.id)}
+                        className={`w-full text-left px-3 py-1.5 text-xs transition-colors rounded-none ${
+                          isActive
+                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
+                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             {/* Server/Session picker */}
             {availableServers.length > 0 && (
               <div ref={serverWrapRef} className="relative h-full flex items-center gap-1">
                 <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden sm:inline">Srv</span>
                 <button
-                  onClick={() => { setShowServerPicker(!showServerPicker); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                  onClick={() => { setShowServerPicker(!showServerPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                   className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
                 >
                   {activeServer || "Auto"}
@@ -1738,7 +1800,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {availableQualities.length > 0 && (
               <div ref={qualityWrapRef} className="relative h-full flex items-center">
                 <button
-                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowProviderPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                   className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
                 >
                   <svg className="w-3 h-3 opacity-60" fill="currentColor" viewBox="0 0 24 24">
@@ -1776,7 +1838,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Speed selector */}
             <div ref={speedWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                 className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
               >
                 <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -1812,7 +1874,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Subtitle toggle + picker */}
             <div ref={subWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSubPicker(!showSubPicker); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                onClick={() => { setShowSubPicker(!showSubPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
                 className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
                   activeSubtitle
                     ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
@@ -1885,7 +1947,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Video filter picker */}
             <div ref={filterWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowFilterPicker(!showFilterPicker); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); }}
+                onClick={() => { setShowFilterPicker(!showFilterPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); }}
                 className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
                   videoFilter !== "off"
                     ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
@@ -1924,7 +1986,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Settings gear (mobile only) */}
             <button
               ref={gearRef}
-              onClick={() => { setShowSettings(!showSettings); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowFilterPicker(false); }}
+              onClick={() => { setShowSettings(!showSettings); setShowServerPicker(false); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowFilterPicker(false); }}
               className="w-11 h-11 sm:hidden flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors rounded-none"
             >
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -2027,6 +2089,29 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </div>
             </div>
           )}
+
+          {/* Provider section */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Provider</div>
+            <div className="flex flex-wrap gap-1">
+              {PROVIDER_OPTIONS.map((p) => {
+                const current = providerOverride ?? providerId ?? "";
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => selectProvider(p.id)}
+                    className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
+                      current === p.id
+                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
+                        : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           {/* Quality section */}
           {availableQualities.length > 0 && (
