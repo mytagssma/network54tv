@@ -235,6 +235,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   // Auto-play next episode
   const [autoPlayNext, setAutoPlayNext] = useState(false);
+  // Next-episode countdown (Netflix-style overlay) — set to 10 when the
+  // episode ends with auto-play armed, ticks to 0, then navigates.
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   // Skip intro / outro — from AniSkip per-episode timestamps
   const [introSegment, setIntroSegment] = useState<{ start: number; end: number } | null>(null);
@@ -336,6 +339,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Prev/next episode targets for the control bar (prev never goes below EP 1)
   const prevEpisodeTarget = episodeNumber > 1 && anilistId ? episodeNumber - 1 : null;
   const nextEpisodeTarget = nextEpisodeNumber && anilistId ? nextEpisodeNumber : null;
+  // Title of that next episode, for the countdown card
+  const nextEpisodeTitle = nextEpisodeTarget
+    ? episodes?.find((ep) => ep.number === nextEpisodeTarget)?.title
+    : undefined;
 
   // ─── Attempt watchdog ────────────────────────────────────
   const clearWatchdog = useCallback(() => {
@@ -1135,6 +1142,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   const togglePlay = (showGlyph: boolean = true) => {
     if (!videoRef.current) return;
+    // Pressing play after the episode ended restarts it — the countdown is off
+    setCountdown(null);
     if (videoRef.current.paused) {
       videoRef.current.play().catch(() => {});
       videoRef.current.playbackRate = playbackRateRef.current;
@@ -1169,6 +1178,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       videoRef.current.currentTime = t;
       setCurrentTime(t);
     }
+    // Still interacting with this episode — cancel a running "up next" card
+    setCountdown(null);
   };
 
   // ─── Skip ±10s (control-bar buttons) ─────────────────────
@@ -1178,18 +1189,28 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     const max = isFinite(video.duration) && video.duration > 0 ? video.duration : Number.MAX_SAFE_INTEGER;
     video.currentTime = Math.max(0, Math.min(max, video.currentTime + delta));
     setCurrentTime(video.currentTime);
+    // Skipping around means the viewer is still engaged with THIS episode —
+    // drop the "up next" card instead of yanking them forward.
+    setCountdown(null);
     resetControlsTimer();
   };
 
   // ─── Episode navigation (control-bar prev/next, drawer, countdown) ──
-  const goToEpisode = (n: number) => {
-    if (!anilistId) return;
-    saveProgress(); // SPA navigation never fires beforeunload — persist here
-    // Keep the provider the user picked — dropping it would silently switch
-    // back to the default provider on the next episode
-    const qs = providerQuery ? `?provider=${encodeURIComponent(providerQuery)}` : "";
-    router.push(`/anime/${anilistId}/watch/${n}${qs}`);
-  };
+  const goToEpisode = useCallback(
+    (n: number) => {
+      if (!anilistId) return;
+      // One exit door for every route change (drawer, next/prev, countdown):
+      // retire the card first so it can never fire a second navigation from
+      // the episode we're navigating to.
+      setCountdown(null);
+      saveProgress(); // SPA navigation never fires beforeunload — persist here
+      // Keep the provider the user picked — dropping it would silently switch
+      // back to the default provider on the next episode
+      const qs = providerQuery ? `?provider=${encodeURIComponent(providerQuery)}` : "";
+      router.push(`/anime/${anilistId}/watch/${n}${qs}`);
+    },
+    [anilistId, providerQuery, router, saveProgress]
+  );
 
   // ─── Episode drawer open/close (250ms slide either way) ─────
   const openDrawer = useCallback(() => {
@@ -1240,6 +1261,35 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   useEffect(() => {
     if (!isFullscreen && drawerOpen) closeDrawer();
   }, [isFullscreen, drawerOpen, closeDrawer]);
+
+  // ─── Next-episode countdown ────────────────────────────────
+  // One tick per second; at 0 we navigate. Every re-render (time updates land
+  // ~4×/s) must NOT restart the tick, so this only re-runs when `countdown`
+  // itself — or a stable dep — changes.
+  useEffect(() => {
+    if (countdown === null) return;
+    // Never auto-advance without auto-play armed or a next episode to go to
+    if (!autoPlayNext || !nextEpisodeTarget) {
+      setCountdown(null);
+      return;
+    }
+    if (countdown <= 0) {
+      // Short hold on 0 so the last number actually reads before we leave
+      const t = setTimeout(() => {
+        setCountdown(null);
+        goToEpisode(nextEpisodeTarget);
+      }, 700);
+      return () => clearTimeout(t);
+    }
+    const t = setTimeout(() => setCountdown((c) => (c === null ? null : c - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [countdown, autoPlayNext, nextEpisodeTarget, goToEpisode]);
+
+  // Leaving this episode any other way (drawer row, prev/next button) must not
+  // strand a card that would navigate a second time off the new page.
+  useEffect(() => {
+    setCountdown(null);
+  }, [episodeNumber]);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
@@ -1553,12 +1603,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           e.preventDefault();
           video.currentTime = Math.max(0, video.currentTime - 10);
           setCurrentTime(video.currentTime);
+          // Manual seek = still watching — dismiss the up-next card
+          setCountdown(null);
           resetControlsTimer();
           break;
         case 'ArrowRight':
           e.preventDefault();
           video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
           setCurrentTime(video.currentTime);
+          setCountdown(null);
           resetControlsTimer();
           break;
         case 'ArrowUp':
@@ -1580,6 +1633,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           resetControlsTimer();
           break;
         case 'Escape':
+          setCountdown(null);
           closeMore();
           setShowServerPicker(false);
           setShowProviderPicker(false);
@@ -1952,13 +2006,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onError={handleVideoError}
-        onPlay={() => setPlaying(true)}
+        onPlay={() => {
+          setPlaying(true);
+          // Playback restarted for any reason → the viewer is watching again,
+          // so a pending up-next card has no business auto-advancing.
+          setCountdown(null);
+        }}
         onPause={() => setPlaying(false)}
         onEnded={() => {
           setPlaying(false);
-          if (autoPlayNext && nextEpisodeNumber) {
-            router.push(`/anime/${anilistId}/watch/${nextEpisodeNumber}`);
-          }
+          // Arm the countdown instead of jumping: with auto-play on and a next
+          // episode to go to, the overlay takes over from here (it navigates
+          // through goToEpisode — no video.play(), so the browser's autoplay
+          // policy is never fought). Without auto-play, nothing happens.
+          if (autoPlayNext && nextEpisodeTarget) setCountdown(10);
         }}
         playsInline
         crossOrigin="anonymous"
@@ -2587,6 +2648,77 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
           </svg>
         </button>
+      )}
+
+      {/* Next-episode countdown — Netflix-style "up next" card. Only ever
+          armed by onEnded when auto-play next is on AND a next episode
+          exists, so nothing appears otherwise. The scrim keeps the last frame
+          visible underneath; z-[45] sits above the HUD (z-20/40) but under the
+          episode drawer (z-50). */}
+      {countdown !== null && nextEpisodeTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Up next"
+          // Clicking off-card dismisses — never navigates — so the last frame
+          // stays put and the viewer can keep the episode they're in.
+          onClick={() => setCountdown(null)}
+          className="absolute inset-0 z-[45] flex items-center justify-center bg-black/60 p-3"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-[320px] rounded-none border border-[var(--accent)]/40 bg-[#131318]/95 backdrop-blur-sm"
+            // Both shadows inlined: `.accent-shadow-*` lives outside @layer in
+            // globals.css, so as a class it would override Tailwind's
+            // `shadow-[…]` utility (same specificity, unlayered wins) and the
+            // drop shadow would silently vanish. One declaration, both effects.
+            style={{
+              boxShadow:
+                "0 8px 40px rgba(0,0,0,0.7), 0 0 16px rgba(var(--accent-rgb), 0.4)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--accent)]/20 px-3 py-2">
+              <div className="font-mono text-[10px] uppercase leading-none tracking-[0.25em] text-[var(--accent)]/60">
+                Up Next
+              </div>
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-none border border-[var(--accent)] bg-black/50 font-mono text-lg leading-none tabular-nums text-[var(--accent)] accent-shadow-sm">
+                {Math.max(0, countdown)}
+              </div>
+            </div>
+
+            <div className="px-3 pt-3 pb-2.5">
+              <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/40">
+                Episode {nextEpisodeTarget}
+              </div>
+              <div className="mt-1 truncate text-sm text-[#e6e6ea]">
+                {nextEpisodeTitle || `Episode ${nextEpisodeTarget}`}
+              </div>
+            </div>
+
+            {/* Drain rule — steps down once a second, 1s linear between steps */}
+            <div className="h-px w-full bg-[var(--accent)]/15">
+              <div
+                className="h-full bg-[var(--accent)] transition-[width] duration-1000 ease-linear"
+                style={{ width: `${(Math.max(0, countdown) / 10) * 100}%` }}
+              />
+            </div>
+
+            <div className="flex gap-2 px-3 py-3">
+              <button
+                onClick={() => setCountdown(null)}
+                className="flex-1 rounded-none border border-[var(--accent)]/30 px-3 py-2 font-mono text-[11px] uppercase tracking-wider text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:bg-[var(--accent)]/10 hover:text-[var(--accent)]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { setCountdown(null); goToEpisode(nextEpisodeTarget); }}
+                className="flex-1 rounded-none bg-[var(--accent)] px-3 py-2 font-mono text-[11px] font-bold uppercase tracking-wider text-black transition-all hover:brightness-110 accent-shadow-sm"
+              >
+                Play Now
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Episode drawer — slides in from the right, over the video.
