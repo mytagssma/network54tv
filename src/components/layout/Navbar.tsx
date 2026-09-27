@@ -51,8 +51,10 @@ export default function Navbar() {
             </Link>
           </div>
 
-          {/* Right side: search + accent selector */}
+          {/* Right side: accent selector + search */}
           <div className="flex items-center gap-2 sm:gap-3">
+            <AccentColorSelector />
+
             <Link
               href="/browse"
               aria-label="Search"
@@ -74,8 +76,6 @@ export default function Navbar() {
                 />
               </svg>
             </Link>
-
-            <AccentColorSelector />
           </div>
         </div>
       </div>
