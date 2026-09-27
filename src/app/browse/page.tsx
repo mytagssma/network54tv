@@ -144,7 +144,15 @@ function BrowseContent() {
               </section>
             ))}
             {standaloneItems.length > 0 && (
-              <div className={franchiseGroups.length > 0 ? "mt-8" : ""}>
+              <div className="mt-8">
+                {/* Dimmer divider: separates franchise sections from the flat tail */}
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-4 w-1 bg-[var(--accent)]/40" />
+                  <h3 className="text-sm font-medium text-[var(--accent)]/50 uppercase tracking-wider font-mono">// More Titles</h3>
+                  <span className="text-[11px] text-[var(--text-decorative)]/70 font-mono">
+                    {standaloneItems.length} standalone title{standaloneItems.length === 1 ? "" : "s"}
+                  </span>
+                </div>
                 {renderCardGrid(standaloneItems)}
               </div>
             )}
