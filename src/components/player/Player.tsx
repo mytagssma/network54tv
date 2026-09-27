@@ -46,6 +46,46 @@ const FILTER_PRESETS = [
 
 type FilterId = (typeof FILTER_PRESETS)[number]["id"];
 
+// Sub-pages inside the ⋯ overflow menu
+type MoreSection = "provider" | "server" | "quality" | "speed" | "filter" | "subs";
+
+// One row of the ⋯ menu's root list: label + current value + chevron.
+// Kept at module scope so rows keep their identity across re-renders.
+function MoreRow({
+  label,
+  value,
+  onClick,
+  className = "",
+  active = false,
+}: {
+  label: string;
+  value?: React.ReactNode;
+  onClick: () => void;
+  className?: string;
+  active?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-xs transition-colors rounded-none ${
+        active
+          ? "bg-[var(--accent)]/10 text-[var(--accent)]"
+          : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+      } ${className}`}
+    >
+      <span className="truncate">{label}</span>
+      <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/50">
+        {value}
+        <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
 function getFilterCSS(id: FilterId): string {
   return FILTER_PRESETS.find((f) => f.id === id)?.css ?? "none";
 }
@@ -111,14 +151,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const failAttemptRef = useRef<(() => void) | null>(null);
 
   // Refs for close-on-outside-click
-  const settingsPanelRef = useRef<HTMLDivElement>(null);
-  const gearRef = useRef<HTMLButtonElement>(null);
+  const moreWrapRef = useRef<HTMLDivElement>(null); // the ⋯ menu (either placement)
+  const moreBtnRef = useRef<HTMLButtonElement>(null); // the ⋯ trigger
   const serverWrapRef = useRef<HTMLDivElement>(null);
   const providerWrapRef = useRef<HTMLDivElement>(null);
   const qualityWrapRef = useRef<HTMLDivElement>(null);
   const speedWrapRef = useRef<HTMLDivElement>(null);
   const subWrapRef = useRef<HTMLDivElement>(null);
-  const filterWrapRef = useRef<HTMLDivElement>(null);
 
   // Stream state
   const [sources, setSources] = useState<StreamSource[]>([]);
@@ -142,18 +181,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // alone instead of the whole control bar
   const [actionGlyph, setActionGlyph] = useState<{ id: number; action: "play" | "pause" } | null>(null);
   const glyphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Control row: a strip that scrolls horizontally inside the bar.
-  // Deliberately NOT an `overflow-x-auto` container: the settings dropdowns
-  // open upward from inside the row, and a scroll container would clip them.
-  // The strip is translated instead — the player's `overflow-hidden` still
-  // clips it at the bar edge, so nothing leaks to the page.
-  const rowWrapRef = useRef<HTMLDivElement>(null); // viewport (bar content box)
-  const rowScrollRef = useRef<HTMLDivElement>(null); // strip (content being moved)
-  const [rowScroll, setRowScroll] = useState({ offset: 0, max: 0, canLeft: false, canRight: false });
-  const [rowDragging, setRowDragging] = useState(false);
-  const rowDragRef = useRef<{ id: number; startX: number; startOffset: number; active: boolean; moved: boolean } | null>(null);
-  const rowClickGuardRef = useRef(false); // swallows the click that ends a drag
 
   // Audio type (sub / dub)
   const [audioType, setAudioType] = useState<"sub" | "dub">("sub");
@@ -180,10 +207,22 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   // Video filter state
   const [videoFilter, setVideoFilter] = useState<FilterId>("off");
-  const [showFilterPicker, setShowFilterPicker] = useState(false);
 
-  // Settings menu (mobile)
-  const [showSettings, setShowSettings] = useState(false);
+  // "More" (⋯) overflow menu — holds every control the row hides at this
+  // width, plus the always-low-priority toggles (auto-play, auto-skip, FX).
+  // One open flag + one section flag: `null` = root list, otherwise the
+  // sub-page (provider / quality / …) inside the same popup.
+  const [showMore, setShowMore] = useState(false);
+  const [moreSection, setMoreSection] = useState<MoreSection | null>(null);
+  // Mirror for the controls auto-hide timer (a []-deps effect reads this)
+  const moreOpenRef = useRef(showMore);
+  moreOpenRef.current = showMore;
+  // Single way to dismiss the ⋯ menu (outside click, Escape, picking an
+  // option) — always drops back to the root list for the next open.
+  const closeMore = useCallback(() => {
+    setShowMore(false);
+    setMoreSection(null);
+  }, []);
 
   // Episode drawer — Netflix-style panel sliding in from the right, over the
   // video. Two flags: `drawerOpen` keeps it mounted for the exit transition,
@@ -297,11 +336,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Prev/next episode targets for the control bar (prev never goes below EP 1)
   const prevEpisodeTarget = episodeNumber > 1 && anilistId ? episodeNumber - 1 : null;
   const nextEpisodeTarget = nextEpisodeNumber && anilistId ? nextEpisodeNumber : null;
-  // A row-anchored picker menu is open — the edge chevrons step aside so the
-  // menu is never overlapped by them
-  const rowMenuOpen =
-    showServerPicker || showProviderPicker || showQualityPicker ||
-    showSpeedPicker || showSubPicker || showFilterPicker;
 
   // ─── Attempt watchdog ────────────────────────────────────
   const clearWatchdog = useCallback(() => {
@@ -989,19 +1023,21 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       // Track which OS subtitle is active
       setActiveOSSubtitleId(fileId);
       setShowSubPicker(false);
-      setShowSettings(false);
+      closeMore();
     } catch (e) {
       setOsDownloadError(e instanceof Error ? e.message : "Download failed");
       failedOSIdsRef.current.add(fileId);
     }
-  }, [activeSubtitle]);
+  }, [activeSubtitle, closeMore]);
 
   // ─── Controls auto-hide ────────────────────────────────
   const resetControlsTimer = useCallback(() => {
     setShowControls(true);
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     controlsTimerRef.current = setTimeout(() => {
-      if (playingRef.current) setShowControls(false);
+      // The ⋯ menu rides on the control bar — never yank the bar (and the
+      // menu with it) out from under an open menu.
+      if (playingRef.current && !moreOpenRef.current) setShowControls(false);
     }, 3000);
   }, []);
 
@@ -1020,7 +1056,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     if (showControlsRef.current) {
       controlsTimerRef.current = setTimeout(() => {
-        if (playingRef.current) setShowControls(false);
+        if (playingRef.current && !moreOpenRef.current) setShowControls(false);
       }, 3000);
     }
     return () => {
@@ -1028,137 +1064,25 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
   }, [playing]);
 
-  // ─── Control-row overflow: measurement + edge chevrons ────────
-  // Single writer for the offset: clamps to the measured range and derives
-  // which chevrons are live, bailing out when nothing changed so resize
-  // bursts (hover animations, font swap) don't spam re-renders.
-  const setRowOffset = useCallback((next: number | ((prevOffset: number) => number)) => {
-    setRowScroll((prev) => {
-      const target = typeof next === "function" ? next(prev.offset) : next;
-      const offset = Math.max(0, Math.min(target, prev.max));
-      const canLeft = offset > 1;
-      const canRight = offset < prev.max - 1;
-      if (offset === prev.offset && canLeft === prev.canLeft && canRight === prev.canRight) return prev;
-      return { ...prev, offset, canLeft, canRight };
-    });
-  }, []);
-
-  // The strip is transform-scrolled, so there are no scroll events to listen
-  // for — width of strip vs width of viewport is the whole story.
-  const measureRow = useCallback(() => {
-    const wrap = rowWrapRef.current;
-    const strip = rowScrollRef.current;
-    if (!wrap || !strip) return;
-    const max = Math.max(0, strip.offsetWidth - wrap.clientWidth);
-    setRowScroll((prev) => {
-      const offset = Math.min(prev.offset, max);
-      const canLeft = offset > 1;
-      const canRight = offset < max - 1;
-      if (offset === prev.offset && max === prev.max &&
-          canLeft === prev.canLeft && canRight === prev.canRight) return prev;
-      return { offset, max, canLeft, canRight };
-    });
-  }, []);
-
-  // Pure CSS can't detect overflow, so a ResizeObserver drives the chevron:
-  // watch the viewport (bar width) and the strip (items appearing/disappearing
-  // as breakpoints flip the control set). Scrolling itself is a transform.
-  useEffect(() => {
-    const wrap = rowWrapRef.current;
-    const strip = rowScrollRef.current;
-    measureRow();
-    if (wrap && strip && typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => measureRow());
-      ro.observe(wrap);
-      ro.observe(strip);
-      window.addEventListener("resize", measureRow);
-      // Iosevka can swap in after first paint and change the time chip's width
-      document.fonts?.ready.then(() => measureRow()).catch(() => {});
-      return () => {
-        ro.disconnect();
-        window.removeEventListener("resize", measureRow);
-      };
-    }
-    window.addEventListener("resize", measureRow);
-    return () => window.removeEventListener("resize", measureRow);
-  }, [measureRow]);
-
-  // Chevron click: scroll one step; the direction flips at each edge
-  const scrollRow = (dir: 1 | -1) => {
-    const wrap = rowWrapRef.current;
-    if (!wrap) return;
-    const step = Math.max(160, Math.round(wrap.clientWidth * 0.55));
-    setRowOffset((offset) => offset + dir * step);
-  };
-
-  // Horizontal wheel / shift+wheel over the row scrolls it too
-  const handleRowWheel = (e: React.WheelEvent) => {
-    const delta =
-      Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;
-    if (delta) setRowOffset((offset) => offset + delta);
-  };
-
-  // ─── Drag-to-scroll (touch, and mouse without a button press) ──
-  // Capture is only taken once the pointer has clearly moved, so plain taps
-  // on the controls keep their normal click behaviour.
-  const handleStripPointerDown = (e: React.PointerEvent) => {
-    if (e.target instanceof HTMLInputElement) return; // leave the volume slider alone
-    rowDragRef.current = {
-      id: e.pointerId,
-      startX: e.clientX,
-      startOffset: rowScroll.offset,
-      active: false,
-      moved: false,
-    };
-  };
-
-  const handleStripPointerMove = (e: React.PointerEvent) => {
-    const drag = rowDragRef.current;
-    if (!drag || drag.id !== e.pointerId) return;
-    const dx = e.clientX - drag.startX;
-    if (!drag.active) {
-      if (Math.abs(dx) < 8) return;
-      drag.active = true;
-      drag.moved = true;
-      try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
-      setRowDragging(true);
-    }
-    setRowOffset(drag.startOffset - dx);
-  };
-
-  const handleStripPointerEnd = (e: React.PointerEvent) => {
-    const drag = rowDragRef.current;
-    if (!drag || drag.id !== e.pointerId) return;
-    if (drag.moved) rowClickGuardRef.current = true;
-    rowDragRef.current = null;
-    setRowDragging(false);
-  };
-
-  const handleStripClickCapture = (e: React.MouseEvent) => {
-    if (!rowClickGuardRef.current) return;
-    rowClickGuardRef.current = false;
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
   // ─── Close menus on outside click ───────────────────────
   useEffect(() => {
     const closeIfOutside = (e: PointerEvent) => {
       const t = e.target as Node;
-      if (showSettings && settingsPanelRef.current && gearRef.current &&
-          !settingsPanelRef.current.contains(t) && !gearRef.current.contains(t)) {
-        setShowSettings(false);
+      // The ⋯ menu can live outside the player box (windowed), so both the
+      // popup and its trigger are excluded from the "outside" test.
+      if (showMore && moreWrapRef.current && moreBtnRef.current &&
+          !moreWrapRef.current.contains(t) && !moreBtnRef.current.contains(t)) {
+        closeMore();
       }
       if (showServerPicker && serverWrapRef.current && !serverWrapRef.current.contains(t)) setShowServerPicker(false);
       if (showProviderPicker && providerWrapRef.current && !providerWrapRef.current.contains(t)) setShowProviderPicker(false);
       if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
       if (showSpeedPicker && speedWrapRef.current && !speedWrapRef.current.contains(t)) setShowSpeedPicker(false);
       if (showSubPicker && subWrapRef.current && !subWrapRef.current.contains(t)) setShowSubPicker(false);
-      if (showFilterPicker && filterWrapRef.current && !filterWrapRef.current.contains(t)) setShowFilterPicker(false);
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showSettings, showServerPicker, showProviderPicker, showQualityPicker, showSpeedPicker, showSubPicker, showFilterPicker]);
+  }, [showMore, showServerPicker, showProviderPicker, showQualityPicker, showSpeedPicker, showSubPicker, closeMore]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -1656,13 +1580,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           resetControlsTimer();
           break;
         case 'Escape':
-          setShowSettings(false);
+          closeMore();
           setShowServerPicker(false);
           setShowProviderPicker(false);
           setShowQualityPicker(false);
           setShowSpeedPicker(false);
           setShowSubPicker(false);
-          setShowFilterPicker(false);
           closeDrawer();
           break;
         // speed steps are handled above via e.code (shift + ,/.)
@@ -1698,6 +1621,290 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── ⋯ "More" menu — one popup, two placements ────────────────────
+  // Windowed it hangs BELOW the player (outside the clipped box, so a short
+  // windowed player never cuts it off); fullscreen it anchors above the
+  // control row. Contents = every control the row hides at this width, plus
+  // the low-priority toggles that never sit inline.
+  const moreMenu = (
+    <div
+      ref={moreWrapRef}
+      role="menu"
+      aria-label="More controls"
+      className="w-full rounded-none border border-[var(--accent)]/20 bg-[#131318] py-0.5 shadow-xl backdrop-blur-sm z-50 max-h-[70vh] overflow-y-auto overscroll-contain"
+    >
+      {moreSection === null ? (
+        <>
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">
+            More
+          </div>
+
+          {/* Sub / Dub — inline from lg up */}
+          {dubAvailable && (
+            <div className="px-2 py-1.5 lg:hidden">
+              <div className="flex overflow-hidden rounded-none border border-[var(--accent)]/20 bg-black/40">
+                <button
+                  type="button"
+                  onClick={() => switchAudioType("sub")}
+                  className={`flex-1 px-3 py-1.5 text-[11px] font-semibold tracking-wide transition-colors rounded-none ${
+                    audioType === "sub"
+                      ? "bg-[var(--accent)] text-black"
+                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  SUB
+                </button>
+                <div className="w-px bg-[var(--accent)]/20" />
+                <button
+                  type="button"
+                  onClick={() => switchAudioType("dub")}
+                  className={`flex-1 px-3 py-1.5 text-[11px] font-semibold tracking-wide transition-colors rounded-none ${
+                    audioType === "dub"
+                      ? "bg-[var(--accent)] text-black"
+                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  DUB
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Second tier — rows mirror the inline controls' `lg` breakpoint,
+              so a control is never offered twice (here AND on the row) */}
+          <MoreRow
+            className="lg:hidden"
+            label="Provider"
+            value={PROVIDER_OPTIONS.find((p) => p.id === (providerOverride ?? providerId ?? ""))?.label ?? "Auto"}
+            onClick={() => setMoreSection("provider")}
+          />
+          {availableServers.length > 0 && (
+            <MoreRow
+              className="lg:hidden"
+              label="Server"
+              value={activeServer || "Auto"}
+              onClick={() => setMoreSection("server")}
+            />
+          )}
+          {availableQualities.length > 0 && (
+            <MoreRow
+              className="lg:hidden"
+              label="Quality"
+              value={currentQuality === "auto" ? "Auto" : currentQuality}
+              onClick={() => setMoreSection("quality")}
+            />
+          )}
+          <MoreRow
+            className="lg:hidden"
+            label="Speed"
+            value={`${playbackRate}x`}
+            onClick={() => setMoreSection("speed")}
+          />
+          <MoreRow
+            className="lg:hidden"
+            label="Subtitles"
+            value={activeSubtitle ? "On" : "Off"}
+            onClick={() => setMoreSection("subs")}
+          />
+
+          {/* Always here — lowest priority, never on the row */}
+          <MoreRow
+            label="Filter"
+            value={FILTER_PRESETS.find((f) => f.id === videoFilter)?.label ?? "Off"}
+            onClick={() => setMoreSection("filter")}
+          />
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={autoPlayNext}
+            onClick={() => setAutoPlayNext(!autoPlayNext)}
+            className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-xs transition-colors rounded-none ${
+              autoPlayNext
+                ? "text-[var(--accent)]"
+                : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <svg className="h-3.5 w-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              Auto-Play Next
+            </span>
+            <span className={`font-mono text-[10px] uppercase tracking-wider ${autoPlayNext ? "text-[var(--accent)]" : "text-[var(--accent)]/30"}`}>
+              {autoPlayNext ? "On" : "Off"}
+            </span>
+          </button>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={autoSkipEnabled}
+            onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
+            className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-xs transition-colors rounded-none ${
+              autoSkipEnabled
+                ? "text-[var(--accent)]"
+                : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <svg className="h-3.5 w-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" />
+              </svg>
+              Auto-Skip Intro
+            </span>
+            <span className={`font-mono text-[10px] uppercase tracking-wider ${autoSkipEnabled ? "text-[var(--accent)]" : "text-[var(--accent)]/30"}`}>
+              {autoSkipEnabled ? "On" : "Off"}
+            </span>
+          </button>
+        </>
+      ) : (
+        <>
+          {/* Section header — back one level, name the level */}
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-[var(--accent)]/15 bg-[#131318] px-2 py-1.5">
+            <button
+              type="button"
+              onClick={() => setMoreSection(null)}
+              className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
+            >
+              <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
+              </svg>
+              More
+            </button>
+            <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/30">
+              {moreSection === "provider"
+                ? "Provider"
+                : moreSection === "server"
+                ? "Server"
+                : moreSection === "quality"
+                ? "Quality"
+                : moreSection === "speed"
+                ? "Speed"
+                : moreSection === "filter"
+                ? "Filter"
+                : "Subtitles"}
+            </span>
+          </div>
+
+          {moreSection === "provider" &&
+            PROVIDER_OPTIONS.map((p) => {
+              const current = providerOverride ?? providerId ?? "";
+              const isActive = current === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => { selectProvider(p.id); closeMore(); }}
+                  className={`w-full rounded-none px-3 py-1.5 text-left text-xs transition-colors ${
+                    isActive
+                      ? "border-l-2 border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--accent)]"
+                      : "text-[#9a9aa0] hover:bg-[var(--accent)]/5 hover:text-[var(--accent)]"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+
+          {moreSection === "server" &&
+            availableServers.map((srv) => (
+              <button
+                key={srv}
+                type="button"
+                onClick={() => {
+                  setActiveServer(srv);
+                  activeServerRef.current = srv;
+                  closeMore();
+                  loadByType(audioType, srv);
+                }}
+                className={`w-full rounded-none px-3 py-1.5 text-left text-xs transition-colors ${
+                  activeServer === srv
+                    ? "border-l-2 border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--accent)]"
+                    : "text-[#9a9aa0] hover:bg-[var(--accent)]/5 hover:text-[var(--accent)]"
+                }`}
+              >
+                {srv}
+              </button>
+            ))}
+
+          {moreSection === "quality" &&
+            availableQualities.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => { changeQuality(q); closeMore(); }}
+                className={`w-full rounded-none px-3 py-1.5 text-left text-xs transition-colors ${
+                  q === currentQuality
+                    ? "border-l-2 border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--accent)]"
+                    : "text-[#9a9aa0] hover:bg-[var(--accent)]/5 hover:text-[var(--accent)]"
+                }`}
+              >
+                {q === "auto" ? "Auto" : q}
+              </button>
+            ))}
+
+          {moreSection === "speed" &&
+            speedOptions.map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => { changeSpeed(r); closeMore(); }}
+                className={`w-full rounded-none px-3 py-1.5 text-left text-xs transition-colors ${
+                  playbackRate === r
+                    ? "border-l-2 border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--accent)]"
+                    : "text-[#9a9aa0] hover:bg-[var(--accent)]/5 hover:text-[var(--accent)]"
+                }`}
+              >
+                {r}x
+              </button>
+            ))}
+
+          {moreSection === "filter" &&
+            FILTER_PRESETS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => { setVideoFilter(f.id); closeMore(); }}
+                className={`w-full rounded-none px-3 py-1.5 text-left text-xs transition-colors ${
+                  videoFilter === f.id
+                    ? "border-l-2 border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--accent)]"
+                    : "text-[#9a9aa0] hover:bg-[var(--accent)]/5 hover:text-[var(--accent)]"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+
+          {moreSection === "subs" && (
+            <div className="px-1 py-0.5">
+              <SubtitlePickerContent
+                activeSubtitle={activeSubtitle}
+                subtitles={subtitles}
+                onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); closeMore(); }}
+                subtitleOffset={subtitleOffset}
+                onOffsetChange={setSubtitleOffset}
+                subtitleSize={subtitleSize}
+                onSizeChange={setSubtitleSize}
+                osSearched={osSearched}
+                osLoading={osLoading}
+                osError={osError}
+                osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
+                osPage={osPage}
+                osFilterQuery={osFilterQuery}
+                onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
+                onFilterChange={setOsFilterQuery}
+                onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
+                onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); setOsPage(1); setOsFilterQuery(""); failedOSIdsRef.current.clear(); }}
+                activeOSSubtitleId={activeOSSubtitleId}
+                osDownloadError={osDownloadError}
+                onClearDownloadError={() => setOsDownloadError(null)}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className="w-full">
     <div
@@ -1707,15 +1914,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       onMouseMove={handleMouseMove}
       onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
-        if (next && containerRef.current && !containerRef.current.contains(next) &&
-            !(settingsPanelRef.current && settingsPanelRef.current.contains(next))) {
-          setShowSettings(false);
+        if (next && containerRef.current && !containerRef.current.contains(next)) {
           setShowServerPicker(false);
           setShowProviderPicker(false);
           setShowQualityPicker(false);
           setShowSpeedPicker(false);
           setShowSubPicker(false);
-          setShowFilterPicker(false);
         }
       }}
     >
@@ -1737,15 +1941,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
         @media (prefers-reduced-motion: reduce) {
           .n54-action-glyph { animation: n54-glyph-fade 620ms linear forwards; }
-        }
-        /* Control-row strip: eased slide for chevron clicks, dead during a drag */
-        .n54-row-strip {
-          transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
-          will-change: transform;
-        }
-        .n54-row-strip.is-dragging { transition: none; }
-        @media (prefers-reduced-motion: reduce) {
-          .n54-row-strip { transition: none; }
         }
       `}</style>
 
@@ -1918,7 +2113,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
         {/* Controls overlay (bottom) */}
       <div
-        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-12 pb-3 px-3 transition-opacity duration-300 z-20 ${
+        className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-12 pb-3 px-2 sm:px-3 transition-opacity duration-300 z-20 ${
           showControls ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
         onClick={(e) => e.stopPropagation()}
@@ -1949,38 +2144,25 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           />
         </div>
 
-        {/* Controls row — the strip scrolls horizontally inside the bar and is
-            clipped by the player, so a narrow viewport never spills sideways.
-            The edge chevrons only render while there is something to reveal.
+        {/* Controls row — grouped by priority, never scrolled. Left group:
+            the always-on essentials (transport, volume, time); right group:
+            the next tier (from lg) plus the ⋯ menu that parks everything
+            else. No horizontal strip, no edge chevrons — the row always fits.
 
-            `z-20` is load-bearing: the strip carries a transform (the scroll),
-            which traps the picker menus' `z-50` inside the strip's own stacking
-            context. Without an explicit z-index on this wrapper the menus paint
-            *under* the seekbar input (`relative z-10`) and open behind it. The
-            wrapper lifts the whole row — menus included — above the seekbar. */}
-        <div ref={rowWrapRef} className="relative z-20" onWheel={handleRowWheel}>
-          <div
-            ref={rowScrollRef}
-            className={`n54-row-strip flex w-full min-w-max items-center justify-between gap-4 sm:gap-6 select-none touch-pan-y ${
-              rowDragging ? "is-dragging" : ""
-            }`}
-            style={{ transform: `translate3d(${-rowScroll.offset}px, 0, 0)` }}
-            onPointerDown={handleStripPointerDown}
-            onPointerMove={handleStripPointerMove}
-            onPointerUp={handleStripPointerEnd}
-            onPointerCancel={handleStripPointerEnd}
-            onClickCapture={handleStripClickCapture}
-          >
+            `z-20` is load-bearing: the seekbar input is `relative z-10`, so
+            without an explicit z-index here the picker menus (z-50) open
+            *under* the seekbar. The row lifts itself — menus included — above it. */}
+        <div className="relative z-20 flex w-full items-center justify-between gap-2 sm:gap-6 select-none">
           {/* Left group: prev/next episode, transport, volume, time — the
               essentials, always first so they are on screen at offset 0 */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-3 shrink-0">
             {/* Previous episode — first thing to go when the row gets tight */}
             <button
               onClick={() => { if (prevEpisodeTarget) goToEpisode(prevEpisodeTarget); }}
               disabled={!prevEpisodeTarget}
               title={prevEpisodeTarget ? `Episode ${prevEpisodeTarget}` : "First episode"}
               aria-label="Previous episode"
-              className={`hidden sm:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
+              className={`hidden sm:flex items-center justify-center transition-colors w-10 h-10 sm:w-8 sm:h-8 ${
                 prevEpisodeTarget
                   ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
                   : "text-[var(--accent)]/50 opacity-30 cursor-not-allowed"
@@ -1996,7 +2178,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               onClick={() => seekBy(-10)}
               title="Back 10 seconds"
               aria-label="Skip back 10 seconds"
-              className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-11 h-11 sm:w-8 sm:h-8"
+              className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8"
             >
               <svg className="w-6 h-6 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 4.8a7.2 7.2 0 1 0 7.2 7.2" />
@@ -2006,7 +2188,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </button>
 
             {/* Play/Pause */}
-            <button onClick={() => togglePlay(false)} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-11 h-11 sm:w-8 sm:h-8">
+            <button onClick={() => togglePlay(false)} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-10 h-10 sm:w-8 sm:h-8">
               {playing ? (
                 <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
@@ -2023,7 +2205,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               onClick={() => seekBy(10)}
               title="Forward 10 seconds"
               aria-label="Skip forward 10 seconds"
-              className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-11 h-11 sm:w-8 sm:h-8"
+              className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8"
             >
               <svg className="w-6 h-6 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 4.8a7.2 7.2 0 1 1-7.2 7.2" />
@@ -2038,7 +2220,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               disabled={!nextEpisodeTarget}
               title={nextEpisodeTarget ? `Episode ${nextEpisodeTarget}` : "No next episode"}
               aria-label="Next episode"
-              className={`hidden sm:flex items-center justify-center transition-colors w-11 h-11 sm:w-8 sm:h-8 ${
+              className={`hidden sm:flex items-center justify-center transition-colors w-10 h-10 sm:w-8 sm:h-8 ${
                 nextEpisodeTarget
                   ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
                   : "text-[var(--accent)]/50 opacity-30 cursor-not-allowed"
@@ -2051,7 +2233,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
             {/* Volume */}
             <div className="flex items-center gap-1 group/vol">
-              <button onClick={toggleMute} className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-11 h-11 sm:w-8 sm:h-8">
+              <button onClick={toggleMute} className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8">
                 {muted || volume === 0 ? (
                   <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
@@ -2062,7 +2244,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   </svg>
                 )}
               </button>
-              <div className="overflow-hidden w-0 group-hover/vol:w-20 sm:group-hover/vol:w-24 transition-all duration-200 h-8 flex items-center">
+              <div className="overflow-hidden w-0 sm:group-hover/vol:w-24 transition-all duration-200 h-8 flex items-center">
                 <input
                   type="range"
                   min={0}
@@ -2080,17 +2262,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </div>
             </div>
 
-            {/* Time */}
-            <span className="text-xs sm:text-sm text-[var(--accent)]/50 tabular-nums font-mono select-none leading-none">
-              {formatTime(currentTime)} / {formatTime(duration)}
+            {/* Time — full readout from sm up; below sm only the elapsed
+                clock fits, and the seekbar carries the rest */}
+            <span className="text-[10px] sm:text-sm text-[var(--accent)]/50 tabular-nums font-mono select-none leading-none shrink-0">
+              {formatTime(currentTime)}
+              <span className="hidden sm:inline"> / {formatTime(duration)}</span>
             </span>
           </div>
 
-          {/* Right group: pickers, gear, fullscreen.
+          {/* Right group: second-tier pickers (lg+), ⋯ menu, fullscreen.
               (The episode drawer is NOT here — it is an edge handle, see below) */}
           <div className="flex items-center gap-1.5 justify-end shrink-0">
-            {/* Settings pickers — low priority: below lg they collapse into
-                the gear, which opens the same settings panel */}
+            {/* Second tier — hidden by priority, not by scrolling: below lg
+                these collapse into the ⋯ menu (whose rows carry `lg:hidden`,
+                so a control is never offered twice). Above lg they sit inline. */}
             <div className="hidden lg:contents">
             {/* Sub / Dub segmented toggle */}
             {dubAvailable && (
@@ -2123,7 +2308,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             <div ref={providerWrapRef} className="relative h-full flex items-center gap-1">
               <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden xl:inline">Pv</span>
               <button
-                onClick={() => { setShowProviderPicker(!showProviderPicker); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                onClick={() => { setShowProviderPicker(!showProviderPicker); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); closeMore(); }}
                 className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
                 title="Streaming provider"
               >
@@ -2161,7 +2346,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               <div ref={serverWrapRef} className="relative h-full flex items-center gap-1">
                 <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden xl:inline">Srv</span>
                 <button
-                  onClick={() => { setShowServerPicker(!showServerPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                  onClick={() => { setShowServerPicker(!showServerPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); closeMore(); }}
                   className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
                 >
                   {activeServer || "Auto"}
@@ -2191,7 +2376,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {availableQualities.length > 0 && (
               <div ref={qualityWrapRef} className="relative h-full flex items-center">
                 <button
-                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowProviderPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowProviderPicker(false); setShowServerPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); closeMore(); }}
                   className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
                 >
                   <svg className="w-3 h-3 opacity-60" fill="currentColor" viewBox="0 0 24 24">
@@ -2229,7 +2414,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Speed selector */}
             <div ref={speedWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSubPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowProviderPicker(false); setShowServerPicker(false); setShowQualityPicker(false); setShowSubPicker(false); closeMore(); }}
                 className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
               >
                 <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -2265,7 +2450,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             {/* Subtitle toggle + picker */}
             <div ref={subWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSubPicker(!showSubPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSettings(false); setShowFilterPicker(false); }}
+                onClick={() => { setShowSubPicker(!showSubPicker); setShowProviderPicker(false); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); closeMore(); }}
                 className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
                   activeSubtitle
                     ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
@@ -2305,89 +2490,45 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               )}
             </div>
 
-            {/* Auto-play next episode toggle */}
+            </div>
+
+            {/* More (⋯) — always present, never scrolls away. Below lg it
+                carries the whole second tier; at every width it carries the
+                least-priority toggles (auto-play, auto-skip, FX filter). */}
             <button
-              onClick={() => setAutoPlayNext(!autoPlayNext)}
-              className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
-                autoPlayNext
+              ref={moreBtnRef}
+              onClick={() => {
+                if (showMore) {
+                  closeMore();
+                } else {
+                  setShowMore(true);
+                  setMoreSection(null);
+                  setShowControls(true);
+                }
+                setShowServerPicker(false);
+                setShowProviderPicker(false);
+                setShowQualityPicker(false);
+                setShowSpeedPicker(false);
+                setShowSubPicker(false);
+                    }}
+              aria-label="More controls"
+              aria-haspopup="menu"
+              aria-expanded={showMore}
+              title="More"
+              className={`w-10 h-10 sm:w-8 sm:h-8 flex items-center justify-center border transition-colors rounded-none ${
+                showMore
                   ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
                   : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
               }`}
             >
-              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              AUTO
-            </button>
-
-            {/* Auto-skip toggle */}
-            <button
-              onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
-              className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
-                autoSkipEnabled
-                  ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
-                  : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
-              }`}
-            >
-              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" />
-              </svg>
-              SKIP
-            </button>
-
-            {/* Video filter picker */}
-            <div ref={filterWrapRef} className="relative h-full flex items-center">
-              <button
-                onClick={() => { setShowFilterPicker(!showFilterPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowSettings(false); }}
-                className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
-                  videoFilter !== "off"
-                    ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
-                    : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
-                }`}
-              >
-                <svg className="w-3 h-3 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
-                </svg>
-                FX
-              </button>
-              {showFilterPicker && (
-                <div className="absolute right-0 bottom-full mb-1.5 w-40 bg-[#131318] border border-[var(--accent)]/20 shadow-xl overflow-hidden z-50 backdrop-blur-sm rounded-none">
-                  <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
-                    Filter
-                  </div>
-                  {FILTER_PRESETS.map((f) => (
-                    <button
-                      key={f.id}
-                      onClick={() => { setVideoFilter(f.id); setShowFilterPicker(false); }}
-                      className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
-                        videoFilter === f.id
-                          ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                          : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                      }`}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            </div>
-
-            {/* Settings gear — below lg this stands in for the pickers above */}
-            <button
-              ref={gearRef}
-              onClick={() => { setShowSettings(!showSettings); setShowServerPicker(false); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); setShowFilterPicker(false); }}
-              className="w-11 h-11 lg:hidden flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors rounded-none"
-            >
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" />
+              <svg className="w-5 h-5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 10a2 2 0 100 4 2 2 0 000-4zm6 0a2 2 0 100 4 2 2 0 000-4zm6 0a2 2 0 100 4 2 2 0 000-4z" />
               </svg>
             </button>
 
             {/* Enter fullscreen (hidden when already fullscreen — top-right exit button handles that) */}
             {!isFullscreen && (
-              <button onClick={toggleFullscreen} className="w-11 h-11 sm:w-8 sm:h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors">
+              <button onClick={toggleFullscreen} className="w-10 h-10 sm:w-8 sm:h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors">
                 <svg className="w-5 h-5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
                 </svg>
@@ -2395,34 +2536,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             )}
 
           </div>
-          </div>
 
-          {/* Edge chevrons — a ">" hovers at the right edge while there is more
-              to reveal; once scrolled it flips to a "<" at the left edge.
-              Hidden while a picker menu is open so the menu owns that corner. */}
-          {!rowMenuOpen && rowScroll.canLeft && (
-            <button
-              type="button"
-              onClick={() => scrollRow(-1)}
-              aria-label="Scroll controls left"
-              className="absolute -left-3 top-1/2 z-10 flex h-11 w-8 -translate-y-1/2 items-center justify-center bg-gradient-to-r from-black/95 via-black/75 to-transparent text-[var(--accent)]/60 hover:text-[var(--accent)] transition-colors"
-            >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
-              </svg>
-            </button>
-          )}
-          {!rowMenuOpen && rowScroll.canRight && (
-            <button
-              type="button"
-              onClick={() => scrollRow(1)}
-              aria-label="Scroll controls right"
-              className="absolute -right-3 top-1/2 z-10 flex h-11 w-8 -translate-y-1/2 items-center justify-center bg-gradient-to-l from-black/95 via-black/75 to-transparent text-[var(--accent)]/60 hover:text-[var(--accent)] transition-colors"
-            >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
+          {/* ⋯ menu — fullscreen placement: a picker-style popup anchored
+              above the row, inside the player (vertical room to spare there;
+              windowed mode renders the same menu below the player instead). */}
+          {showMore && isFullscreen && (
+            <div className="absolute right-2 bottom-full mb-2 w-56 sm:right-3">
+              {moreMenu}
+            </div>
           )}
         </div>
 
@@ -2555,215 +2676,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       )}
     </div>
 
-    {/* Settings panel — outside overflow-hidden so it isn't clipped.
-        Shown below lg, where it stands in for the collapsed pickers. */}
-    {showSettings && (
-      <div ref={settingsPanelRef} className="lg:hidden bg-[#131318] border border-[var(--accent)]/20 border-b-0 mx-0 mb-0 max-h-[60vh] overflow-y-auto rounded-none">
-        {/* Close button */}
-        <div className="sticky top-0 z-10 flex justify-end px-2 pt-2 bg-[#131318]">
-          <button
-            onClick={() => setShowSettings(false)}
-            className="w-7 h-7 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="p-3 pt-1 space-y-3">
-          {/* Audio section */}
-          {dubAvailable && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Audio</div>
-              <div className="flex bg-black/40 border border-[var(--accent)]/20 overflow-hidden rounded-none">
-                <button
-                  onClick={() => switchAudioType("sub")}
-                  className={`flex-1 px-4 py-2 text-xs font-semibold tracking-wide transition-colors rounded-none ${
-                    audioType === "sub"
-                      ? "bg-[var(--accent)] text-black"
-                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
-                  }`}
-                >
-                  SUB
-                </button>
-                <div className="w-px bg-[var(--accent)]/20" />
-                <button
-                  onClick={() => switchAudioType("dub")}
-                  className={`flex-1 px-4 py-2 text-xs font-semibold tracking-wide transition-colors rounded-none ${
-                    audioType === "dub"
-                      ? "bg-[var(--accent)] text-black"
-                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
-                  }`}
-                >
-                  DUB
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Server section */}
-          {availableServers.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Server</div>
-              <div className="flex flex-col gap-0.5">
-                {availableServers.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => { setActiveServer(s); activeServerRef.current = s; loadByType(audioType, s); }}
-                    className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
-                      activeServer === s
-                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                        : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Provider section */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Provider</div>
-            <div className="flex flex-wrap gap-1">
-              {PROVIDER_OPTIONS.map((p) => {
-                const current = providerOverride ?? providerId ?? "";
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() => selectProvider(p.id)}
-                    className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
-                      current === p.id
-                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
-                        : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Quality section */}
-          {availableQualities.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Quality</div>
-              <div className="flex flex-wrap gap-1">
-                {availableQualities.map((q) => (
-                  <button
-                    key={q}
-                    onClick={() => { changeQuality(q); }}
-                    className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
-                      q === currentQuality
-                        ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
-                        : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
-                    }`}
-                  >
-                    {q === "auto" ? "Auto" : q}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Speed section */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Speed</div>
-            <div className="flex flex-wrap gap-1">
-              {speedOptions.map((r) => (
-                <button
-                  key={r}
-                   onClick={() => { changeSpeed(r); }}
-                  className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
-                    playbackRate === r
-                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
-                      : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
-                  }`}
-                >
-                  {r}x
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Filter section */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Filter</div>
-            <div className="flex flex-wrap gap-1">
-              {FILTER_PRESETS.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setVideoFilter(f.id)}
-                  className={`px-3 py-1.5 text-xs transition-colors rounded-none ${
-                    videoFilter === f.id
-                      ? "bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/50"
-                      : "text-[#9a9aa0] hover:text-[var(--accent)] border border-[var(--accent)]/10"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Auto-Play section */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Play</div>
-            <button
-              onClick={() => setAutoPlayNext(!autoPlayNext)}
-              className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
-                autoPlayNext
-                  ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                  : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-              }`}
-            >
-              {autoPlayNext ? "ON — Next episode plays automatically" : "OFF"}
-            </button>
-          </div>
-
-          {/* Auto-Skip section */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-mono mb-2">Auto-Skip</div>
-            <button
-              onClick={() => setAutoSkipEnabled(!autoSkipEnabled)}
-              className={`w-full text-left px-3 py-2 text-xs transition-colors rounded-none ${
-                autoSkipEnabled
-                  ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                  : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-              }`}
-            >
-              {autoSkipEnabled ? "ON — Auto-skips intro/outro" : "OFF"}
-            </button>
-          </div>
-
-          {/* Subtitles section */}
-          <div>
-            <SubtitlePickerContent
-               activeSubtitle={activeSubtitle}
-               subtitles={subtitles}
-               onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); }}
-               subtitleOffset={subtitleOffset}
-               onOffsetChange={setSubtitleOffset}
-               subtitleSize={subtitleSize}
-               onSizeChange={setSubtitleSize}
-               osSearched={osSearched}
-               osLoading={osLoading}
-               osError={osError}
-               osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
-               osPage={osPage}
-               osFilterQuery={osFilterQuery}
-               onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
-               onFilterChange={setOsFilterQuery}
-               onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-               onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); failedOSIdsRef.current.clear(); }}
-               activeOSSubtitleId={activeOSSubtitleId}
-               osDownloadError={osDownloadError}
-               onClearDownloadError={() => setOsDownloadError(null)}
-             />
-          </div>
-        </div>
+    {/* ⋯ menu — windowed placement: rendered BELOW the player, outside its
+        overflow-hidden box, so a short windowed player never clips it (the
+        same reason the old settings panel lived here). Fullscreen renders the
+        identical menu inside the player instead — see the row above. */}
+    {showMore && !isFullscreen && (
+      <div className="relative z-40 mt-1 flex justify-end">
+        <div className="w-56">{moreMenu}</div>
       </div>
     )}
     </div>
