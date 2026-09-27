@@ -1,7 +1,8 @@
-import { getAnimeById } from "@/lib/anilist";
+import { getAnimeById, getAnimeFull } from "@/lib/anilist";
 import { notFound } from "next/navigation";
 import ExpandableDescription from "@/components/ui/ExpandableDescription";
 import EpisodeListFetcher from "@/components/anime/EpisodeListFetcher";
+import FranchiseRow from "@/components/anime/FranchiseRow";
 
 export const revalidate = 300;
 
@@ -17,6 +18,11 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
 
   const anime = await getAnimeById(animeId);
   if (!anime) notFound();
+
+  // getAnimeById maps DETAIL_QUERY down to `Anime` (relations dropped), so pull
+  // the raw media too for the franchise row — same query, so Next's fetch cache
+  // (revalidate: 300) serves it from the request getAnimeById just made.
+  const fullMedia = await getAnimeFull(animeId);
 
   return (
     <div className="min-h-screen bg-[var(--background)] text-white">
@@ -114,6 +120,9 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
             </div>
           </div>
         </div>
+
+        {/* ── Same franchise — compact row of related entries (hidden when none) ── */}
+        <FranchiseRow media={fullMedia} currentId={animeId} />
 
         {/* ── Episode List (client-fetched, responds to provider changes) ── */}
         <EpisodeListFetcher animeTitle={anime.title} animeId={animeId} initialEpisodes={[]} />
