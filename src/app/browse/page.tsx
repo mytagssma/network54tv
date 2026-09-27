@@ -244,6 +244,19 @@ function BrowseContent() {
               </svg>
               Group by Franchise
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSort("");
+                setGroupFranchise(true);
+              }}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 font-mono uppercase tracking-wider border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none min-h-[36px]"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Reset
+            </button>
           </div>
         )}
       </div>

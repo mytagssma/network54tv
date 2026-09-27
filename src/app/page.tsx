@@ -143,6 +143,19 @@ export default function Home() {
       .finally(() => setLoading(false));
   }
 
+  // Reset every filter control to its default (the search input Clear button
+  // above is separate and keeps its full clear-and-reload behaviour).
+  function handleResetFilters() {
+    setFilterFormat("");
+    setFilterSeason("");
+    setFilterTimeRange("");
+    setFilterStatus("");
+    setFilterSort("");
+    setFilterTags({});
+    setFilterTagMode("OR");
+    setFilterGroupFranchise(false);
+  }
+
   // Franchise buckets are derived from the accumulated results on every
   // render, so "Load More" re-buckets incrementally. Lone results get no
   // heading — they render as a flat tail after the franchise sections.
@@ -349,6 +362,18 @@ export default function Home() {
                     }`}
                   >
                     Group by Franchise
+                  </button>
+                </div>
+
+                {/* Reset — restore all filter defaults */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">Reset</label>
+                  <button
+                    type="button"
+                    onClick={handleResetFilters}
+                    className="px-3 py-1.5 text-sm font-mono border transition-colors rounded-none bg-[var(--background)] border-[var(--accent)]/20 text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                  >
+                    Reset Filters
                   </button>
                 </div>
 
