@@ -81,7 +81,16 @@ export default async function WatchPage({ params, searchParams }: Props) {
       </h1>
 
       {/* Player */}
-      <Player animeTitle={anime.title} episodeNumber={episodeNumber} anilistId={animeId} malId={anime.idMal} nextEpisodeNumber={nextEp?.number} providerId={episodeProviderId} />
+      <Player
+        animeTitle={anime.title}
+        episodeNumber={episodeNumber}
+        anilistId={animeId}
+        malId={anime.idMal}
+        nextEpisodeNumber={nextEp?.number}
+        providerId={episodeProviderId}
+        providerQuery={provider}
+        episodes={availableEpisodes.map((ep) => ({ number: ep.number, title: ep.title }))}
+      />
 
       {/* Episode navigation */}
       <div className="flex items-center justify-between mt-4">

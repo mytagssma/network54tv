@@ -15,6 +15,10 @@ interface PlayerProps {
   malId?: number;
   nextEpisodeNumber?: number;
   providerId?: string;
+  /** `?provider=` from the watch page — carried through episode navigation */
+  providerQuery?: string;
+  /** Compact episode list for the drawer (passed down; never re-fetched here) */
+  episodes?: { number: number; title?: string }[];
 }
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
@@ -81,7 +85,7 @@ function isPlayableSource(s: StreamSource): boolean {
   return (s.isM3U8 && Hls.isSupported()) || isProgressiveUrl(s.url);
 }
 
-export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId }: PlayerProps) {
+export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId, providerQuery, episodes }: PlayerProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -180,6 +184,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   // Settings menu (mobile)
   const [showSettings, setShowSettings] = useState(false);
+
+  // Episode drawer — Netflix-style panel sliding in from the right, over the
+  // video. Two flags: `drawerOpen` keeps it mounted for the exit transition,
+  // `drawerIn` drives the translate (mount first, slide on the next frame).
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerIn, setDrawerIn] = useState(false);
+  const drawerCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const drawerCurrentRef = useRef<HTMLButtonElement>(null); // row to scroll into view
+  const drawerListRef = useRef<HTMLDivElement>(null); // list scrolled to that row
 
   // Auto-play next episode
   const [autoPlayNext, setAutoPlayNext] = useState(false);
@@ -1244,12 +1257,65 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     resetControlsTimer();
   };
 
-  // ─── Episode navigation (control-bar prev/next) ──────────
+  // ─── Episode navigation (control-bar prev/next, drawer, countdown) ──
   const goToEpisode = (n: number) => {
     if (!anilistId) return;
     saveProgress(); // SPA navigation never fires beforeunload — persist here
-    router.push(`/anime/${anilistId}/watch/${n}`);
+    // Keep the provider the user picked — dropping it would silently switch
+    // back to the default provider on the next episode
+    const qs = providerQuery ? `?provider=${encodeURIComponent(providerQuery)}` : "";
+    router.push(`/anime/${anilistId}/watch/${n}${qs}`);
   };
+
+  // ─── Episode drawer open/close (250ms slide either way) ─────
+  const openDrawer = useCallback(() => {
+    if (drawerCloseTimerRef.current) {
+      clearTimeout(drawerCloseTimerRef.current);
+      drawerCloseTimerRef.current = null;
+    }
+    setDrawerOpen(true);
+    // Mount off-screen first, then slide in on the next frame so the
+    // browser has a style to transition from
+    requestAnimationFrame(() => requestAnimationFrame(() => setDrawerIn(true)));
+  }, []);
+
+  const closeDrawer = useCallback(() => {
+    setDrawerIn(false);
+    if (drawerCloseTimerRef.current) clearTimeout(drawerCloseTimerRef.current);
+    drawerCloseTimerRef.current = setTimeout(() => {
+      drawerCloseTimerRef.current = null;
+      setDrawerOpen(false);
+    }, 260);
+  }, []);
+
+  // Don't leave a pending unmount timer behind
+  useEffect(() => () => {
+    if (drawerCloseTimerRef.current) clearTimeout(drawerCloseTimerRef.current);
+  }, []);
+
+  // Bring the current episode's row into view when the drawer opens.
+  // Manual scrollTop rather than scrollIntoView: scrollIntoView would also
+  // centre the row in the *document*, yanking the page under the player.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const id = requestAnimationFrame(() => {
+      const box = drawerListRef.current;
+      const row = drawerCurrentRef.current;
+      if (!box || !row) return;
+      box.scrollTop = Math.max(
+        0,
+        row.offsetTop - box.offsetTop - box.clientHeight / 2 + row.offsetHeight / 2
+      );
+    });
+    return () => cancelAnimationFrame(id);
+  }, [drawerOpen]);
+
+  // The drawer is a fullscreen-only surface — leaving fullscreen (or any
+  // route that keeps this component mounted) must not strand it open over
+  // the windowed player, where there is no trigger to close it from.
+  useEffect(() => {
+    if (!isFullscreen && drawerOpen) closeDrawer();
+  }, [isFullscreen, drawerOpen, closeDrawer]);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
@@ -1597,6 +1663,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           setShowSpeedPicker(false);
           setShowSubPicker(false);
           setShowFilterPicker(false);
+          closeDrawer();
           break;
         // speed steps are handled above via e.code (shift + ,/.)
       }
@@ -2019,7 +2086,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </span>
           </div>
 
-          {/* Right group: pickers, gear, fullscreen */}
+          {/* Right group: pickers, gear, fullscreen.
+              (The episode drawer is NOT here — it is an edge handle, see below) */}
           <div className="flex items-center gap-1.5 justify-end shrink-0">
             {/* Settings pickers — low priority: below lg they collapse into
                 the gear, which opens the same settings panel */}
@@ -2372,6 +2440,118 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
           </svg>
         </button>
+      )}
+
+      {/* Episode drawer handle — docked at the MIDDLE of the right edge, the
+          only trigger there is (fullscreen-only; windowed mode has no drawer).
+          Fades with the control HUD so it never sits on a clean frame. */}
+      {isFullscreen && !drawerOpen && episodes && episodes.length > 0 && (
+        <button
+          onClick={openDrawer}
+          aria-label="Episodes"
+          aria-expanded={false}
+          title="Episodes"
+          className={`group/handle absolute right-0 top-1/2 z-40 flex h-16 w-7 -translate-y-1/2 items-center justify-center rounded-none border border-r-0 border-[var(--accent)]/40 bg-black/60 text-[var(--accent)] transition-all duration-300 hover:border-[var(--accent)] hover:bg-[var(--accent)]/15 hover:accent-shadow-sm ${
+            showControls ? "opacity-100" : "opacity-0 pointer-events-none"
+          }`}
+        >
+          <svg
+            className="h-4 w-4 transition-transform duration-200 group-hover/handle:-translate-x-0.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
+          </svg>
+        </button>
+      )}
+
+      {/* Episode drawer — slides in from the right, over the video.
+          Rendered inside the container so it is clipped to the player and
+          still works in fullscreen. */}
+      {drawerOpen && episodes && episodes.length > 0 && (
+        <div className="absolute inset-0 z-50">
+          {/* Backdrop */}
+          <div
+            onClick={closeDrawer}
+            aria-hidden="true"
+            className={`absolute inset-0 bg-black/70 transition-opacity duration-[250ms] ease-out ${
+              drawerIn ? "opacity-100" : "opacity-0"
+            }`}
+          />
+          {/* Panel */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Episodes"
+            className={`absolute right-0 top-0 flex h-full w-[320px] max-w-[85%] flex-col border-l border-[var(--accent)]/30 bg-[#131318] shadow-[-12px_0_32px_rgba(0,0,0,0.6)] transition-transform duration-[250ms] ease-out ${
+              drawerIn ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--accent)]/20 px-4 py-3">
+              <div className="min-w-0">
+                <div className="font-mono text-[11px] uppercase leading-none tracking-[0.2em] text-[var(--accent)]">
+                  Episodes
+                </div>
+                <div className="mt-1.5 truncate font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/40">
+                  {animeTitle}
+                </div>
+              </div>
+              <button
+                onClick={closeDrawer}
+                aria-label="Close episodes"
+                className="flex h-8 w-8 shrink-0 items-center justify-center border border-[var(--accent)]/30 text-[var(--accent)]/60 transition-colors hover:border-[var(--accent)]/60 hover:bg-[var(--accent)]/10 hover:text-[var(--accent)] rounded-none"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div ref={drawerListRef} className="flex-1 overflow-y-auto overscroll-contain py-1">
+              {episodes.map((ep) => {
+                const isCurrent = ep.number === episodeNumber;
+                return (
+                  <button
+                    key={ep.number}
+                    ref={isCurrent ? drawerCurrentRef : undefined}
+                    onClick={() => {
+                      closeDrawer();
+                      if (!isCurrent) goToEpisode(ep.number);
+                    }}
+                    className={`flex w-full items-center gap-3 border-l-2 px-4 py-3 text-left transition-colors rounded-none ${
+                      isCurrent
+                        ? "border-[var(--accent)] bg-[var(--accent)]/15"
+                        : "border-transparent hover:bg-[var(--accent)]/5"
+                    }`}
+                  >
+                    <span
+                      className={`w-8 shrink-0 font-mono text-xs tabular-nums ${
+                        isCurrent ? "text-[var(--accent)]" : "text-[var(--accent)]/50"
+                      }`}
+                    >
+                      {String(ep.number).padStart(2, "0")}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 truncate text-xs ${
+                        isCurrent ? "text-[var(--accent)]" : "text-[#9a9aa0]"
+                      }`}
+                    >
+                      {ep.title || `Episode ${ep.number}`}
+                    </span>
+                    {isCurrent && (
+                      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/70">
+                        Now
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
     </div>
 
