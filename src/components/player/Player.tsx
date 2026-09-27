@@ -2119,22 +2119,28 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       )}
 
       {/* Center action glyph — shown on play/pause instead of flashing the HUD.
-          Grows along a fast-start/decelerating curve while it fades out. */}
+          Grows along a fast-start/decelerating curve while it fades out.
+          Styling is a site chip, not a translucent bubble: hard corners, hairline
+          accent border, accent icon + mono micro-label, soft accent glow. */}
       {actionGlyph && (
         <div
           key={actionGlyph.id}
           className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
         >
-          <div className="n54-action-glyph flex h-20 w-20 items-center justify-center rounded-full bg-black/45 text-white shadow-[0_4px_24px_rgba(0,0,0,0.45)] backdrop-blur-[2px]">
+          <div className="n54-action-glyph flex h-24 w-24 flex-col items-center justify-center gap-1.5 rounded-none border border-[var(--accent)]/70 bg-black/55 text-[var(--accent)] backdrop-blur-[3px] accent-shadow-sm">
             {actionGlyph.action === "pause" ? (
-              <svg className="h-9 w-9" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="h-8 w-8" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
               </svg>
             ) : (
-              <svg className="h-9 w-9" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="h-8 w-8" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M8 5v14l11-7z" />
               </svg>
             )}
+            {/* tracking pushes the last glyph left of centre — pad it back */}
+            <span className="pl-[0.3em] font-mono text-[9px] uppercase leading-none tracking-[0.3em] text-[var(--accent)]/70">
+              {actionGlyph.action === "pause" ? "Pause" : "Play"}
+            </span>
           </div>
         </div>
       )}
