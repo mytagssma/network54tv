@@ -40,7 +40,7 @@ export default function Navbar() {
     >
       <div className="max-w-7xl mx-auto px-4">
         <div className="flex items-center justify-between h-14">
-          {/* Brand mark + search */}
+          {/* Brand mark */}
           <div className="flex items-center gap-2 sm:gap-3">
             <Link
               href="/"
@@ -49,7 +49,10 @@ export default function Navbar() {
             >
               <N54Mark />
             </Link>
+          </div>
 
+          {/* Right side: search + accent selector */}
+          <div className="flex items-center gap-2 sm:gap-3">
             <Link
               href="/browse"
               aria-label="Search"
@@ -71,10 +74,7 @@ export default function Navbar() {
                 />
               </svg>
             </Link>
-          </div>
 
-          {/* Right side: accent selector */}
-          <div className="flex items-center gap-2 sm:gap-3">
             <AccentColorSelector />
           </div>
         </div>
