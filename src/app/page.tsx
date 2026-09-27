@@ -38,9 +38,9 @@ export default function Home() {
   const [filterTags, setFilterTags] = useState<Record<string, "include" | "exclude">>({});
   const [filterTagMode, setFilterTagMode] = useState<"OR" | "AND">("OR");
   // View toggle: cluster results into franchises (seasons/prequels/spin-offs
-  // together) — on by default; an explicit sort keeps the fetched order inside
-  // every group.
-  const [filterGroupFranchise, setFilterGroupFranchise] = useState(true);
+  // together) — off by default on the home page; toggling it on is an explicit
+  // choice, and an explicit sort keeps the fetched order inside every group.
+  const [filterGroupFranchise, setFilterGroupFranchise] = useState(false);
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
 
   const hasActiveFilters = Boolean(
