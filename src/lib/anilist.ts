@@ -86,7 +86,7 @@ query ($id: Int) {
     nextAiringEpisode { airingAt episode }
     relations {
       edges {
-        node { id title { romaji english } coverImage { large } }
+        node { id type format title { romaji english } coverImage { large } }
         relationType
       }
     }
