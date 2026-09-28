@@ -7,6 +7,7 @@ import SubtitleOverlay from "./SubtitleOverlay";
 import SubtitlePickerContent from "./SubtitlePickerContent";
 import { proxyUrl } from "@/lib/utils";
 import type { StreamSource, Subtitle } from "@/types/anime";
+import type { FranchiseEntry } from "@/components/watch/FranchiseStrip";
 
 interface PlayerProps {
   animeTitle: string;
@@ -19,6 +20,11 @@ interface PlayerProps {
   providerQuery?: string;
   /** Compact episode list for the drawer (passed down; never re-fetched here) */
   episodes?: { number: number; title?: string }[];
+  /**
+   * Franchise / season entries (same set the watch page's `// Franchise`
+   * grid lists) — the dropdown docked at the top of the episode drawer.
+   */
+  franchise?: FranchiseEntry[];
 }
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
@@ -35,6 +41,99 @@ const PROVIDER_OPTIONS = [
 ];
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+
+/* ─── Series / episode switch handoff ───────────────────────────────────
+ * A route-param change (`…/watch/5` → `…/watch/6`, or a different `[id]`)
+ * changes the App Router segment's *state key* (`createRouterCacheKey`
+ * bakes the param value in), and with `cacheComponents` off the bfcache
+ * keeps only 1 entry — so React unmounts the entire previous segment,
+ * player included, and mounts a fresh one. Anything that has to survive
+ * that trip is stashed here in sessionStorage and read back by the NEXT
+ * Player instance: the switch overlay's payload, and the "we were in
+ * fullscreen" intent used to restore it.
+ */
+const SWITCH_KEY = "n54tv-switch";
+/** Never let an instant load flash the overlay — hold it at least this long. */
+const SWITCH_MIN_MS = 700;
+/** Older than this is a leftover from a dead tab, not a live switch. */
+const SWITCH_STALE_MS = 20_000;
+
+interface SwitchHandoff {
+  /** Epoch ms of the click that started the switch (drives the min hold). */
+  t: number;
+  /** The player was fullscreen then — the new instance must restore it. */
+  fs: boolean;
+  /** What the overlay announces. */
+  kind: "episode" | "series";
+  /** Series title to show (the *target* series on a series switch). */
+  series: string;
+  /** Target episode number. */
+  episode: number;
+  /** Episode title when hopping within the same series. */
+  epTitle?: string;
+}
+
+function readSwitchHandoff(): SwitchHandoff | null {
+  try {
+    const raw = sessionStorage.getItem(SWITCH_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SwitchHandoff;
+    if (!parsed || typeof parsed.t !== "number") return null;
+    if (Date.now() - parsed.t > SWITCH_STALE_MS) {
+      sessionStorage.removeItem(SWITCH_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeSwitchHandoff(h: SwitchHandoff): void {
+  try {
+    sessionStorage.setItem(SWITCH_KEY, JSON.stringify(h));
+  } catch {
+    /* private mode / quota — the overlay then only lives on this instance */
+  }
+}
+
+function clearSwitchHandoff(): void {
+  try {
+    sessionStorage.removeItem(SWITCH_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Last-resort fullscreen recovery: browsers only grant `requestFullscreen()`
+ * inside user activation, so when the instant post-navigation attempt above
+ * has been rejected, the honest way back in is the viewer's *next* real
+ * gesture. One shot (first click or key), disarmed after 15s so a stray
+ * later tap can never yank someone into fullscreen.
+ */
+function armFullscreenRetry(): void {
+  const tryIt = () => {
+    disarm();
+    const el = document.documentElement as any;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req) return;
+    try {
+      const p = req.call(el);
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch {
+      /* still refused — leave the viewer where they are */
+    }
+  };
+  const disarm = () => {
+    window.removeEventListener("pointerdown", tryIt);
+    window.removeEventListener("keydown", tryIt);
+    clearTimeout(timer);
+  };
+  const timer = setTimeout(disarm, 15_000);
+  window.addEventListener("pointerdown", tryIt, { once: true });
+  window.addEventListener("keydown", tryIt, { once: true });
+}
 
 const FILTER_PRESETS = [
   { id: "off", label: "Off", css: "none" },
@@ -125,7 +224,7 @@ function isPlayableSource(s: StreamSource): boolean {
   return (s.isM3U8 && Hls.isSupported()) || isProgressiveUrl(s.url);
 }
 
-export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId, providerQuery, episodes }: PlayerProps) {
+export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId, providerQuery, episodes, franchise }: PlayerProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -139,6 +238,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const activeServerRef = useRef<string | null>(null);
   const currentQualityRef = useRef("auto");
   const lastTimeUpdateRef = useRef(0);
+  // performance.now() stamp of the most recent `seeking`/`seeked` event.
+  // stallCheck uses it to forgive the post-seek readyState dip (fragment
+  // fetch keeps the element at readyState 1–2 for 1–4s — not a real stall).
+  const lastSeekAtRef = useRef(0);
   const triedUrlsRef = useRef<Set<string>>(new Set()); // playable URLs already attempted this load
   // ─── Load-attempt lifecycle ───────────────────────────────
   // Each source choice is one bounded "attempt" (see loadHls below).
@@ -151,8 +254,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const failAttemptRef = useRef<(() => void) | null>(null);
 
   // Refs for close-on-outside-click
-  const moreWrapRef = useRef<HTMLDivElement>(null); // the ⋯ menu (either placement)
+  const moreWrapRef = useRef<HTMLDivElement>(null); // the ⋯ menu (popup or sheet)
   const moreBtnRef = useRef<HTMLButtonElement>(null); // the ⋯ trigger
+  // The dismiss layer under the ⋯ menu (transparent catcher on wide
+  // viewports, scrim on phones). Excluded from the pointerdown "outside"
+  // test on purpose: it closes on its own click instead, so the menu is
+  // still mounted when the click lands and the gesture can't fall through
+  // to the video (which would toggle playback alongside the dismissal).
+  const moreDismissRef = useRef<HTMLDivElement>(null);
   const serverWrapRef = useRef<HTMLDivElement>(null);
   const providerWrapRef = useRef<HTMLDivElement>(null);
   const qualityWrapRef = useRef<HTMLDivElement>(null);
@@ -175,7 +284,23 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  // Seeded from the document, not from `false`: a fresh page load can never be
+  // fullscreen (both server and client render false → hydration matches), but
+  // a *remount* mid-navigation must come back in cinematic shape on its very
+  // first paint — otherwise a fullscreened <html> would flash the whole page
+  // before this state caught up. The listener below keeps it live afterwards.
+  // Both spellings, like every other fullscreen read in this file: on the
+  // prefixed-only builds the guards below still cover, `fullscreenElement`
+  // alone reads undefined and a surviving fullscreen would seed `false` —
+  // with no change event left to fire, the player would paint windowed
+  // inside a fullscreen page and never recover.
+  const [isFullscreen, setIsFullscreen] = useState(() => {
+    if (typeof document === "undefined") return false;
+    const doc = document as any;
+    return !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+  });
+  const isFullscreenRef = useRef(isFullscreen);
+  isFullscreenRef.current = isFullscreen;
   const [showControls, setShowControls] = useState(true);
   // Center play/pause feedback glyph — keyboard toggles flash this icon
   // alone instead of the whole control bar
@@ -214,6 +339,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // sub-page (provider / quality / …) inside the same popup.
   const [showMore, setShowMore] = useState(false);
   const [moreSection, setMoreSection] = useState<MoreSection | null>(null);
+  // SHAPE of the ⋯ menu, not just its contents. Below 640px — the same
+  // breakpoint the controls use to switch to touch-sized buttons — it opens
+  // as a full-width sheet docked to the bottom of the player over an
+  // in-player scrim; from 640px up it opens as a popup anchored above the
+  // control row. Read post-mount so the first render still matches the SSR
+  // output (the menu starts closed, so there is nothing to flash).
+  const [isCompact, setIsCompact] = useState(false);
   // Mirror for the controls auto-hide timer (a []-deps effect reads this)
   const moreOpenRef = useRef(showMore);
   moreOpenRef.current = showMore;
@@ -223,15 +355,139 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setShowMore(false);
     setMoreSection(null);
   }, []);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639.98px)");
+    const sync = () => setIsCompact(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   // Episode drawer — Netflix-style panel sliding in from the right, over the
-  // video. Two flags: `drawerOpen` keeps it mounted for the exit transition,
-  // `drawerIn` drives the translate (mount first, slide on the next frame).
+  // video. Two flags: `drawerOpen` marks it open (or in its exit transition),
+  // `drawerIn` drives the translate. The panel itself stays mounted whenever
+  // there is anything to show — closed it sits `translate-x-full` behind
+  // `pointer-events-none` + `inert` (unclickable, out of the tab order and
+  // out of the a11y tree) — which lets the franchise dropdown docked at its
+  // top ship in the initial HTML instead of materialising only after the
+  // first fullscreen tap.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerIn, setDrawerIn] = useState(false);
   const drawerCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The slide-in is two chained animation frames; this holds whichever frame
+  // is still pending so `closeDrawer` can cancel it. Without that, a close
+  // landing inside the two-frame window (Escape right after the handle,
+  // fullscreen dropping out from under the open) would be *undone* by the
+  // late `setDrawerIn(true)` — stranding a fully on-screen drawer that is
+  // simultaneously `inert` + pointer-events-none: visible, and dead.
+  const drawerSlideRafRef = useRef<number | null>(null);
   const drawerCurrentRef = useRef<HTMLButtonElement>(null); // row to scroll into view
   const drawerListRef = useRef<HTMLDivElement>(null); // list scrolled to that row
+
+  // Franchise / season dropdown — docked at the top of the drawer, above the
+  // episode list. One open flag; the trigger's wrapper is the "inside" test
+  // for the shared outside-click closer, and `franchiseOpenRef` mirrors the
+  // flag for the []-deps keyboard handler (its Escape must drop the dropdown
+  // first, only then the drawer).
+  const [franchiseOpen, setFranchiseOpen] = useState(false);
+  const franchiseOpenRef = useRef(franchiseOpen);
+  franchiseOpenRef.current = franchiseOpen;
+  const franchiseWrapRef = useRef<HTMLDivElement>(null);
+  // Set on pointerdown on the drawer's scrim: was the franchise dropdown open
+  // at that moment? The scrim then drops the dropdown only (its own click),
+  // so one tap per layer — exactly how Escape unwinds it.
+  const franchiseOnScrimRef = useRef(false);
+  // The drawer exists whenever EITHER list does — episodes alone, a franchise
+  // with nothing to page, or both.
+  const hasEpisodeList = (episodes?.length ?? 0) > 0;
+  const hasFranchise = (franchise?.length ?? 0) > 1;
+  const hasDrawer = hasEpisodeList || hasFranchise;
+  const currentFranchise = franchise?.find((entry) => entry.current);
+
+  // ─── Series/episode switch overlay ───────────────────────────────
+  // Armed by `beginSwitch` on the clicking instance, and re-armed from the
+  // sessionStorage handoff on the *next* instance (the route change remounts
+  // this whole subtree). Dismissal tracks the real load: `loading` flips false
+  // when the attempt reports ready (MANIFEST_PARSED / loadedmetadata) or when
+  // the error overlay takes over — never on a fixed delay.
+  const [switchTo, setSwitchTo] = useState<SwitchHandoff | null>(null);
+  const [switchFade, setSwitchFade] = useState(false);
+
+  // Mount: adopt the handoff the outgoing instance stashed (if this mount was
+  // caused by a switch) and make sure fullscreen came through with us.
+  useEffect(() => {
+    const h = readSwitchHandoff();
+    if (!h) return;
+    clearSwitchHandoff();
+    setSwitchFade(false);
+    setSwitchTo(h);
+
+    // Fullscreen intent. With <html> as the fullscreen element (see
+    // `toggleFullscreen`) nothing in the route change *can* drop it — but if
+    // this browser refused to fullscreen <html> in the first place (or the
+    // platform dropped it anyway), ask again right now: this effect still
+    // runs inside the click's transient-activation window, which is exactly
+    // what Chrome/Safari check. A rejection arms one gesture-based retry.
+    // The `standard || webkit` probe again: reading only `fullscreenElement`
+    // on a prefixed-only build reports "dropped" when it never was, and we
+    // would ask for a fullscreen we already have (denied → stray retry arm).
+    const fsDoc = document as any;
+    if (h.fs && (fsDoc.fullscreenElement || fsDoc.webkitFullscreenElement) == null) {
+      const el = document.documentElement as any;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) {
+        try {
+          const p = req.call(el);
+          if (p && typeof p.catch === "function") p.catch(() => armFullscreenRetry());
+        } catch {
+          armFullscreenRetry();
+        }
+      } else {
+        armFullscreenRetry();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Dismissal: stay up while `loading` is true (real fetch + manifest), then
+  // hold at least SWITCH_MIN_MS from the click so an instant load fades
+  // instead of flashing, then fade out over 320ms. Never a fixed delay.
+  useEffect(() => {
+    if (!switchTo) {
+      setSwitchFade(false);
+      return;
+    }
+    if (loading) return; // still loading — re-run when `loading` flips
+    const holdLeft = Math.max(0, switchTo.t + SWITCH_MIN_MS - Date.now());
+    const fadeTimer = setTimeout(() => setSwitchFade(true), holdLeft);
+    const dropTimer = setTimeout(() => setSwitchTo(null), holdLeft + 320);
+    return () => {
+      clearTimeout(fadeTimer);
+      clearTimeout(dropTimer);
+    };
+  }, [switchTo, loading]);
+
+  /**
+   * Start a switch from inside the player: arm the overlay on THIS instance
+   * (so it covers the RSC fetch too) and stash the handoff for the next one.
+   * Fullscreen is not touched here — it lives on <html> and survives.
+   */
+  const beginSwitch = useCallback(
+    (next: { kind: "episode" | "series"; series?: string; episode: number; epTitle?: string }) => {
+      const handoff: SwitchHandoff = {
+        t: Date.now(),
+        fs: isFullscreenRef.current,
+        kind: next.kind,
+        series: next.series ?? animeTitle,
+        episode: next.episode,
+        epTitle: next.epTitle,
+      };
+      writeSwitchHandoff(handoff);
+      setSwitchFade(false);
+      setSwitchTo(handoff);
+    },
+    [animeTitle]
+  );
 
   // Auto-play next episode
   const [autoPlayNext, setAutoPlayNext] = useState(false);
@@ -558,8 +814,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               case Hls.ErrorTypes.MEDIA_ERROR:
                 if (mediaRecoveries.used < 2) {
                   mediaRecoveries.used += 1;
+                  // Same detach caveat as recoverStream: recoverMediaError()
+                  // resets currentTime to 0 and drops the SourceBuffers —
+                  // restore position + play state or the element freezes at
+                  // 0:00 while the buffer restarts at `pos`.
+                  const pos = video.currentTime;
+                  const wasPlaying = video.paused === false;
                   try {
                     hls.recoverMediaError();
+                    if (Math.abs(video.currentTime - pos) > 1) video.currentTime = pos;
+                    if (wasPlaying) video.play().catch(() => {});
                   } catch {
                     fail();
                   }
@@ -1042,8 +1306,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setShowControls(true);
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     controlsTimerRef.current = setTimeout(() => {
-      // The ⋯ menu rides on the control bar — never yank the bar (and the
-      // menu with it) out from under an open menu.
+      // The ⋯ menu parks right above the control bar — never yank the bar
+      // out from under an open menu.
       if (playingRef.current && !moreOpenRef.current) setShowControls(false);
     }, 3000);
   }, []);
@@ -1075,10 +1339,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   useEffect(() => {
     const closeIfOutside = (e: PointerEvent) => {
       const t = e.target as Node;
-      // The ⋯ menu can live outside the player box (windowed), so both the
-      // popup and its trigger are excluded from the "outside" test.
+      // Clicks inside the ⋯ panel must not dismiss it, and its trigger is
+      // exempt too — the trigger toggles the menu itself (exposing it here
+      // would close-then-reopen it on the same click).
       if (showMore && moreWrapRef.current && moreBtnRef.current &&
-          !moreWrapRef.current.contains(t) && !moreBtnRef.current.contains(t)) {
+          !moreWrapRef.current.contains(t) && !moreBtnRef.current.contains(t) &&
+          !moreDismissRef.current?.contains(t)) {
         closeMore();
       }
       if (showServerPicker && serverWrapRef.current && !serverWrapRef.current.contains(t)) setShowServerPicker(false);
@@ -1086,10 +1352,17 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
       if (showSpeedPicker && speedWrapRef.current && !speedWrapRef.current.contains(t)) setShowSpeedPicker(false);
       if (showSubPicker && subWrapRef.current && !subWrapRef.current.contains(t)) setShowSubPicker(false);
+      // Drawer's franchise dropdown: the trigger's wrapper counts as inside
+      // (the trigger toggles it itself — exposing it would close-then-reopen
+      // on the same tap). The drawer's own backdrop click closes the drawer,
+      // which drops the dropdown with it.
+      if (franchiseOpen && franchiseWrapRef.current && !franchiseWrapRef.current.contains(t)) {
+        setFranchiseOpen(false);
+      }
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showMore, showServerPicker, showProviderPicker, showQualityPicker, showSpeedPicker, showSubPicker, closeMore]);
+  }, [showMore, showServerPicker, showProviderPicker, showQualityPicker, showSpeedPicker, showSubPicker, franchiseOpen, closeMore]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -1207,35 +1480,74 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       // Keep the provider the user picked — dropping it would silently switch
       // back to the default provider on the next episode
       const qs = providerQuery ? `?provider=${encodeURIComponent(providerQuery)}` : "";
+      // Arm the feedback overlay before the push: it paints on this instance
+      // (covering the RSC fetch), then the handoff re-arms it on the next one.
+      beginSwitch({
+        kind: "episode",
+        episode: n,
+        epTitle: episodes?.find((ep) => ep.number === n)?.title,
+      });
       router.push(`/anime/${anilistId}/watch/${n}${qs}`);
     },
-    [anilistId, providerQuery, router, saveProgress]
+    [anilistId, providerQuery, router, saveProgress, beginSwitch, episodes]
   );
 
   // ─── Episode drawer open/close (250ms slide either way) ─────
+  // Drop a slide-in that hasn't painted yet (see `drawerSlideRafRef`).
+  const cancelDrawerSlide = useCallback(() => {
+    if (drawerSlideRafRef.current !== null) {
+      cancelAnimationFrame(drawerSlideRafRef.current);
+      drawerSlideRafRef.current = null;
+    }
+  }, []);
+
   const openDrawer = useCallback(() => {
     if (drawerCloseTimerRef.current) {
       clearTimeout(drawerCloseTimerRef.current);
       drawerCloseTimerRef.current = null;
     }
+    cancelDrawerSlide();
+    franchiseOnScrimRef.current = false;
+    // Opening a surface drops the others — the same set the ⋯ trigger clears
+    // when it opens: a control-bar picker left open underneath would reappear
+    // the moment the drawer closes, and the drawer is the modal now. No-ops
+    // (false → false) in the normal flow, so the usual path stays put.
+    setShowServerPicker(false);
+    setShowProviderPicker(false);
+    setShowQualityPicker(false);
+    setShowSpeedPicker(false);
+    setShowSubPicker(false);
     setDrawerOpen(true);
-    // Mount off-screen first, then slide in on the next frame so the
-    // browser has a style to transition from
-    requestAnimationFrame(() => requestAnimationFrame(() => setDrawerIn(true)));
-  }, []);
+    // The panel is already in the DOM (closed, off-screen); slide it in on
+    // the next frame so the browser has a style to transition from. Each
+    // frame's id is parked in `drawerSlideRafRef` — including the inner one —
+    // so a close arriving before the slide starts can still cancel it.
+    drawerSlideRafRef.current = requestAnimationFrame(() => {
+      drawerSlideRafRef.current = requestAnimationFrame(() => {
+        drawerSlideRafRef.current = null;
+        setDrawerIn(true);
+      });
+    });
+  }, [cancelDrawerSlide]);
 
   const closeDrawer = useCallback(() => {
+    // The dropdown lives inside the drawer — never strand it open.
+    setFranchiseOpen(false);
+    // …and never strand a queued slide-in either: it would flip `drawerIn`
+    // back to true after this close and pin the panel on screen.
+    cancelDrawerSlide();
     setDrawerIn(false);
     if (drawerCloseTimerRef.current) clearTimeout(drawerCloseTimerRef.current);
     drawerCloseTimerRef.current = setTimeout(() => {
       drawerCloseTimerRef.current = null;
       setDrawerOpen(false);
     }, 260);
-  }, []);
+  }, [cancelDrawerSlide]);
 
-  // Don't leave a pending unmount timer behind
+  // Don't leave a pending unmount timer (or frame) behind
   useEffect(() => () => {
     if (drawerCloseTimerRef.current) clearTimeout(drawerCloseTimerRef.current);
+    if (drawerSlideRafRef.current !== null) cancelAnimationFrame(drawerSlideRafRef.current);
   }, []);
 
   // Bring the current episode's row into view when the drawer opens.
@@ -1261,6 +1573,17 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   useEffect(() => {
     if (!isFullscreen && drawerOpen) closeDrawer();
   }, [isFullscreen, drawerOpen, closeDrawer]);
+
+  // The drawer and the ⋯ menu are the player's only z-50 top surfaces, and
+  // the ⋯ panel is LAST in the DOM — stacked, it would punch straight through
+  // the drawer's scrim and sit on the episode list. The mouse can't get there
+  // (each surface's own layer covers the other's trigger), but both triggers
+  // stay keyboard-focusable while covered, so both orders are reachable.
+  // One rule closes the gap: whenever they overlap, the drawer — the modal —
+  // wins and the menu drops.
+  useEffect(() => {
+    if (drawerOpen && showMore) closeMore();
+  }, [drawerOpen, showMore, closeMore]);
 
   // ─── Next-episode countdown ────────────────────────────────
   // One tick per second; at 0 we navigate. Every re-render (time updates land
@@ -1291,17 +1614,33 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setCountdown(null);
   }, [episodeNumber]);
 
-  const toggleFullscreen = () => {
-    if (!containerRef.current) return;
+  // Fullscreen is anchored to <html>, NOT to this container. A route change
+  // (`…/watch/5` → `…/watch/6`, or another `[id]`) changes the App Router
+  // segment's state key, so React unmounts the whole player subtree and
+  // mounts a fresh one — any fullscreen element inside it is disconnected
+  // and the browser drops fullscreen (Chrome/Safari: same-document
+  // navigation keeps *user activation*, but it cannot keep a dead element).
+  // <html> is never unmounted, so the mode itself survives; the container
+  // then pins itself to the viewport with `fixed inset-0` while fullscreen
+  // (see the root className) and presents exactly like the old
+  // element-fullscreen did.
+  const exitFullscreen = useCallback(() => {
     const doc = document as any;
     if (doc.fullscreenElement || doc.webkitFullscreenElement) {
       (doc.exitFullscreen || doc.webkitExitFullscreen)?.call(doc);
-      // Unlock orientation when exiting fullscreen
-      if (screen.orientation && typeof screen.orientation.unlock === "function") {
-        screen.orientation.unlock();
-      }
+    }
+    // Unlock orientation when exiting fullscreen
+    if (screen.orientation && typeof screen.orientation.unlock === "function") {
+      screen.orientation.unlock();
+    }
+  }, []);
+
+  const toggleFullscreen = () => {
+    const doc = document as any;
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      exitFullscreen();
     } else {
-      const el = containerRef.current as any;
+      const el = document.documentElement as any;
       (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
       // Lock to landscape when entering fullscreen
       if (screen.orientation && typeof screen.orientation.lock === "function") {
@@ -1464,6 +1803,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Handles: online/offline events, VPN/WiFi↔mobile data switches
   // (navigator.connection), and periodic stall detection.
   useEffect(() => {
+    // Stamp every seek (both start and finish). A seek loads the target
+    // fragment with readyState pinned at 1–2 for 1–4s, which is otherwise
+    // indistinguishable from a genuine stall — stallCheck must not recover
+    // mid-seek (see the stallCheck guard below).
+    const seekedAt = () => { lastSeekAtRef.current = performance.now(); };
+    const videoEl = videoRef.current;
+    videoEl?.addEventListener("seeking", seekedAt);
+    videoEl?.addEventListener("seeked", seekedAt);
+
     const recoverStream = () => {
       const hls = hlsRef.current;
       const video = videoRef.current;
@@ -1477,6 +1825,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       // Try lightweight recover first, fall back to full reload
       try {
         hls.recoverMediaError();
+        // recoverMediaError() detaches → reattaches the media element, and
+        // the detach (removeAttribute('src') + load()) resets currentTime to
+        // 0 and tears down every SourceBuffer — hls.js never seeks back.
+        // Restore position + play state here or the element sits at 0 while
+        // the buffer starts at `pos`: readyState stays <3 forever and every
+        // later stall tick re-fires recovery (frozen at 0:00).
+        if (Math.abs(video.currentTime - pos) > 1) video.currentTime = pos;
+        if (wasPlaying) video.play().catch(() => {});
       } catch {
         if (srcs.length > 0) {
           loadHls(srcs, hdrs, false);
@@ -1508,14 +1864,26 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       setTimeout(recoverStream, 500);
     };
 
-    // Periodic stall detection — if playback is frozen for >8s,
+    // Periodic stall detection — if playback is frozen for >8s (two ticks),
     // try to recover even without a network event.
+    // Two guards keep this from nuking a healthy seek:
+    //  • skip while seeking / <3s after a seek (fragment fetch holds
+    //    readyState at 1–2 the whole time), and
+    //  • demand 2 consecutive stalled ticks, so one slow buffer refill can't
+    //    trigger recoverMediaError() (which detaches the media and resets
+    //    currentTime — recoverStream now repairs that, but avoid it anyway).
+    let stalledTicks = 0;
     const stallCheck = setInterval(() => {
       const video = videoRef.current;
       const hls = hlsRef.current;
-      if (!video || !hls || !hls.url || video.paused) return;
-      if (video.readyState >= 3) return; // enough data, not stalled
-      // Stalled and was playing — try to recover
+      if (!video || !hls || !hls.url || video.paused) { stalledTicks = 0; return; }
+      if (video.readyState >= 3) { stalledTicks = 0; return; } // enough data, not stalled
+      // Mid-seek or just-seeked → not a stall, don't count it either way.
+      if (video.seeking || performance.now() - lastSeekAtRef.current < 3000) return;
+      // Stalled and was playing — 2nd consecutive tick → try to recover
+      stalledTicks += 1;
+      if (stalledTicks < 2) return;
+      stalledTicks = 0;
       recoverStream();
     }, 8000);
 
@@ -1527,6 +1895,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
       conn?.removeEventListener("change", handleConnectionChange);
+      videoEl?.removeEventListener("seeking", seekedAt);
+      videoEl?.removeEventListener("seeked", seekedAt);
       clearInterval(stallCheck);
     };
   }, [sources, streamHeaders, loadHls]);
@@ -1541,7 +1911,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
       // If video is stalled, try to recover
       if (video.readyState < 3 && hls.url) {
-        try { hls.recoverMediaError(); } catch { /* ignore */ }
+        // Capture state before recovery: same detach caveat as recoverStream —
+        // recoverMediaError() does detachMedia()→attachMedia(), and the detach
+        // (removeAttribute('src') + load()) resets currentTime to 0 and drops
+        // the SourceBuffers, so the resume below is mandatory or the tab
+        // comes back frozen at 0:00.
+        const pos = video.currentTime;
+        const wasPlaying = video.paused === false;
+        try {
+          hls.recoverMediaError();
+          if (Math.abs(video.currentTime - pos) > 1) video.currentTime = pos;
+          if (wasPlaying) video.play().catch(() => {});
+        } catch { /* ignore */ }
       }
     };
 
@@ -1633,6 +2014,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           resetControlsTimer();
           break;
         case 'Escape':
+          // Open dropdowns unwind one layer per press: the franchise list
+          // first, then the rest (⋯ menu, pickers, the drawer itself).
+          if (franchiseOpenRef.current) {
+            setFranchiseOpen(false);
+            break;
+          }
           setCountdown(null);
           closeMore();
           setShowServerPicker(false);
@@ -1675,22 +2062,47 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── ⋯ "More" menu — one popup, two placements ────────────────────
-  // Windowed it hangs BELOW the player (outside the clipped box, so a short
-  // windowed player never cuts it off); fullscreen it anchors above the
-  // control row. Contents = every control the row hides at this width, plus
-  // the low-priority toggles that never sit inline.
+  // ─── ⋯ "More" menu — one panel, two anchors ────────────────────
+  // The panel never picks its own spot: `moreMenuAnchor` below does, and
+  // every offset in it resolves against the `relative overflow-hidden`
+  // container, so the menu can never render past the player's frame. Wide
+  // viewports get a popup above the control row; phones get a bottom sheet.
+  // The panel just renders the contents — every control the row hides at
+  // this width, plus the low-priority toggles that never sit inline — and
+  // scrolls internally when it runs out of room.
+  const moreMenuAnchor = isCompact
+    ? // Sheet: docked to the player's bottom edge, capped at 80% of its
+      // height so the scrim above stays tappable; rows grow to 44px.
+      "absolute inset-x-0 bottom-0 max-h-[80%] [&_button]:min-h-11"
+    : // Popup: bottom-right on the 68px line (pb-3 12 + control row 32 +
+      // mb-2 8 + seekbar 16) — clear of the whole control cluster. The
+      // max-height subtracts that 68px plus 8px of headroom from the
+      // container's own height, so a short windowed player scrolls the list
+      // instead of pushing it off the top edge.
+      "absolute right-2 bottom-[68px] w-56 max-h-[calc(100%_-_76px)] sm:right-3";
   const moreMenu = (
     <div
       ref={moreWrapRef}
       role="menu"
       aria-label="More controls"
-      className="w-full rounded-none border border-[var(--accent)]/20 bg-[#131318] py-0.5 shadow-xl backdrop-blur-sm z-50 max-h-[70vh] overflow-y-auto overscroll-contain"
+      className={`rounded-none border border-[var(--accent)]/20 bg-[#131318] py-0.5 shadow-xl backdrop-blur-sm z-50 overflow-y-auto overscroll-contain ${moreMenuAnchor}`}
     >
       {moreSection === null ? (
         <>
-          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">
-            More
+          <div className="flex items-center justify-between gap-2 px-3 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">
+            <span className="py-1">More</span>
+            {/* Sheet-only dismiss target: on phones the sheet is docked over
+                the bottom of the player, so it covers the ⋯ trigger. */}
+            <button
+              type="button"
+              onClick={closeMore}
+              aria-label="Close more controls"
+              className="-mr-1 flex h-11 w-11 shrink-0 items-center justify-center text-[var(--accent)]/60 transition-colors hover:text-[var(--accent)] sm:hidden"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
           {/* Sub / Dub — inline from lg up */}
@@ -1963,7 +2375,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     <div className="w-full">
     <div
       ref={containerRef}
-      className="relative w-full aspect-[2/1] sm:aspect-video bg-black overflow-hidden group outline-none"
+      // Windowed: in-flow, 2:1 → video. Fullscreen: <html> is the fullscreen
+      // element, so the player pins itself to the viewport — above every page
+      // layer (the navbar is z-50) — and fills the screen exactly like the old
+      // element-fullscreen did, with nothing else visible underneath.
+      className={`w-full bg-black overflow-hidden group outline-none ${
+        isFullscreen
+          ? "fixed inset-0 z-[100]"
+          : "relative aspect-[2/1] sm:aspect-video"
+      }`}
       tabIndex={0}
       onMouseMove={handleMouseMove}
       onBlur={(e) => {
@@ -1977,7 +2397,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
       }}
     >
-      {/* Action-glyph keyframes (inline so they ship with the player) */}
+      {/* Action-glyph + switch-overlay keyframes (inline so they ship with the player) */}
       <style>{`
         @keyframes n54-glyph-grow {
           from { transform: scale(0.7); }
@@ -1993,8 +2413,22 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             n54-glyph-grow 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards,
             n54-glyph-fade 620ms linear forwards;
         }
+        /* Accent band sweeping down the switch overlay — the "scan" read */
+        @keyframes n54-switch-sweep {
+          0% { transform: translateY(-60%); opacity: 0; }
+          15% { opacity: 1; }
+          85% { opacity: 1; }
+          100% { transform: translateY(320%); opacity: 0; }
+        }
+        .n54-switch-sweep {
+          animation: n54-switch-sweep 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes n54-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+        .n54-blink { animation: n54-blink 900ms steps(1, end) infinite; }
         @media (prefers-reduced-motion: reduce) {
           .n54-action-glyph { animation: n54-glyph-fade 620ms linear forwards; }
+          .n54-switch-sweep { animation: none; opacity: 0.6; }
+          .n54-blink { animation: none; }
         }
       `}</style>
 
@@ -2039,6 +2473,68 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </div>
             <div className="font-mono text-[10px] text-[var(--accent)]/50 tracking-[0.2em]">
               [ {animeTitle?.substring(0, 20) || "STREAM"} ]
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Switch feedback — armed by the drawer's series dropdown and episode
+          rows (the prev/next + up-next controls share `goToEpisode`, so they
+          get it too). Sits above the HUD (z-20/40), the up-next card (z-45)
+          and the drawer (z-50); pointer-transparent so it can never trap the
+          viewer — it tracks the real load and fades out (dismissal effect
+          above), with a 700ms floor so an instant load never flashes. */}
+      {switchTo && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label={`Switching to ${switchTo.series}, episode ${switchTo.episode}`}
+          className={`absolute inset-0 z-[60] flex flex-col justify-center overflow-hidden bg-black/90 px-6 transition-opacity duration-300 pointer-events-none sm:px-12 ${
+            switchFade ? "opacity-0" : "opacity-100"
+          }`}
+        >
+          {/* CRT scanlines */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backgroundImage:
+                "repeating-linear-gradient(0deg, rgba(0,0,0,0.5) 0px, rgba(0,0,0,0.5) 1px, transparent 1px, transparent 3px)",
+            }}
+          />
+          {/* Accent band sweeping down — the "scan" read */}
+          <div
+            aria-hidden="true"
+            className="n54-switch-sweep pointer-events-none absolute inset-x-0 top-0 h-1/4 bg-gradient-to-b from-transparent via-[var(--accent)]/25 to-transparent"
+          />
+
+          <div className="relative min-w-0">
+            <div className="font-mono text-[10px] uppercase tracking-[0.35em] text-[var(--accent)]/70">
+              {switchTo.kind === "series" ? "// switching series" : "// loading episode"}
+              <span className="n54-blink">_</span>
+            </div>
+
+            <div className="mt-2 truncate text-2xl font-bold uppercase tracking-wider text-[var(--accent)] sm:text-4xl">
+              {switchTo.series}
+            </div>
+
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <span className="shrink-0 border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-1 font-mono text-[11px] font-bold uppercase tracking-wider text-[var(--accent)]">
+                {`EP ${String(switchTo.episode).padStart(2, "0")}`}
+              </span>
+              {switchTo.epTitle && (
+                <span className="min-w-0 truncate font-mono text-xs text-[#9a9aa0]">
+                  {switchTo.epTitle}
+                </span>
+              )}
+            </div>
+
+            <div className="relative mt-5 h-2 w-full max-w-xs overflow-hidden border border-[var(--accent)]/30 bg-[#0a0a0f] sm:max-w-sm">
+              <div className="absolute inset-y-0 left-0 h-full bg-[var(--accent)] animate-loading-bar" />
+            </div>
+
+            <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--accent)]/40">
+              {"> awaiting source\u2026"}
             </div>
           </div>
         </div>
@@ -2604,14 +3100,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
           </div>
 
-          {/* ⋯ menu — fullscreen placement: a picker-style popup anchored
-              above the row, inside the player (vertical room to spare there;
-              windowed mode renders the same menu below the player instead). */}
-          {showMore && isFullscreen && (
-            <div className="absolute right-2 bottom-full mb-2 w-56 sm:right-3">
-              {moreMenu}
-            </div>
-          )}
         </div>
 
       </div>
@@ -2633,7 +3121,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       {/* Episode drawer handle — docked at the MIDDLE of the right edge, the
           only trigger there is (fullscreen-only; windowed mode has no drawer).
           Fades with the control HUD so it never sits on a clean frame. */}
-      {isFullscreen && !drawerOpen && episodes && episodes.length > 0 && (
+      {isFullscreen && !drawerOpen && hasDrawer && (
         <button
           onClick={openDrawer}
           aria-label="Episodes"
@@ -2729,24 +3217,51 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
       {/* Episode drawer — slides in from the right, over the video.
           Rendered inside the container so it is clipped to the player and
-          still works in fullscreen. */}
-      {drawerOpen && episodes && episodes.length > 0 && (
-        <div className="absolute inset-0 z-50">
-          {/* Backdrop */}
+          still works in fullscreen. It stays mounted (closed = off-screen,
+          `inert`, pointer-events-none) so its markup — the franchise dropdown
+          first — ships in the initial HTML instead of only materialising on
+          the first fullscreen tap. */}
+      {hasDrawer && (
+        <div
+          aria-hidden={!drawerOpen}
+          // `inert` keeps the closed drawer out of the tab order and out of
+          // the accessibility tree; React 19 renders it as `inert=""`.
+          inert={!drawerOpen}
+          className={`absolute inset-0 z-50 ${drawerOpen ? "" : "pointer-events-none"}`}
+        >
+          {/* Backdrop — one layer per tap: with the franchise dropdown open,
+              the first tap on the scrim drops the dropdown (this element's
+              pointerdown also closed it via the shared outside-click closer),
+              the next one closes the drawer. */}
           <div
-            onClick={closeDrawer}
+            onPointerDown={() => {
+              franchiseOnScrimRef.current = franchiseOpen;
+            }}
+            onClick={() => {
+              if (franchiseOnScrimRef.current) {
+                franchiseOnScrimRef.current = false;
+                return;
+              }
+              closeDrawer();
+            }}
             aria-hidden="true"
             className={`absolute inset-0 bg-black/70 transition-opacity duration-[250ms] ease-out ${
               drawerIn ? "opacity-100" : "opacity-0"
             }`}
           />
-          {/* Panel */}
+          {/* Panel — `overflow-hidden` is the hard edge: nothing inside it
+              (the franchise dropdown included) can paint past the drawer. */}
           <div
             role="dialog"
-            aria-modal="true"
+            aria-modal={drawerOpen}
             aria-label="Episodes"
-            className={`absolute right-0 top-0 flex h-full w-[320px] max-w-[85%] flex-col border-l border-[var(--accent)]/30 bg-[#131318] shadow-[-12px_0_32px_rgba(0,0,0,0.6)] transition-transform duration-[250ms] ease-out ${
-              drawerIn ? "translate-x-0" : "translate-x-full"
+            // The edge shadow only exists while the drawer is on screen — a
+            // closed (translated-out) panel would otherwise smear its 12px
+            // spread across the right edge of the video at all times.
+            className={`absolute right-0 top-0 flex h-full w-[320px] max-w-[85%] flex-col overflow-hidden border-l border-[var(--accent)]/30 bg-[#131318] transition-transform duration-[250ms] ease-out ${
+              drawerIn
+                ? "translate-x-0 shadow-[-12px_0_32px_rgba(0,0,0,0.6)]"
+                : "translate-x-full"
             }`}
           >
             <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--accent)]/20 px-4 py-3">
@@ -2769,8 +3284,149 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </button>
             </div>
 
+            {/* Franchise / season switcher — ONE control docked at the top of
+                the drawer, above the episode list. The wrapper is the
+                positioning context for the panel, so every offset resolves
+                against it: `top-full` drops the list straight under the
+                trigger (inside the drawer's padding), `max-h` + `overflow-y-auto`
+                cap and scroll it, and the drawer's own `overflow-hidden`
+                clips it as a second, hard boundary — it can never leave the
+                drawer or the player box. */}
+            {hasFranchise && (
+              <div
+                ref={franchiseWrapRef}
+                className="relative shrink-0 border-b border-[var(--accent)]/20 px-3 py-2.5"
+              >
+                <button
+                  type="button"
+                  onClick={() => setFranchiseOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={franchiseOpen}
+                  aria-label="Switch series"
+                  title={currentFranchise?.detail ?? animeTitle}
+                  className={`flex min-h-[44px] w-full items-center gap-2.5 border px-3 text-left transition-colors rounded-none ${
+                    franchiseOpen
+                      ? "border-[var(--accent)] bg-[var(--accent)]/10"
+                      : "border-[var(--accent)]/30 bg-black/40 hover:border-[var(--accent)]/60 hover:bg-[var(--accent)]/10"
+                  }`}
+                >
+                  <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/50">
+                    Series
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-xs text-[var(--accent)]">
+                    {currentFranchise?.title ?? animeTitle}
+                  </span>
+                  <svg
+                    aria-hidden="true"
+                    className={`h-4 w-4 shrink-0 text-[var(--accent)]/60 transition-transform duration-200 ${
+                      franchiseOpen ? "rotate-180" : ""
+                    }`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {franchiseOpen && (
+                  <div
+                    role="menu"
+                    aria-label="Franchise"
+                    className="absolute inset-x-0 top-full z-30 mt-1 max-h-[min(50vh,18rem)] overflow-y-auto overscroll-contain border border-[var(--accent)]/30 bg-[#131318] shadow-xl"
+                  >
+                    {franchise?.map((entry) => {
+                      const isCurrent = entry.current;
+                      const qs = providerQuery
+                        ? `?provider=${encodeURIComponent(providerQuery)}`
+                        : "";
+                      // Same href rules as the watch page's `// Franchise`
+                      // grid: mainline seasons deep-link to episode 1, the
+                      // rest fall through to their detail page.
+                      const href = entry.mainLine
+                        ? `/anime/${entry.id}/watch/1${qs}`
+                        : `/anime/${entry.id}${qs}`;
+
+                      return (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          role="menuitem"
+                          aria-current={isCurrent ? "page" : undefined}
+                          title={entry.detail}
+                          onClick={() => {
+                            setFranchiseOpen(false);
+                            if (isCurrent) return; // already here — just close
+                            closeDrawer();
+                            if (entry.mainLine) {
+                              // Watch-page switch: arm the overlay + handoff,
+                              // then push. Fullscreen lives on <html>, so it
+                              // carries across the remount untouched.
+                              beginSwitch({ kind: "series", series: entry.title, episode: 1 });
+                              router.push(href);
+                            } else {
+                              // Detail page — there is no player to hand over
+                              // to, so drop out of fullscreen deliberately
+                              // rather than strand a fullscreened text page.
+                              exitFullscreen();
+                              router.push(href);
+                            }
+                          }}
+                          className={`flex min-h-[44px] w-full items-center gap-2.5 border-l-2 px-3 py-2.5 text-left transition-colors rounded-none ${
+                            isCurrent
+                              ? "border-[var(--accent)] bg-[var(--accent)]/15"
+                              : entry.tier === "main"
+                                ? "border-l-[var(--accent)]/45 bg-[var(--accent)]/5 hover:bg-[var(--accent)]/10"
+                                : "border-l-transparent hover:bg-[var(--accent)]/5"
+                          }`}
+                        >
+                          {entry.season !== undefined && (
+                            <span
+                              className={`shrink-0 border px-1.5 py-1 font-mono text-[11px] font-bold leading-none tabular-nums ${
+                                isCurrent
+                                  ? "border-[var(--accent)]/50 bg-[var(--accent)]/15 text-[var(--accent)]"
+                                  : "border-[var(--accent)]/30 text-[var(--accent)]/70"
+                              }`}
+                            >
+                              {`S${entry.season}`}
+                            </span>
+                          )}
+                          <span
+                            className={`shrink-0 border px-1.5 py-1 font-mono text-[9px] uppercase leading-none tracking-wider ${
+                              isCurrent
+                                ? "border-[var(--accent)]/40 text-[var(--accent)]/85"
+                                : "border-[var(--accent)]/20 text-[var(--accent)]/55"
+                            }`}
+                          >
+                            {entry.badge}
+                          </span>
+                          <span
+                            className={`min-w-0 flex-1 truncate text-xs ${
+                              isCurrent
+                                ? "text-[var(--accent)]"
+                                : entry.tier === "main"
+                                  ? "text-[#e6e6ea]"
+                                  : "text-[#9a9aa0]"
+                            }`}
+                          >
+                            {entry.title}
+                          </span>
+                          {isCurrent && (
+                            <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/70">
+                              Now
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div ref={drawerListRef} className="flex-1 overflow-y-auto overscroll-contain py-1">
-              {episodes.map((ep) => {
+              {episodes?.map((ep) => {
                 const isCurrent = ep.number === episodeNumber;
                 return (
                   <button
@@ -2812,17 +3468,37 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           </div>
         </div>
       )}
+
+      {/* ⋯ "More" menu — ALWAYS inside the player box. The container is
+          `relative overflow-hidden`, and both the dismiss layer and the panel
+          below are its direct children, so every offset resolves against the
+          player frame — nothing can render past its edge (see `moreMenuAnchor`
+          for the geometry of each shape):
+          • ≥640px: a popup bottom-right above the control cluster, over a
+            transparent catcher that swallows clicks meant for the video, so
+            dismissing the menu never also toggles playback.
+          • <640px: a full-width sheet docked to the player's bottom edge over
+            an in-player scrim, rows grown to 44px for touch.
+          z-40 on the dismiss layer sits above the HUD and stacked overlays
+          (z-20/30), below the panel (z-50) — and below the up-next card
+          (z-45), which stays actionable if it fires mid-menu. */}
+      {showMore && (
+        <>
+          <div
+            ref={moreDismissRef}
+            onClick={closeMore}
+            aria-hidden="true"
+            className={
+              isCompact
+                ? "absolute inset-0 z-40 bg-black/60"
+                : "absolute inset-x-0 top-0 bottom-[68px] z-40"
+            }
+          />
+          {moreMenu}
+        </>
+      )}
     </div>
 
-    {/* ⋯ menu — windowed placement: rendered BELOW the player, outside its
-        overflow-hidden box, so a short windowed player never clips it (the
-        same reason the old settings panel lived here). Fullscreen renders the
-        identical menu inside the player instead — see the row above. */}
-    {showMore && !isFullscreen && (
-      <div className="relative z-40 mt-1 flex justify-end">
-        <div className="w-56">{moreMenu}</div>
-      </div>
-    )}
     </div>
   );
 }
