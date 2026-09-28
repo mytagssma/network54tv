@@ -1,13 +1,35 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { searchAnimeClient, getTrendingClient, groupByFranchise } from "@/lib/anilist";
+import { useState, useEffect, useMemo, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { searchAnimeClient, getTrendingClient, type SearchFilters } from "@/lib/anilist";
 import type { Anime } from "@/types/anime";
 import AnimeCard from "@/components/anime/AnimeCard";
+import {
+  FilterPanel,
+  FilterSelect,
+  FORMATS,
+  GroupedResults,
+  GroupingToggle,
+  ResetButton,
+  SEASONS,
+  SORT_OPTIONS,
+  SearchHeading,
+  SearchRow,
+  SectionHeading,
+  STATUSES,
+  TagFilterGrid,
+  TIME_RANGES,
+  toOptions,
+  type TagMode,
+  type TagState,
+} from "@/components/search";
+
+const FILTER_PANEL_ID = "browse-filter-panel";
 
 function BrowseContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const query = searchParams.get("q") || "";
 
   const [results, setResults] = useState<Anime[]>([]);
@@ -21,11 +43,46 @@ function BrowseContent() {
   const [trendingHasNext, setTrendingHasNext] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
-  // "" = default sort: home page's latest-updates order (queue#8)
+
+  // ── Filters ────────────────────────────────────────────────────────────
+  // Client state: `?q=` stays purely the query, and any change re-runs the
+  // search immediately (initial fetch and load-more both read `filters`).
+  // "" = none-selected ("Any"); sort "" = latest-updates order (queue#8).
+  const [format, setFormat] = useState("");
+  const [season, setSeason] = useState("");
+  const [timeRange, setTimeRange] = useState("");
+  const [status, setStatus] = useState("");
   const [sort, setSort] = useState("");
+  const [tags, setTags] = useState<Record<string, TagState>>({});
+  const [tagMode, setTagMode] = useState<TagMode>("OR");
   // Search filter: cluster results into franchises (seasons/prequels/spin-offs
   // together) — on by default; an explicit sort keeps the fetched order.
   const [groupFranchise, setGroupFranchise] = useState(true);
+  // The panel sits under the same Filters toggle as before and starts open so
+  // the controls stay one click away after a search.
+  const [showFilters, setShowFilters] = useState(true);
+
+  // Memoised so the fetch effect only re-runs when a filter actually changes.
+  const filters = useMemo<SearchFilters | undefined>(() => {
+    const f: SearchFilters = {};
+    if (format) f.format = format;
+    if (season) f.season = season;
+    if (timeRange) f.timeRange = timeRange;
+    if (status) f.status = status;
+    if (sort) f.sort = sort;
+    if (Object.keys(tags).length) {
+      const include = Object.keys(tags).filter((k) => tags[k] === "include");
+      const exclude = Object.keys(tags).filter((k) => tags[k] === "exclude");
+      if (include.length || exclude.length) {
+        f.tagFilter = { include, exclude, mode: tagMode };
+      }
+    }
+    return Object.keys(f).length ? f : undefined;
+  }, [format, season, timeRange, status, sort, tags, tagMode]);
+
+  const hasActiveFilters = Boolean(
+    format || season || timeRange || status || sort || Object.keys(tags).length
+  );
 
   const toCard = (a: Anime) => ({
     id: a.id,
@@ -36,7 +93,36 @@ function BrowseContent() {
     episodes: a.episodes,
   });
 
-  // Fetch initial data when query changes
+  function handleTagToggle(genre: string) {
+    setTags((prev) => {
+      const next = { ...prev };
+      if (!next[genre]) next[genre] = "include";
+      else if (next[genre] === "include") next[genre] = "exclude";
+      else delete next[genre];
+      return next;
+    });
+  }
+
+  // Every control back to its default (grouping included — browse default is on).
+  function resetFilters() {
+    setFormat("");
+    setSeason("");
+    setTimeRange("");
+    setStatus("");
+    setSort("");
+    setTags({});
+    setTagMode("OR");
+    setGroupFranchise(true);
+  }
+
+  // Clear drops the query as well, so it also drops the filters that came
+  // with it and returns to the trending/popular landing view.
+  function handleClear() {
+    resetFilters();
+    router.push("/browse");
+  }
+
+  // Fetch initial data when the query or any filter changes
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -46,7 +132,7 @@ function BrowseContent() {
       setTrendingPage(1);
       if (query) {
         try {
-          const data = await searchAnimeClient(query, 1, 24, sort ? { sort } : undefined);
+          const data = await searchAnimeClient(query, 1, 24, filters);
           if (!cancelled) {
             setResults(data.media);
             setHasNextPage(data.hasNextPage);
@@ -77,14 +163,14 @@ function BrowseContent() {
     }
     load();
     return () => { cancelled = true; };
-  }, [query, sort]);
+  }, [query, filters]);
 
   async function loadMore() {
     setLoadingMore(true);
     try {
       if (query) {
         const nextPage = page + 1;
-        const data = await searchAnimeClient(query, nextPage, 24, sort ? { sort } : undefined);
+        const data = await searchAnimeClient(query, nextPage, 24, filters);
         setResults((prev) => [...prev, ...data.media]);
         setHasNextPage(data.hasNextPage);
         setPage(nextPage);
@@ -102,23 +188,16 @@ function BrowseContent() {
     }
   }
 
-  const title = query ? `Search: ${query}` : "Browse Anime";
-
-  const renderCardGrid = (items: Anime[]) => (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-      {items.map((a) => <AnimeCard key={a.id} anime={toCard(a)} loading={a.id === navigatingId} onClick={() => setNavigatingId(a.id)} />)}
-    </div>
+  const loadMoreButton = () => (
+    <button
+      type="button"
+      onClick={loadMore}
+      disabled={loadingMore}
+      className="min-h-[44px] bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none"
+    >
+      {loadingMore ? "Loading..." : "Load More"}
+    </button>
   );
-
-  // Franchise buckets derived from the accumulated results on every render, so
-  // "Load More" re-buckets incrementally. Lone results render as a flat tail.
-  const groupedResults = groupFranchise
-    ? groupByFranchise(results, { preserveOrder: Boolean(sort) })
-    : [];
-  const franchiseGroups = groupedResults.filter((group) => group.items.length > 1);
-  const standaloneItems = groupedResults
-    .filter((group) => group.items.length === 1)
-    .map((group) => group.items[0]);
 
   let resultsNode: React.ReactNode = null;
   if (loading) {
@@ -128,44 +207,15 @@ function BrowseContent() {
   } else if (query) {
     resultsNode = results.length > 0 ? (
       <div>
-        {groupFranchise && franchiseGroups.length > 0 ? (
-          <>
-            {franchiseGroups.map((group) => (
-              <section key={group.items[0].id} className="mb-8 last:mb-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-4 w-1 bg-[var(--accent)]/60" />
-                  <h3 className="text-sm font-black text-[var(--accent)]/80 uppercase tracking-wider font-mono">// {group.label}</h3>
-                  <span className="text-[11px] text-[var(--text-decorative)] font-mono">
-                    {group.detail ? `${group.detail} · ` : ""}
-                    {group.items.length} title{group.items.length === 1 ? "" : "s"}
-                  </span>
-                </div>
-                {renderCardGrid(group.items)}
-              </section>
-            ))}
-            {standaloneItems.length > 0 && (
-              <div className="mt-8">
-                {/* Dimmer divider: separates franchise sections from the flat tail */}
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-4 w-1 bg-[var(--accent)]/40" />
-                  <h3 className="text-sm font-medium text-[var(--accent)]/50 uppercase tracking-wider font-mono">// More Titles</h3>
-                  <span className="text-[11px] text-[var(--text-decorative)]/70 font-mono">
-                    {standaloneItems.length} standalone title{standaloneItems.length === 1 ? "" : "s"}
-                  </span>
-                </div>
-                {renderCardGrid(standaloneItems)}
-              </div>
-            )}
-          </>
-        ) : (
-          renderCardGrid(results)
-        )}
+        <GroupedResults
+          items={results}
+          groupFranchise={groupFranchise}
+          preserveOrder={Boolean(sort)}
+          navigatingId={navigatingId}
+          onNavigate={setNavigatingId}
+        />
         {hasNextPage && (
-          <div className="flex justify-center mt-8">
-            <button type="button" onClick={loadMore} disabled={loadingMore} className="bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none min-h-[44px] sm:min-h-0">
-              {loadingMore ? "Loading..." : "Load More"}
-            </button>
-          </div>
+          <div className="flex justify-center mt-8">{loadMoreButton()}</div>
         )}
       </div>
     ) : (
@@ -177,33 +227,20 @@ function BrowseContent() {
     resultsNode = (
       <div>
         <div className="mb-10">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-5 w-1 bg-[var(--accent)]" />
-            <svg className="w-4 h-4 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 16.121A3 3 0 1012.015 11L11 14H9c0 .768.293 1.536.879 2.121z" />
-            </svg>
-            <h2 className="text-lg font-black text-[var(--accent)] uppercase tracking-wider font-mono">// Trending Now</h2>
-          </div>
+          <SectionHeading title="Trending Now" icon={<FlameIcon className="h-4 w-4 text-[var(--accent)]" />} />
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
             {trending.map((a) => <AnimeCard key={a.id} anime={toCard(a)} loading={a.id === navigatingId} onClick={() => setNavigatingId(a.id)} />)}
           </div>
           {trendingHasNext && (
-            <div className="flex justify-center mt-6">
-              <button type="button" onClick={loadMore} disabled={loadingMore} className="bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none min-h-[44px] sm:min-h-0">
-                {loadingMore ? "Loading..." : "Load More"}
-              </button>
-            </div>
+            <div className="flex justify-center mt-6">{loadMoreButton()}</div>
           )}
         </div>
         <div>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-5 w-1 bg-[var(--accent)]/60" />
-            <svg className="w-4 h-4 text-[var(--accent)]/70" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-            </svg>
-            <h2 className="text-lg font-black text-[var(--accent)]/70 uppercase tracking-wider font-mono">// Most Popular</h2>
-          </div>
+          <SectionHeading
+            title="Most Popular"
+            tone="soft"
+            icon={<StarIcon className="h-4 w-4 text-[var(--accent)]/70" />}
+          />
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
             {popular.map((a) => <AnimeCard key={a.id} anime={toCard(a)} loading={a.id === navigatingId} onClick={() => setNavigatingId(a.id)} />)}
           </div>
@@ -215,58 +252,70 @@ function BrowseContent() {
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[var(--accent)] mb-6 uppercase tracking-wider">
-          // {title}
-        </h1>
-        <SearchBar initialQuery={query} />
-        {query && (
-          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 p-3 bg-[var(--panel)] border border-[var(--accent)]/20 rounded-none">
-            <span className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">// Filters</span>
-            <div className="flex items-center gap-2">
-              <label htmlFor="browse-sort" className="text-xs text-[var(--accent)]/70 uppercase tracking-wider font-mono">Sort</label>
-              <select
-                id="browse-sort"
+        <SearchHeading title="Browse Anime" query={query} />
+        {/* URL-driven GET search: submitting navigates to /browse?q=... */}
+        <SearchRow
+          action="/browse"
+          initialValue={query}
+          onClear={query ? handleClear : undefined}
+          filters={
+            query
+              ? {
+                  open: showFilters,
+                  active: hasActiveFilters,
+                  onToggle: () => setShowFilters((prev) => !prev),
+                  panelId: FILTER_PANEL_ID,
+                }
+              : undefined
+          }
+        >
+          {query && (
+            <FilterPanel id={FILTER_PANEL_ID} open={showFilters}>
+              <FilterSelect
+                label="Format"
+                value={format}
+                onChange={setFormat}
+                options={toOptions(FORMATS)}
+              />
+              <FilterSelect
+                label="Season"
+                value={season}
+                onChange={setSeason}
+                options={toOptions(SEASONS)}
+              />
+              <FilterSelect
+                label="Time Range"
+                value={timeRange}
+                onChange={setTimeRange}
+                options={TIME_RANGES}
+              />
+              <FilterSelect
+                label="Sort"
                 value={sort}
-                onChange={(e) => setSort(e.target.value)}
-                className="bg-[var(--background)] border border-[var(--accent)]/20 px-3 py-1.5 text-sm text-[var(--accent)] focus:outline-none focus:border-[var(--accent)] transition-colors rounded-none"
-              >
-                <option value="">Latest Updates</option>
-                <option value="SCORE_DESC">Score</option>
-                <option value="TRENDING_DESC">Trending</option>
-                <option value="POPULARITY_DESC">Popularity</option>
-                <option value="START_DATE_DESC">Newest Release</option>
-              </select>
-            </div>
-            <button
-              type="button"
-              onClick={() => setGroupFranchise((prev) => !prev)}
-              aria-pressed={groupFranchise}
-              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 font-mono uppercase tracking-wider border transition-colors rounded-none min-h-[36px] ${
-                groupFranchise
-                  ? "bg-[var(--accent)] border-[var(--accent)] text-black"
-                  : "bg-transparent border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10"
-              }`}
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
-              </svg>
-              Group by Franchise
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSort("");
-                setGroupFranchise(true);
-              }}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 font-mono uppercase tracking-wider border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none min-h-[36px]"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              Reset
-            </button>
-          </div>
-        )}
+                onChange={setSort}
+                options={SORT_OPTIONS}
+                noneLabel="Latest Updates"
+              />
+              <FilterSelect
+                label="Status"
+                value={status}
+                onChange={setStatus}
+                options={toOptions(STATUSES)}
+              />
+              <GroupingToggle
+                active={groupFranchise}
+                onClick={() => setGroupFranchise((prev) => !prev)}
+              />
+              <ResetButton onClick={resetFilters} />
+              <TagFilterGrid
+                tags={tags}
+                onToggle={handleTagToggle}
+                mode={tagMode}
+                onModeToggle={() => setTagMode((mode) => (mode === "OR" ? "AND" : "OR"))}
+              />
+            </FilterPanel>
+          )}
+        </SearchRow>
       </div>
       {resultsNode}
     </div>
@@ -281,28 +330,19 @@ export default function BrowsePage() {
   );
 }
 
-function SearchBar({ initialQuery }: { initialQuery: string }) {
+function FlameIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
-    <div className="max-w-xl">
-      <form action="/browse" method="GET" className="relative group">
-        <svg
-          className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-decorative)]"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          aria-hidden="true"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-        <input type="text" name="q" defaultValue={initialQuery} placeholder="Search anime..."
-          className="w-full bg-[var(--panel)] border border-[var(--accent)]/30 text-white pl-10 pr-12 py-3 outline-none transition-all duration-300 focus:border-[var(--accent)] focus:accent-shadow-sm placeholder:text-[var(--text-decorative)] font-mono text-sm rounded-none" />
-        <button type="submit" aria-label="Search" className="absolute right-1 top-1/2 -translate-y-1/2 px-3 py-2 text-[var(--accent)] hover:brightness-125 transition-colors min-h-[44px] sm:min-h-0 flex items-center">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
-          </svg>
-        </button>
-      </form>
-    </div>
+    <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true" {...props}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 16.121A3 3 0 1012.015 11L11 14H9c0 .768.293 1.536.879 2.121z" />
+    </svg>
+  );
+}
+
+function StarIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true" {...props}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+    </svg>
   );
 }
