@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import ExpandableDescription from "@/components/ui/ExpandableDescription";
 import EpisodeListFetcher from "@/components/anime/EpisodeListFetcher";
 import FranchiseRow from "@/components/anime/FranchiseRow";
+import { getFranchiseItems } from "@/lib/franchise";
 
 export const revalidate = 300;
 
@@ -21,8 +22,12 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
 
   // getAnimeById maps DETAIL_QUERY down to `Anime` (relations dropped), so pull
   // the raw media too for the franchise row — same query, so Next's fetch cache
-  // (revalidate: 300) serves it from the request getAnimeById just made.
+  // (revalidate: 300) serves it from the request getAnimeById just made. The
+  // resolver then walks the relation graph transitively (bounded BFS over batch
+  // `id_in` fetches, each cached for 300s) so seasons that are only linked
+  // through *other* entries show up here too.
   const fullMedia = await getAnimeFull(animeId);
+  const franchiseItems = await getFranchiseItems(animeId, fullMedia);
 
   return (
     <div className="min-h-screen bg-[var(--background)] text-white">
@@ -122,7 +127,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
         </div>
 
         {/* ── Same franchise — compact row of related entries (hidden when none) ── */}
-        <FranchiseRow media={fullMedia} currentId={animeId} />
+        <FranchiseRow items={franchiseItems} currentId={animeId} />
 
         {/* ── Episode List (client-fetched, responds to provider changes) ── */}
         <EpisodeListFetcher animeTitle={anime.title} animeId={animeId} initialEpisodes={[]} />

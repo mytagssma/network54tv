@@ -6,6 +6,7 @@ import EpisodeBrowser from "@/components/watch/EpisodeBrowser";
 import FranchiseStrip, {
   buildFranchiseEntries,
 } from "@/components/watch/FranchiseStrip";
+import { getFranchiseItems } from "@/lib/franchise";
 import Link from "next/link";
 
 export const revalidate = 0;
@@ -27,12 +28,18 @@ export default async function WatchPage({ params, searchParams }: Props) {
 
   // getAnimeById maps DETAIL_QUERY down to `Anime` (no relations), so pull the
   // raw media too for the franchise strip — same query, so Next's fetch cache
-  // (revalidate: 300) serves it from the request getAnimeById just made.
+  // (revalidate: 300) serves it from the request getAnimeById just made. The
+  // shared resolver then expands the relation graph transitively (batched
+  // `id_in` fetches, each cached for 300s) so this strip lists exactly the
+  // same entries, with the same season numbers, as the detail page's row.
   const [fullMedia, episodes] = await Promise.all([
     getAnimeFull(animeId),
     getEpisodes(anime.title, animeId, provider),
   ]);
-  const franchise = buildFranchiseEntries(fullMedia, animeId, anime.title);
+  const franchise = buildFranchiseEntries(
+    await getFranchiseItems(animeId, fullMedia),
+    animeId
+  );
 
   // Find current episode's providerId for consistent stream fetching
   const currentEp = episodes.find((ep) => ep.number === episodeNumber);
@@ -90,6 +97,9 @@ export default async function WatchPage({ params, searchParams }: Props) {
         providerId={episodeProviderId}
         providerQuery={provider}
         episodes={availableEpisodes.map((ep) => ({ number: ep.number, title: ep.title }))}
+        // Same entries as the `// Franchise` grid below — the fullscreen
+        // drawer's series dropdown is fed from this one list.
+        franchise={franchise}
       />
 
       {/* Episode navigation */}
@@ -149,7 +159,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
       {/* Franchise / season switcher (hidden when there are no relations) */}
       <FranchiseStrip entries={franchise} provider={provider} />
 
-      {/* Section bar + paged episode selector — bounded, scrolls internally */}
+      {/* Paged episode selector — the full run, natural height */}
       {episodes.length > 0 && (
         <div className="mt-8">
           <EpisodeBrowser

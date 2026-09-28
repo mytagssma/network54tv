@@ -1,4 +1,8 @@
 import type { Anime, AnimeRelation } from "@/types/anime";
+// Shared franchise eligibility — the detail row, the watch strip and this
+// client-side grouping must agree on what counts as a franchise entry (and
+// which edges count as a link). See `src/lib/franchise.ts`.
+import { IGNORED_RELATION_TYPES, isFranchiseFormat } from "@/lib/franchise";
 
 const ANILIST_API = "https://graphql.anilist.co";
 
@@ -908,12 +912,17 @@ export async function getAnimeByIdClient(id: number): Promise<Anime | null> {
 // Boruto (2017) never showed up together. This pass clusters results into
 // FRANCHISES instead: union-find over the AniList `relations` edges whose
 // target is also present in the fetched result set (so manga/SOURCE targets
-// drop out automatically — results are `type: ANIME` only). Inside a cluster
-// the PREQUEL→SEQUEL chain is walked from the earliest `startDate` to derive
-// "Season 1/2/3…" numbers, prequels become "Prequel" and everything else
-// (ONA/OVA/side-stories) keeps its format as a label. Fully client-side and
-// dependency-free; recomputed from the accumulated result list on every
-// render, so "Load More" re-buckets incrementally.
+// drop out automatically — results are `type: ANIME` only). Membership and
+// edge rules are the shared ones from `src/lib/franchise.ts`: only TV /
+// TV_SHORT / MOVIE / SPECIAL / OVA / ONA entries join a group (MUSIC never
+// does — it would surface a PV inside a season run), and CHARACTER/PREVIEW
+// edges never link anything, so grouping agrees with the detail row and the
+// watch strip. Inside a cluster the PREQUEL→SEQUEL chain is walked from the
+// earliest `startDate` to derive "Season 1/2/3…" numbers, prequels become
+// "Prequel" and everything else (ONA/OVA/side-stories) keeps its format as a
+// label. Fully client-side and dependency-free; recomputed from the
+// accumulated result list on every render, so "Load More" re-buckets
+// incrementally.
 
 export interface SeasonGroup {
   /** Franchise title (cluster root) or the lone title for a standalone result. */
@@ -933,8 +942,6 @@ export interface FranchiseGroupOptions {
   preserveOrder?: boolean;
 }
 
-/** Crossover edges — clustering these would merge unrelated franchises. */
-const IGNORED_RELATION_TYPES = new Set(["CHARACTER"]);
 /** Formats that can be a genuine new TV season of the same source material. */
 const TV_ONLY_FORMATS = new Set(["TV"]);
 /** Links that mean "alternate take / extra", not "next season". */
@@ -971,6 +978,12 @@ function formatLabel(anime: Anime): string {
  * Union-find over `relations` edges whose target id is in the result set.
  * Clusters keep first-appearance order, so group order follows the fetched
  * ordering (latest-updates, fuzzy tiers or an explicit sort).
+ *
+ * Eligibility mirrors the franchise resolver exactly: an entry only joins a
+ * cluster when its format is one of TV / TV_SHORT / MOVIE / SPECIAL / OVA /
+ * ONA (so a MUSIC PV never rides along with the show it soundtracks — it
+ * stays a standalone result), and only non-ignored edges count (no
+ * CHARACTER / PREVIEW links).
  */
 function clusterByFranchise(items: Anime[]): Anime[][] {
   const indexOf = new Map<number, number>();
@@ -999,11 +1012,15 @@ function clusterByFranchise(items: Anime[]): Anime[][] {
   };
 
   items.forEach((item, i) => {
+    // Ineligible format → never a franchise member (checked from both ends,
+    // since either side of an edge could be the PV / CD entry).
+    if (!isFranchiseFormat(item.format)) return;
     for (const rel of item.relations || []) {
       if (typeof rel?.id !== "number" || rel.id === item.id) continue;
       if (IGNORED_RELATION_TYPES.has(String(rel.relationType || "").toUpperCase())) continue;
       const j = indexOf.get(rel.id);
       if (j === undefined || j === i) continue;
+      if (!isFranchiseFormat(items[j].format)) continue;
       union(i, j);
     }
   });
