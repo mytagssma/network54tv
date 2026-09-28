@@ -1,5 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAudioFlags, getEpisodes } from "@/lib/providers";
+import { getAnimeById } from "@/lib/anilist";
+
+/**
+ * AniList's episode count for `id` (fetch-cached, revalidate 300), or
+ * `undefined` when unknown. It powers the plausibility gate inside
+ * `getEpisodes`: reject clearly-wrong lists (a lone "Full" episode for a
+ * multi-episode anime) and prefer the provider whose count matches.
+ */
+async function resolveExpectedEpisodeCount(id: number): Promise<number | undefined> {
+  try {
+    const anime = await getAnimeById(id);
+    return typeof anime?.episodes === "number" && anime.episodes > 0 ? anime.episodes : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
@@ -20,7 +36,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const episodes = await getEpisodes(title, animeId, provider);
+    const expectedCount = await resolveExpectedEpisodeCount(animeId);
+    const episodes = await getEpisodes(title, animeId, provider, expectedCount);
     const { episodes: withFlags, audio } = await getAudioFlags(episodes, animeId, probeAudio);
     // `{ episodes }` is the stable shape (watch page / availability consumers);
     // `audio` is additive.

@@ -18,6 +18,7 @@ import {
   configure,
 } from "kaizoku-core";
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
+import { getAnimeById } from "@/lib/anilist";
 
 // ─── Wire scrape proxy for Cloudflare-protected providers ──────────────
 // kaizoku-core reads SCRAPE_PROXY_URL/SCRAPE_PROXY_KEY from env automatically,
@@ -81,13 +82,34 @@ function normalize(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
 }
 
+/**
+ * Token-level Jaccard similarity between two (already normalizable) titles.
+ * Used to decide whether a lone search hit still looks like the requested
+ * anime — e.g. "spy x family" vs "spy family" (the `×` is stripped by
+ * `normalize`, so the substring test below misses while the anime matches).
+ */
+function titleSimilarity(a: string, b: string): number {
+  const setA = new Set(normalize(a).split(/\s+/).filter(Boolean));
+  const setB = new Set(normalize(b).split(/\s+/).filter(Boolean));
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let shared = 0;
+  for (const token of setA) if (setB.has(token)) shared++;
+  return shared / (setA.size + setB.size - shared);
+}
+
+/** Minimum similarity for accepting a non-title-matching search fallback. */
+const SEARCH_FALLBACK_MIN_SIMILARITY = 0.5;
+
 // ─── Provider Adapters ────────────────────────────────────────────────
 
 /**
  * Try to find anime matching `title` using a provider's `search` function.
  * Returns an ordered, deduped list of provider-specific candidate IDs:
- * all title-matching results first (original order), then `results[0]`
- * as a fallback if nothing title-matched.
+ * all title-matching results first (original order). When nothing matched,
+ * a fallback is returned only if the search produced exactly ONE result and
+ * its title is still recognisably the same anime (≥ `SEARCH_FALLBACK_MIN_SIMILARITY`
+ * token overlap). Unconditionally taking `results[0]` used to attach a
+ * different anime's episode list to the page.
  */
 async function searchProvider(
   providerName: string,
@@ -103,11 +125,11 @@ async function searchProvider(
     const candidates: (string | number)[] = [];
     const seen = new Set<string | number>();
     const idOf = (r: any): string | number | null => r?.id ?? r?.animeId ?? null;
+    const nameOf = (r: any): string =>
+      typeof r.title === "string" ? r.title : r.title?.romaji || r.title?.english || "";
 
     for (const r of results) {
-      const rName = normalize(
-        typeof r.title === "string" ? r.title : r.title?.romaji || r.title?.english || ""
-      );
+      const rName = normalize(nameOf(r));
       if (!rName.includes(clean) && !clean.includes(rName)) continue;
       const id = idOf(r);
       if (id === null || seen.has(id)) continue;
@@ -116,8 +138,13 @@ async function searchProvider(
     }
     if (candidates.length > 0) return candidates;
 
-    const fallback = idOf(results[0]);
-    return fallback !== null ? [fallback] : [];
+    // No title match: only ever accept a sole search hit whose title still
+    // scores against the requested one — never a blind `results[0]`.
+    if (results.length !== 1) return [];
+    const lone = results[0];
+    if (titleSimilarity(clean, nameOf(lone)) < SEARCH_FALLBACK_MIN_SIMILARITY) return [];
+    const loneId = idOf(lone);
+    return loneId !== null ? [loneId] : [];
   } catch (err) {
     console.warn(`[providers] searchProvider(${providerName}) failed:`, err instanceof Error ? err.message : err);
     return [];
@@ -471,11 +498,50 @@ export async function getMegaPlaySources(
 
 // ─── Episode Availability Filter & Cache ─────────────────────────────
 
-const availabilityCache = new Map<string, Episode[]>();
-const AVAILABILITY_CACHE_MAX = 200;
+interface AvailabilityEntry {
+  episodes: Episode[];
+  expiresAt: number;
+}
 
-function getAvailabilityCacheKey(title: string, anilistId?: number, providerName?: string): string {
-  return `${providerName || "auto"}::${anilistId || ""}:${normalize(title)}`;
+const availabilityCache = new Map<string, AvailabilityEntry>();
+const AVAILABILITY_CACHE_MAX = 200;
+/**
+ * TTL is mandatory here: a single poisoned fetch (e.g. anikoto's lone "Full"
+ * episode during a megaplay/kickassanime hiccup) used to be memoised for the
+ * whole process lifetime. 5 minutes matches the AniList revalidate window.
+ */
+const AVAILABILITY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * The expected count is part of the key: a list cached by an ungated caller
+ * (no AniList count available) must not be served to a gated one, and vice
+ * versa — they were scored under different rules.
+ */
+function getAvailabilityCacheKey(
+  title: string,
+  anilistId?: number,
+  providerName?: string,
+  expectedCount?: number
+): string {
+  return `${providerName || "auto"}::${anilistId || ""}:${expectedCount ?? ""}:${normalize(title)}`;
+}
+
+function readAvailabilityCache(key: string): Episode[] | undefined {
+  const entry = availabilityCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() >= entry.expiresAt) {
+    availabilityCache.delete(key);
+    return undefined;
+  }
+  return entry.episodes;
+}
+
+function writeAvailabilityCache(key: string, episodes: Episode[]): void {
+  availabilityCache.set(key, { episodes, expiresAt: Date.now() + AVAILABILITY_CACHE_TTL_MS });
+  if (availabilityCache.size > AVAILABILITY_CACHE_MAX) {
+    const firstKey = availabilityCache.keys().next().value;
+    if (firstKey) availabilityCache.delete(firstKey);
+  }
 }
 
 function isEpisodeAvailable(ep: Episode): boolean {
@@ -688,62 +754,117 @@ export async function getAudioFlags(
   };
 }
 
+// ─── Plausibility gate ───────────────────────────────────────────────
+
+/**
+ * Episode titles that mark a lone entry as synthetic: providers that fail to
+ * resolve a real listing answer with one episode called "Full" (anikoto) or
+ * an unnumbered "Episode 1". Applied to `normalize()`d titles.
+ */
+const GENERIC_EPISODE_TITLE_RE =
+  /^(full|complete|unknown|na|video|stream|watch|online|anime|series|movie|episode|ep|part)(\s+(full|complete|episode|ep|movie|version|show|anime|series|part|\d+))*$/;
+
+/** A one-entry list whose only episode carries a generic/absent title. */
+function isSuspectSingleEpisodeList(episodes: Episode[]): boolean {
+  if (episodes.length !== 1) return false;
+  const title = (episodes[0]?.title ?? "").trim();
+  if (!title) return true;
+  return GENERIC_EPISODE_TITLE_RE.test(normalize(title));
+}
+
+/**
+ * Score a candidate list against the expected episode count (when known).
+ * Higher wins; `null` means "clearly wrong — never serve this".
+ *
+ * - exact count → `0` (unbeatable)
+ * - otherwise → `-|actual - expected|`, so the closest list wins
+ * - a lone episode for an anime known to have more → `null`
+ *
+ * Without an expected count every non-suspect list ties at `0`, so the first
+ * provider in preference order still wins (previous behaviour) while suspect
+ * single-"Full" lists sink to the bottom — they only get served when nothing
+ * better exists.
+ */
+function scoreEpisodeList(episodes: Episode[], expectedCount?: number): number | null {
+  if (episodes.length === 0) return null;
+  if (expectedCount && expectedCount > 0) {
+    if (episodes.length === 1 && expectedCount > 1) return null;
+    return -Math.abs(episodes.length - expectedCount);
+  }
+  return isSuspectSingleEpisodeList(episodes) ? -1_000_000 : 0;
+}
+
+/** AniList's episode count for `anilistId` (fetch-cached, revalidate 300). */
+async function resolveExpectedEpisodeCount(anilistId?: number): Promise<number | undefined> {
+  if (!anilistId) return undefined;
+  try {
+    const anime = await getAnimeById(anilistId);
+    return typeof anime?.episodes === "number" && anime.episodes > 0 ? anime.episodes : undefined;
+  } catch {
+    return undefined; // gate degrades to the suspect-title heuristic
+  }
+}
+
+/** Map a provider session's raw episodes onto the shared `Episode` shape. */
+function sessionToEpisodes(session: ProviderSession, providerId: string): Episode[] {
+  return session.episodes
+    .map((ep: any) => ({
+      id: ep.id,
+      number: ep.number,
+      title: ep.title || undefined,
+      image: ep.image || ep.img || undefined,
+      providerId,
+      hasDub: ep.hasDub ?? null,
+      hasSub: ep.hasSub ?? null,
+      airDate: ep.airDate || undefined,
+    }))
+    .sort((a: Episode, b: Episode) => a.number - b.number);
+}
+
 // ─── Public API ───────────────────────────────────────────────────────
 
 /**
  * Fetch the episode list for an anime by trying all providers.
  * Filters out unavailable episodes (no sources / unstreamable).
- * Returns the first provider that successfully returns available episodes.
- * If `providerName` is given, only that provider is tried.
+ *
+ * Auto mode collects candidate lists and returns the BEST one instead of the
+ * first non-empty one: the count closest to `expectedCount` wins, and lists
+ * that are clearly wrong (a lone "Full" episode for a multi-episode anime) are
+ * rejected outright. `expectedCount` is AniList's episode count; when omitted
+ * it is resolved internally (fetch-cached) so every caller gets the gate.
+ *
+ * If `providerName` is given, only that provider is tried and its raw list is
+ * returned un-gated (explicit/debug provider selection).
  */
 export async function getEpisodes(
   animeTitle: string,
   anilistId?: number,
-  providerName?: string
+  providerName?: string,
+  expectedCount?: number
 ): Promise<Episode[]> {
-  const cacheKey = getAvailabilityCacheKey(animeTitle, anilistId, providerName);
-  const cached = availabilityCache.get(cacheKey);
+  // A forced provider never compares against other lists, so don't spend an
+  // AniList lookup resolving a count it will not use.
+  const expected =
+    expectedCount ?? (providerName ? undefined : await resolveExpectedEpisodeCount(anilistId));
+
+  const cacheKey = getAvailabilityCacheKey(animeTitle, anilistId, providerName, expected);
+  const cached = readAvailabilityCache(cacheKey);
   if (cached) return cached;
 
   let candidateEpisodes: Episode[] = [];
 
-  // Try specific provider if requested
+  // Try specific provider if requested (un-gated: exactly what it lists).
   if (providerName) {
     if (providerName === "megaplay" && anilistId) {
       const session = await getMegaPlaySession(anilistId, animeTitle);
-      if (session) {
-        candidateEpisodes = session.episodes
-          .map((ep: any) => ({
-            id: ep.id,
-            number: ep.number,
-            title: ep.title || undefined,
-            image: ep.image || ep.img || undefined,
-            providerId: "megaplay" as const,
-            hasDub: ep.hasDub ?? null,
-            hasSub: ep.hasSub ?? null,
-            airDate: ep.airDate || undefined,
-          }))
-          .sort((a: Episode, b: Episode) => a.number - b.number);
-      }
+      if (session) candidateEpisodes = sessionToEpisodes(session, "megaplay");
     } else {
       for (const provider of PROVIDERS) {
         if (provider.name !== providerName) continue;
         try {
           const session = await provider.getSession(animeTitle, anilistId);
           if (!session) continue;
-
-          candidateEpisodes = session.episodes
-            .map((ep: any) => ({
-              id: ep.id,
-              number: ep.number,
-              title: ep.title || undefined,
-              image: ep.image || ep.img || undefined,
-              providerId: provider.name as any,
-              hasDub: ep.hasDub ?? null,
-              hasSub: ep.hasSub ?? null,
-              airDate: ep.airDate || undefined,
-            }))
-            .sort((a: Episode, b: Episode) => a.number - b.number);
+          candidateEpisodes = sessionToEpisodes(session, provider.name);
           break;
         } catch (err) {
           console.warn(`[providers] getEpisodes(${providerName}) getSession failed:`, err instanceof Error ? err.message : err);
@@ -752,67 +873,59 @@ export async function getEpisodes(
       }
     }
   } else {
+    const best: { episodes: Episode[] | null; score: number } = { episodes: null, score: -Infinity };
+    const consider = (session: ProviderSession | null, providerId: string): void => {
+      if (!session || session.episodes.length === 0) return;
+      const episodes = sessionToEpisodes(session, providerId);
+      const score = scoreEpisodeList(episodes, expected);
+      if (score === null) {
+        console.warn(
+          `[providers] getEpisodes: rejected implausible ${providerId} list ` +
+            `(${episodes.length} ep, expected ${expected ?? "?"}) for "${animeTitle}"`
+        );
+        return;
+      }
+      if (score > best.score) {
+        best.episodes = episodes;
+        best.score = score;
+      }
+    };
+
     // Try megaplay first if we have an AniList ID (it's most reliable)
     if (anilistId) {
       try {
-        const session = await getMegaPlaySession(anilistId, animeTitle);
-        if (session) {
-          candidateEpisodes = session.episodes
-            .map((ep: any) => ({
-              id: ep.id,
-              number: ep.number,
-              title: ep.title || undefined,
-              image: ep.image || ep.img || undefined,
-              providerId: "megaplay" as const,
-              hasDub: ep.hasDub ?? null,
-              hasSub: ep.hasSub ?? null,
-              airDate: ep.airDate || undefined,
-            }))
-            .sort((a: Episode, b: Episode) => a.number - b.number);
-        }
+        consider(await getMegaPlaySession(anilistId, animeTitle), "megaplay");
       } catch (err) {
         console.warn(`[providers] getEpisodes megaplay failed:`, err instanceof Error ? err.message : err);
         // fall through
       }
     }
 
-    // Try each provider in order if megaplay yielded no episodes
-    if (candidateEpisodes.length === 0) {
+    // Walk the remaining providers and keep the BEST list — stopping at the
+    // first non-empty one is what let anikoto's single "Full" episode win
+    // whenever megaplay/kickassanime hiccups.
+    if (best.score < 0) {
       for (const provider of PROVIDERS) {
         try {
           const session = await provider.getSession(animeTitle, anilistId);
-          if (!session) continue;
-
-          candidateEpisodes = session.episodes
-            .map((ep: any) => ({
-              id: ep.id,
-              number: ep.number,
-              title: ep.title || undefined,
-              image: ep.image || ep.img || undefined,
-              providerId: provider.name as any,
-              hasDub: ep.hasDub ?? null,
-              hasSub: ep.hasSub ?? null,
-              airDate: ep.airDate || undefined,
-            }))
-            .sort((a: Episode, b: Episode) => a.number - b.number);
-
-          if (candidateEpisodes.length > 0) break;
+          consider(session, provider.name);
+          // `0` == exact expected count (or, with no count, any non-suspect
+          // list): nothing later can beat it, so stop early.
+          if (best.score >= 0) break;
         } catch (err) {
           console.warn(`[providers] getEpisodes(${provider.name}) failed:`, err instanceof Error ? err.message : err);
           continue;
         }
       }
     }
+
+    candidateEpisodes = best.episodes ?? [];
   }
 
   if (candidateEpisodes.length === 0) return [];
 
   const availableEpisodes = filterAvailableEpisodes(candidateEpisodes, animeTitle, anilistId);
-  availabilityCache.set(cacheKey, availableEpisodes);
-  if (availabilityCache.size > AVAILABILITY_CACHE_MAX) {
-    const firstKey = availabilityCache.keys().next().value;
-    if (firstKey) availabilityCache.delete(firstKey);
-  }
+  writeAvailabilityCache(cacheKey, availableEpisodes);
   return availableEpisodes;
 }
 
