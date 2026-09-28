@@ -9,7 +9,37 @@ export default function Navbar() {
   const pathname = usePathname();
   const isWatchPage = pathname?.includes("/watch/");
   const [hidden, setHidden] = useState(false);
+  // Client-only: true while <html> itself is the fullscreen element (the player
+  // anchors fullscreen to <html>, not to its own container). Server render and
+  // the first client render both start `false`, so hydration matches and the
+  // navbar is painted normally until the effect below reads the live state.
+  const [fullscreenHidden, setFullscreenHidden] = useState(false);
   const lastScrollRef = useRef(0);
+
+  // The player's fullscreen layer is `fixed z-[100]`, but it lives inside
+  // <main>'s z-10 stacking context while this nav is a z-50 sibling above it —
+  // so a visible nav always paints over fullscreen video. Drop out of the way
+  // with the same -translate-y-full the scroll-hide already uses.
+  useEffect(() => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+    };
+    // Both spellings, same as the player: prefixed-only builds read
+    // `fullscreenElement` as undefined with no change event ever firing for it.
+    const sync = () => {
+      const el = doc.fullscreenElement || doc.webkitFullscreenElement || null;
+      setFullscreenHidden(el === document.documentElement);
+    };
+    // Read immediately too: fullscreen may already be active before hydration
+    // (or entered before this effect's listeners were attached).
+    sync();
+    document.addEventListener("fullscreenchange", sync);
+    document.addEventListener("webkitfullscreenchange", sync);
+    return () => {
+      document.removeEventListener("fullscreenchange", sync);
+      document.removeEventListener("webkitfullscreenchange", sync);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isWatchPage) {
@@ -32,10 +62,16 @@ export default function Navbar() {
     return () => window.removeEventListener("scroll", onScroll);
   }, [isWatchPage]);
 
+  // Scroll-hide OR html-level fullscreen. Fullscreen wins so a scroll event
+  // firing mid-fullscreen can't flip the nav back over the video, and on exit
+  // `fullscreenHidden` goes false so the scroll-derived state returns exactly
+  // as it was.
+  const isNavHidden = hidden || fullscreenHidden;
+
   return (
     <nav
       className={`sticky top-0 z-50 bg-[var(--panel)] border-b border-[var(--accent)]/30 rounded-none transition-transform duration-300 ${
-        hidden ? "-translate-y-full" : "translate-y-0"
+        isNavHidden ? "-translate-y-full" : "translate-y-0"
       }`}
     >
       <div className="max-w-7xl mx-auto px-4">
