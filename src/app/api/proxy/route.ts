@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export const runtime = "edge";
 
 /**
  * Proxies streaming requests with proper headers (Referer, Origin) that
@@ -70,12 +69,45 @@ export async function GET(req: NextRequest) {
       requestHeaders["Range"] = rangeHeader;
     }
 
-    // Bound the upstream wait: a dead CDN must surface as a 504 instead of
-    // hanging the player's request forever.
-    const upstream = await fetch(decodedUrl, {
+    // Bound the upstream wait to 10s FOR THE HEADERS ONLY: a dead CDN must
+    // surface as a 504 instead of hanging the player's request forever. The
+    // timer is cleared the moment fetch() resolves, so the response BODY then
+    // streams with no deadline (a 7.5MB segment taking >10s must not be
+    // truncated mid-stream). Abort also fires if the client disconnects.
+    const ctl = new AbortController();
+    const timeout = setTimeout(() => ctl.abort(), 10_000);
+    let upstream = await fetch(decodedUrl, {
       headers: requestHeaders,
-      signal: AbortSignal.timeout(10000),
-    });
+      signal: AbortSignal.any([ctl.signal, req.signal]),
+    }).finally(() => clearTimeout(timeout));
+
+    // ── 403-retry fallback (one attempt max) ──
+    // The CDN validates the Origin against the *Referer's* site origin
+    // (https://krussdomi.com) rather than the media host. If we guessed the
+    // wrong one, swap to the alternate (Referer-derived ↔ host-derived) and
+    // retry exactly once; a second 403 falls through to the 502 below.
+    let workingOrigin = origin;
+    if (upstream.status === 403) {
+      let refererOrigin = "";
+      try {
+        refererOrigin = referer ? new URL(referer).origin : "";
+      } catch {
+        // unparseable referer — no alternate to try
+      }
+      const hostOrigin = `https://${parsedUrl.host}`;
+      const alternateOrigin = origin === refererOrigin ? hostOrigin : refererOrigin;
+      if (alternateOrigin && alternateOrigin !== origin) {
+        const retryCtl = new AbortController();
+        const retryTimeout = setTimeout(() => retryCtl.abort(), 10_000);
+        upstream = await fetch(decodedUrl, {
+          headers: { ...requestHeaders, Origin: alternateOrigin },
+          signal: AbortSignal.any([retryCtl.signal, req.signal]),
+        }).finally(() => clearTimeout(retryTimeout));
+        // Remember which Origin actually worked so manifests below rewrite
+        // their children with it (otherwise every segment 403s again).
+        if (upstream.ok) workingOrigin = alternateOrigin;
+      }
+    }
 
     if (!upstream.ok) {
       return NextResponse.json(
@@ -145,7 +177,7 @@ export async function GET(req: NextRequest) {
             const proxyParams = new URLSearchParams({
               url: absoluteUrl,
               referer,
-              origin,
+              origin: workingOrigin,
             });
             return `URI="${ourOrigin}/api/proxy?${proxyParams}"`;
           });
@@ -158,7 +190,7 @@ export async function GET(req: NextRequest) {
         const proxyParams = new URLSearchParams({
           url: absoluteUrl,
           referer,
-          origin,
+          origin: workingOrigin,
         });
         return `${ourOrigin}/api/proxy?${proxyParams}`;
       })
@@ -173,7 +205,8 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (e: any) {
-    // AbortSignal.timeout(10000) fired — the CDN never answered.
+    // The 10s header-phase AbortController fired — the CDN never answered.
+    // (AbortController.abort() rejects with name "AbortError".)
     if (e?.name === "TimeoutError" || e?.name === "AbortError") {
       return NextResponse.json(
         { error: "Upstream timed out", url: decodedUrl },
