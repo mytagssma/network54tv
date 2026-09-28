@@ -5,21 +5,21 @@ import Link from "next/link";
 import type { Episode } from "@/types/anime";
 
 /**
- * Paged, bounded episode selector (YouTube playlist-panel style).
+ * Paged episode selector (YouTube playlist-panel style).
  *
  * - Dense rows: episode number + short (truncated) name.
  * - Chunk navigation: `‹ 1/5 ›` — never renders the whole run at once.
- * - Fixed max height with `overflow-y-auto`, so the panel never inflates
- *   the page's scroll length.
- * - The row for the episode being watched is highlighted and centered inside
- *   the panel on mount / navigation (panel-only scroll — the window is never
- *   scrolled as a side effect).
+ * - Natural height: each page is bounded by its own item count, so the grid
+ *   flows at full height and the *page* scrolls (no inner scroll box).
+ * - The row for the episode being watched is highlighted, and is revealed
+ *   with a minimal page-level scroll when the panel is already on screen —
+ *   the window is never yanked toward the list.
  */
 
 const DEFAULT_PAGE_SIZE = 24;
 
 interface EpisodeSelectorProps {
-  /** Episodes to page through (already filtered by section, if any). */
+  /** Full episode run to page through (sorted by number by the caller). */
   episodes: Episode[];
   animeId: number;
   provider?: string;
@@ -70,7 +70,7 @@ export default function EpisodeSelector({
   const firstEp = items[0];
   const lastEp = items[items.length - 1];
 
-  const scrollerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<number, HTMLElement>());
 
   // Follow the watched episode across client-side navigations
@@ -79,15 +79,15 @@ export default function EpisodeSelector({
     if (idx >= 0) setPage(Math.floor(idx / pageSize));
   }, [currentEpisode, episodes, pageSize]);
 
-  // Center the current row inside the panel only (never scrolls the window)
+  // Reveal the watched row when the panel is already on screen — a minimal
+  // page-level scroll, never a jump that would pull the player out of view.
   useEffect(() => {
-    const scroller = scrollerRef.current;
+    const panel = panelRef.current;
     const row = rowRefs.current.get(currentEpisode);
-    if (!scroller || !row) return;
-    scroller.scrollTop = Math.max(
-      0,
-      row.offsetTop - (scroller.clientHeight - row.offsetHeight) / 2
-    );
+    if (!panel || !row) return;
+    const box = panel.getBoundingClientRect();
+    const onScreen = box.top < window.innerHeight && box.bottom > 0;
+    if (onScreen) row.scrollIntoView({ block: "nearest" });
   }, [currentEpisode, currentPage]);
 
   if (pageCount === 0) return null;
@@ -133,10 +133,10 @@ export default function EpisodeSelector({
         )}
       </div>
 
-      {/* Bounded list — scrolls internally so the page length never grows */}
+      {/* Episode grid — natural height, the page scrolls around it */}
       <div
-        ref={scrollerRef}
-        className="relative max-h-[300px] sm:max-h-[340px] overflow-y-auto overscroll-contain border border-[var(--accent)]/15 bg-[var(--panel)]"
+        ref={panelRef}
+        className="relative border border-[var(--accent)]/15 bg-[var(--panel)]"
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 p-1.5">
           {items.map((ep, i) => {
