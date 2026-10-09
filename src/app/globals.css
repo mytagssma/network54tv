@@ -189,6 +189,48 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* ── Header search field (Navbar) ──────────────────────────────────────
+   Chrome/Safari paint a NATIVE blue ✕ on input[type="search"] the moment it
+   has text — on top of our own accent clear button that produced two cross
+   icons at once, in an off-palette blue. Kill the native decoration
+   completely; only our custom ✕ may ever render. */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+/* The group must read as site chrome in EVERY accent theme — but quietly:
+   the 2px frame read as a thick box (user feedback), so the edge is back to
+   1px. Legibility without thickness comes from alpha + fill instead of
+   width: 45% accent (half again the old washed-out 30%, so dim hues like red
+   and purple hold their own), an inset --background fill that separates the
+   group from the --panel nav, a slight border lift on hover, and a focus
+   state that goes full-accent with a glow plus a theme-tinted fill — all via
+   the accent tokens, so all six swatches get the same treatment in their own
+   hue.
+
+   Hand-written rather than Tailwind because rest, :hover and :focus-within
+   must compose in one cascade (focus-within variants of .accent-shadow-*
+   aren't utilities and would compile to nothing), and unlayered rules beat
+   utility classes outright — the group div itself only carries layout
+   classes. `transition-all` on the element animates all of it. */
+.header-search {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background-color: var(--background);
+}
+
+.header-search:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.header-search:focus-within {
+  border-color: var(--accent);
+  background-color: color-mix(in srgb, var(--accent) 6%, var(--background));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
 .accent-glow-border {
   border-color: var(--accent);
   box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 20%, transparent);

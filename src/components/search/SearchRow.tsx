@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, SearchIcon, SlidersIcon, XIcon } from "./icons";
+import { ChevronDownIcon, SlidersIcon } from "./icons";
 
-/** State for the Filters toggle in the search row. */
+/** State for the Filters toggle. */
 export interface FiltersToggle {
   /** Panel is open. */
   open: boolean;
@@ -16,124 +16,220 @@ export interface FiltersToggle {
 }
 
 interface SearchRowProps {
-  /** GET form target — set for URL-driven search, omit for a controlled form. */
-  action?: string;
-  /** Initial text for the GET form; re-synced when the URL query changes. */
-  initialValue?: string;
-  /** Controlled text (client-side search). */
-  value?: string;
-  onChange?: (value: string) => void;
-  onSubmit?: (e: FormEvent<HTMLFormElement>) => void;
-  loading?: boolean;
-  /** Renders the Clear button when provided. */
-  onClear?: () => void;
-  /** Renders the Filters toggle when provided. */
-  filters?: FiltersToggle;
-  /** Filter panel, rendered inside the form below the row. */
+  /** Page heading sitting left of the Filters toggle (a SearchHeading). */
+  heading?: ReactNode;
+  /** Filters toggle — always rendered, so the panel stays reachable
+      whether a query is active or the landing view is showing. */
+  filters: FiltersToggle;
+  /** Filter panel, rendered below the heading row. */
   children?: ReactNode;
+  /** `?q=` the browse page currently reflects — the live search compares
+      the debounced value against it so an unchanged value never
+      re-navigates (queue#11). */
+  query?: string;
+  /** Debounced header-field value; "" means "back to the landing view".
+      Browse routes it with `router.replace` so keystrokes don't pile up
+      history entries (queue#11). */
+  onLiveQuery?: (value: string) => void;
+}
+
+// ─── Search as you type (queue#11) ───────────────────────────────────────
+//
+// The query field lives in the header (Navbar) and only pushes the URL on
+// submit, so typing never reached /browse — and Navbar itself is off-limits.
+// This row, mounted only while /browse is on screen, therefore listens for
+// the field's native `input` events (they bubble up to document; React's
+// root-level delegation neither captures nor stops them) and debounces a
+// navigation through `onLiveQuery`. One quiet pause = one search execution.
+
+/** Quiet time after the last keystroke before the search fires. */
+export const LIVE_SEARCH_DEBOUNCE_MS = 300;
+
+/** Nothing shorter than this ever hits the API — search needs two characters. */
+export const LIVE_SEARCH_MIN_CHARS = 2;
+
+/** What a debounced field value should do to the current URL query. */
+export type LiveQueryPlan =
+  | { action: "hold" } // too short — keep waiting, touch nothing
+  | { action: "skip" } // already reflected in the URL — no request
+  | { action: "clear" } // field empty → back to the landing view
+  | { action: "navigate"; value: string };
+
+/**
+ * Decide what a debounced field value means for the current URL query.
+ *
+ * `raw` is trimmed, matching what Enter submits — so trailing whitespace
+ * never re-triggers a search Enter would have skipped. `currentQuery` is the
+ * live query at FIRE time, never a string captured at keystroke time, which
+ * is what makes the awkward sequences resolve correctly: ✕/Backspace-to-empty
+ * clears instead of resurrecting older text, and an Enter that already pushed
+ * the same value lands on `skip` instead of a second, identical request.
+ */
+export function resolveLiveQuery(
+  raw: string,
+  currentQuery: string,
+  min: number = LIVE_SEARCH_MIN_CHARS
+): LiveQueryPlan {
+  const value = raw.trim();
+  if (value === "") {
+    return currentQuery === "" ? { action: "skip" } : { action: "clear" };
+  }
+  if (value.length < min) return { action: "hold" };
+  if (value === currentQuery) return { action: "skip" };
+  return { action: "navigate", value };
 }
 
 /**
- * The canonical search row: magnifier input, Search button, optional Clear
- * and Filters buttons — stacked on mobile, inline from `sm` up. The filter
- * panel is passed in as children so both routes share the same row.
+ * Run `fn` debounced by `ms`: every call resets the window, so only the last
+ * keystroke of a burst ever reaches `fn`. `.cancel()` drops the pending call
+ * — used while an IME composition is in progress and on unmount, so a
+ * half-typed kana/kanji reading is never searched and nothing fires after
+ * the row is gone.
+ */
+export function createDebounce(
+  fn: () => void,
+  ms: number
+): (() => void) & { cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const run = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn();
+    }, ms);
+  };
+  run.cancel = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  return run;
+}
+
+/**
+ * Browse's search block: heading + Filters toggle on ONE row, panel below.
+ *
+ * The query field and the Clear ✕ moved to the header search (Navbar), so
+ * the separate button row under the heading is gone — this component now
+ * only positions the Filters toggle against the heading: right-aligned on
+ * "// SEARCH: …" and on the landing heading alike.
+ *
+ * It also hosts the browse-side half of search-as-you-type (queue#11): the
+ * header field only updates its own draft state, so this row listens for its
+ * debounced `input` events and reports the value through `onLiveQuery`.
  */
 export default function SearchRow({
-  action,
-  initialValue = "",
-  value,
-  onChange,
-  onSubmit,
-  loading = false,
-  onClear,
+  heading,
   filters,
   children,
+  query = "",
+  onLiveQuery,
 }: SearchRowProps) {
-  const isGetForm = Boolean(action);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const filled = filters.open || filters.active;
 
-  // Keep the uncontrolled GET field aligned with the URL (back/forward, links).
+  // The debounced fire must read props as they are when it RUNS, not as they
+  // were when the keystroke arrived — hence refs (the same pattern the
+  // clear-search channel uses in useClearSearch). `inputRef` gets claimed by
+  // the listener below; the thunk re-reads `.value` at fire time so a ✕ or
+  // Backspace that emptied the field in the meantime is seen as "".
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const onLiveQueryRef = useRef(onLiveQuery);
+  const queryRef = useRef(query);
   useEffect(() => {
-    if (isGetForm && inputRef.current) inputRef.current.value = initialValue;
-  }, [isGetForm, initialValue]);
+    onLiveQueryRef.current = onLiveQuery;
+    queryRef.current = query;
+  });
 
-  const filled = Boolean(filters && (filters.open || filters.active));
+  const enabled = Boolean(onLiveQuery);
+  useEffect(() => {
+    if (!enabled) return;
+
+    const fire = createDebounce(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const plan = resolveLiveQuery(el.value, queryRef.current);
+      if (plan.action === "navigate") onLiveQueryRef.current?.(plan.value);
+      else if (plan.action === "clear") onLiveQueryRef.current?.("");
+      // hold / skip → no navigation, therefore no request.
+    }, LIVE_SEARCH_DEBOUNCE_MS);
+
+    // Only the header field: input[name="q"] is its unique signature (the
+    // filter controls are selects/checkboxes), so other fields never count
+    // as typing in the search.
+    const field = (e: Event) =>
+      e.target instanceof HTMLInputElement && e.target.name === "q" ? e.target : null;
+
+    const onInput = (e: Event) => {
+      const el = field(e);
+      if (!el) return;
+      inputRef.current = el;
+      // IME composition in progress: drop whatever was pending so a
+      // half-typed kana/kanji reading is never sent; compositionend below
+      // schedules the finished text instead.
+      if ((e as InputEvent).isComposing === true) {
+        fire.cancel();
+        return;
+      }
+      fire();
+    };
+
+    const onCompositionEnd = (e: Event) => {
+      const el = field(e);
+      if (!el) return;
+      inputRef.current = el;
+      fire();
+    };
+
+    document.addEventListener("input", onInput);
+    document.addEventListener("compositionend", onCompositionEnd);
+    return () => {
+      document.removeEventListener("input", onInput);
+      document.removeEventListener("compositionend", onCompositionEnd);
+      fire.cancel();
+    };
+  }, [enabled]);
 
   return (
-    <form
-      action={isGetForm ? action : undefined}
-      method={isGetForm ? "GET" : undefined}
-      onSubmit={onSubmit}
-      className="flex flex-col gap-3"
-    >
-      {/* Search row — stacked on mobile, inline on desktop */}
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <div className="relative w-full flex-1 sm:w-auto">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-decorative)]" />
-          <input
-            ref={isGetForm ? inputRef : undefined}
-            type="text"
-            name={isGetForm ? "q" : undefined}
-            defaultValue={isGetForm ? initialValue : undefined}
-            value={isGetForm ? undefined : (value ?? "")}
-            onChange={
-              isGetForm
-                ? undefined
-                : (e: ChangeEvent<HTMLInputElement>) => onChange?.(e.target.value)
-            }
-            placeholder="Search anime..."
-            aria-label="Search anime"
-            className="min-h-[44px] w-full rounded-none border border-[var(--accent)]/30 bg-[var(--panel)] py-2.5 pl-10 pr-4 font-mono text-sm text-white transition-all placeholder:text-[var(--text-decorative)] focus:border-[var(--accent)] focus:accent-shadow-sm focus:outline-none"
+    <div className="flex flex-col gap-3">
+      {/* One line at 360px: heading flexes and truncates, button keeps its
+          natural width (`shrink-0`, never wraps). `[&>h1]:mb-0` drops
+          SearchHeading's built-in mb-4 — inside this row it would offset the
+          heading from the button's centre (higher specificity beats .mb-4
+          regardless of stylesheet order). */}
+      <div className="flex items-center justify-between gap-2 sm:gap-3">
+        <div className="min-w-0 flex-1 [&>h1]:mb-0">{heading}</div>
+
+        <button
+          type="button"
+          onClick={filters.onToggle}
+          aria-expanded={filters.open}
+          aria-controls={filters.panelId}
+          className={cn(
+            "flex min-h-[44px] shrink-0 items-center justify-center gap-1.5 rounded-none border px-3 py-2.5 text-sm font-medium transition-colors sm:px-4",
+            filled
+              ? "border-[var(--accent)] bg-[var(--accent)] text-black"
+              : "border-[var(--accent)]/30 bg-transparent text-[var(--accent)] hover:bg-[var(--accent)]/10"
+          )}
+        >
+          <SlidersIcon className="h-4 w-4" />
+          {/* Below sm the button drops the label and chevron and shows the
+              sliders glyph alone (a ~44×44 target); the sr-only spans keep
+              its accessible name — "Filters (active)" — exactly as the
+              labeled version reads on wider screens. */}
+          <span className="hidden sm:inline">Filters</span>
+          {filters.active && <span className="hidden text-[10px] sm:inline">(active)</span>}
+          <span className="sr-only sm:hidden">Filters{filters.active ? " (active)" : ""}</span>
+          <ChevronDownIcon
+            className={cn(
+              "hidden h-3 w-3 transition-transform sm:inline-block",
+              filters.open && "rotate-180"
+            )}
           />
-        </div>
-
-        {/* Buttons — side by side on mobile, inline on desktop */}
-        <div className="flex w-full gap-2 sm:w-auto">
-          <button
-            type="submit"
-            disabled={loading}
-            className="flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-none bg-[var(--accent)] px-6 py-2.5 font-bold uppercase tracking-wider text-sm text-black accent-shadow-md transition-all hover:brightness-110 disabled:opacity-50 sm:flex-none"
-          >
-            <SearchIcon className="h-4 w-4" />
-            {loading ? "Searching..." : "Search"}
-          </button>
-
-          {onClear && (
-            <button
-              type="button"
-              onClick={onClear}
-              className="flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-none border border-[var(--accent)]/30 bg-transparent px-4 py-2.5 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10 sm:flex-none"
-            >
-              <XIcon className="h-4 w-4" />
-              Clear
-            </button>
-          )}
-
-          {filters && (
-            <button
-              type="button"
-              onClick={filters.onToggle}
-              aria-expanded={filters.open}
-              aria-controls={filters.panelId}
-              className={cn(
-                "flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-none border px-4 py-2.5 text-sm font-medium transition-colors sm:flex-none",
-                filled
-                  ? "border-[var(--accent)] bg-[var(--accent)] text-black"
-                  : "border-[var(--accent)]/30 bg-transparent text-[var(--accent)] hover:bg-[var(--accent)]/10"
-              )}
-            >
-              <SlidersIcon className="h-4 w-4" />
-              Filters
-              {filters.active && <span className="text-[10px]">(active)</span>}
-              <ChevronDownIcon
-                className={cn("h-3 w-3 transition-transform", filters.open && "rotate-180")}
-              />
-            </button>
-          )}
-        </div>
+        </button>
       </div>
 
       {children}
-    </form>
+    </div>
   );
 }

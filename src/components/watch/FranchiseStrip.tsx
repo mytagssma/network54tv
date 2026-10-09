@@ -1,10 +1,13 @@
+"use client";
+
+import { Fragment } from "react";
 import Link from "next/link";
 import {
-  FRANCHISE_FORMAT_BADGES,
-  isTvLikeFormat,
-  RECAP_RELATION_TYPES,
-  type FranchiseItem,
-} from "@/lib/franchise";
+  FRANCHISE_SORTS,
+  franchiseSortGroups,
+  type FranchiseEntry,
+} from "@/components/watch/franchiseEntries";
+import { useFranchiseSort } from "@/hooks/useFranchiseSort";
 
 /**
  * Franchise selector for the watch page — every *watchable* franchise entry,
@@ -12,17 +15,10 @@ import {
  * transitive walk over the AniList relation graph, so seasons that are only
  * linked through *other* entries (Dr. STONE seasons 3/4 …) show up here just
  * like they do on the detail page row — and manga/novel, MUSIC (PVs, music
- * videos) and PREVIEW/CHARACTER edges never do.
- *
- * ── Labels (// SECTIONS tab language: mono, uppercase, bordered) ─────────
- *   [S2] [TV]        Mushoku Tensei … Cour 2     ← numbered mainline season
- *   [MOVIE]          JUJUTSU KAISEN 0            ← extras keep their format
- *   [RECAP]          One Piece: Episode of Nami  ← summaries read as recaps
- * Season numbers are computed once, in the shared resolver, along the
- * PREQUEL→SEQUEL chain through the watched entry (the earliest known TV
- * season anchors as Season 1, a title hint like "Season 3" re-anchors the
- * run, a split-cour "Part 2"/"Cour 2" inherits its predecessor's number).
- * Chain entries that are not TV (movies/OVA prequels) keep a format badge.
+ * videos) and PREVIEW/CHARACTER edges never do. The entry model itself
+ * (badges, `detail` labels, sort modes) lives in `./franchiseEntries`, which
+ * the server page and the player's drawer share — only the strip's markup and
+ * its sort control are client-side.
  *
  * ── Weight ────────────────────────────────────────────────────────────────
  * Rows, not chips: the selector is a responsive grid of large buttons that
@@ -33,148 +29,17 @@ import {
  * entry is the only solid one (accent fill + ▶) and never a link; mainline
  * seasons are tinted + railed louder; recaps/side stories/movies stay quiet.
  *
- * Order: prequels → current → sequels → rest (TV run first, then by format,
- * then release order) — the resolver's canonical order, shared with the
- * detail page. One column on phones, two from `sm`, three from `xl`.
+ * ── Order (the header's segmented toggle) ────────────────────────────────
+ * Default is the resolver's canonical order — prequels → current → sequels →
+ * rest (TV run first, then by format, then release order), shared with the
+ * detail page. TIME re-orders the same set chronologically by air/release
+ * start date (unknown dates last, ties fall back to the default order). The
+ * choice persists in `localStorage` (`n54tv-franchise-sort`, read through
+ * `useFranchiseSort`) and the player drawer's series list honors it too. The
+ * current entry keeps its highlight in every mode — sorting only moves rows,
+ * it never re-derives badges, tiers or links. One column on phones, two from
+ * `sm`, three from `xl`.
  */
-
-export interface FranchiseEntry {
-  id: number;
-  title: string;
-  /** Numbered season along the PREQUEL→SEQUEL chain (`1`, `2`, …). */
-  season?: number;
-  /** Short badge shown before the title: `TV` / `MOVIE` / `OVA` / `RECAP` … */
-  badge: string;
-  /** Full spoken/hover label: `Season 2 · TV series · sequel — Title`. */
-  detail: string;
-  /** The entry being watched — rendered as an active, non-link chip. */
-  current: boolean;
-  /** Mainline TV season — safe to deep-link straight to episode 1. */
-  mainLine: boolean;
-  /** Visual weight: current / mainline season / extra (recap, side, movie). */
-  tier: "current" | "main" | "minor";
-}
-
-/* ── Labels ─────────────────────────────────────────────────────────────── */
-
-/** Spoken form of each format — the chips themselves use the shared badges. */
-const FORMAT_WORDS: Record<string, string> = {
-  TV: "TV series",
-  TV_SHORT: "TV short",
-  MOVIE: "Movie",
-  OVA: "OVA",
-  ONA: "ONA",
-  SPECIAL: "Special",
-  MUSIC: "Music video",
-};
-
-/** Only used when a node ships no `format` — spelled out, never cryptic codes. */
-const RELATION_BADGES: Record<string, string> = {
-  PREQUEL: "PREQUEL",
-  SEQUEL: "SEQUEL",
-  SIDE_STORY: "SIDE STORY",
-  SPIN_OFF: "SPIN-OFF",
-  ALTERNATIVE: "ALTERNATIVE",
-  ALTERNATIVE_VERSION: "ALTERNATIVE",
-  SUMMARY: "RECAP",
-  PARENT_SERIES: "PARENT SERIES",
-  CHARACTER: "CAMEO",
-  PREVIEW: "PREVIEW",
-  CONTAINS: "EXTRA",
-  OTHER: "RELATED",
-};
-
-const RELATION_WORDS: Record<string, string> = {
-  PREQUEL: "prequel",
-  SEQUEL: "sequel",
-  SIDE_STORY: "side story",
-  SPIN_OFF: "spin-off",
-  ALTERNATIVE: "alternative",
-  ALTERNATIVE_VERSION: "alternative version",
-  SUMMARY: "recap",
-  PARENT_SERIES: "parent series",
-  CHARACTER: "crossover",
-  PREVIEW: "preview",
-  CONTAINS: "extra",
-  OTHER: "related",
-  ADAPTATION: "adaptation",
-  SOURCE: "source material",
-};
-
-/** Chip + spoken label: recap edge wins, then format, then the relation code. */
-function badgeFor(format: string, relation: string): { badge: string; word: string } {
-  if (RECAP_RELATION_TYPES.has(relation)) return { badge: "RECAP", word: "Recap" };
-  if (FRANCHISE_FORMAT_BADGES[format]) {
-    return { badge: FRANCHISE_FORMAT_BADGES[format], word: FORMAT_WORDS[format] || format };
-  }
-  return {
-    badge: RELATION_BADGES[relation] || "ANIME",
-    word: RELATION_WORDS[relation] || "Anime",
-  };
-}
-
-/* ── Entries ────────────────────────────────────────────────────────────── */
-
-/**
- * Map the shared resolver's canonical list onto the strip's `FranchiseEntry`
- * shape. Everything meaningful is already decided upstream by
- * `getFranchiseItems()` — membership (no manga/novel, no MUSIC, no
- * PREVIEW/CHARACTER edges), order (prequels → current → sequels → rest),
- * season numbers along the PREQUEL→SEQUEL chain and the bucket each entry
- * sits in — so this is a pure projection: same set, same numbers, same order
- * as the detail page's row.
- */
-export function buildFranchiseEntries(
-  items: FranchiseItem[],
-  currentId: number
-): FranchiseEntry[] {
-  return items.map((item): FranchiseEntry => {
-    const isCurrent = item.id === currentId;
-    const recap = RECAP_RELATION_TYPES.has(item.relation);
-    const { badge: formatBadge, word } = badgeFor(item.format, item.relation);
-
-    // On the chain (prequel/sequel of the watched entry) — the resolver's
-    // bucket beats the raw discovery edge, which may just read "OTHER" when
-    // the member was reached through the source-material hub.
-    const chainLinked = item.bucket === "prequel" || item.bucket === "sequel";
-    const linkWord =
-      item.bucket === "prequel" ? "prequel" : item.bucket === "sequel" ? "sequel" : undefined;
-
-    const parts: string[] = [];
-    if (item.season !== undefined) parts.push(`Season ${item.season}`);
-    parts.push(word);
-    // "recap" would just repeat the badge word; other edges add the link kind.
-    const relationWord = linkWord || (recap ? undefined : RELATION_WORDS[item.relation]);
-    if (relationWord) parts.push(relationWord);
-
-    // Badge ladder mirrors the detail row: numbered season (rendered as the
-    // chip), then chain position, then format / relation code.
-    const badge = !recap && item.season === undefined && linkWord
-      ? linkWord.toUpperCase()
-      : formatBadge;
-
-    // On the chain and a TV run → the strip may deep-link straight to ep 1.
-    const mainLine = !isCurrent && chainLinked && isTvLikeFormat(item.format);
-    const tier = isCurrent
-      ? "current"
-      : item.season !== undefined || mainLine
-        ? "main"
-        : "minor";
-
-    return {
-      id: item.id,
-      title: item.title,
-      season: item.season,
-      badge,
-      detail: `${parts.join(" · ")} — ${item.title}`,
-      current: isCurrent,
-      mainLine,
-      tier,
-    };
-  });
-}
-
-/* ── Strip ──────────────────────────────────────────────────────────────── */
 
 interface FranchiseStripProps {
   entries: FranchiseEntry[];
@@ -182,10 +47,13 @@ interface FranchiseStripProps {
 }
 
 export default function FranchiseStrip({ entries, provider }: FranchiseStripProps) {
-  // Only the current entry (or nothing) → nothing to switch to.
+  // Only the current entry (or nothing) → nothing to switch to. The hook
+  // stays above this return so the hook order never changes between renders.
+  const [sortMode, setSortMode] = useFranchiseSort();
   if (entries.length < 2) return null;
 
   const providerQs = provider ? `?provider=${provider}` : "";
+  const groups = franchiseSortGroups(entries, sortMode);
 
   // One large selection button — same skeleton as the episode list rows:
   // 2px accent rail, mono chips, filling title, trailing chevron. Tall enough
@@ -221,86 +89,136 @@ export default function FranchiseStrip({ entries, provider }: FranchiseStripProp
 
   return (
     <div className="mt-6">
-      <div className="flex items-center gap-2 mb-2">
-        <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider shrink-0">
+      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <h2 className="shrink-0 text-sm font-semibold uppercase tracking-wider text-[var(--accent)]">
           // Franchise
         </h2>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-[#6b6b70] shrink-0 tabular-nums">
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider tabular-nums text-[#6b6b70]">
           {entries.length - 1} related
         </span>
+
+        {/* Sort — a compact segmented toggle, right-aligned on the heading row
+            (it wraps under the heading on narrow phones instead of crowding
+            it). `aria-pressed` carries the active mode; every button keeps its
+            own tab stop, so the whole control is keyboard-operable as-is. */}
+        <div
+          role="group"
+          aria-label="Sort franchise"
+          className="ml-auto flex shrink-0 items-center border border-[var(--accent)]/25"
+        >
+          {FRANCHISE_SORTS.map((sort, index) => {
+            const active = sortMode === sort.id;
+            return (
+              <button
+                key={sort.id}
+                type="button"
+                aria-pressed={active}
+                title={sort.title}
+                onClick={() => setSortMode(sort.id)}
+                className={`px-2 py-1.5 font-mono text-[9px] uppercase leading-none tracking-wider transition-colors ${
+                  index > 0 ? "border-l border-[var(--accent)]/25" : ""
+                } ${
+                  active
+                    ? "bg-[var(--accent)] text-black"
+                    : "text-[var(--accent)]/55 hover:bg-[var(--accent)]/10 hover:text-[var(--accent)]"
+                }`}
+              >
+                {sort.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Chunky rows — 1 col on phones, 2 from sm, 3 from xl (the episode
-          grid's breakpoints), so the set is fully visible without scrolling. */}
+          grid's breakpoints), so the set is fully visible without scrolling.
+          Both modes render one unlabelled group; the group-header branch below
+          stays for any future mode that buckets rows. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-1.5 sm:gap-2">
-        {entries.map((entry) => {
-          const className = `${rowBase} ${tierClass[entry.tier]}`;
-
-          const content = (
-            <>
-              <span className="flex shrink-0 items-center gap-1.5">
-                {entry.season !== undefined && (
-                  <span className={seasonClass[entry.tier]}>{`S${entry.season}`}</span>
-                )}
-                <span className={badgeClass[entry.tier]}>{entry.badge}</span>
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[13px] sm:text-sm">
-                {entry.title}
-              </span>
-              {entry.current ? (
-                <span aria-hidden="true" className="shrink-0 text-[11px] leading-none">
-                  &#9654;
-                </span>
-              ) : (
-                <svg
+        {groups.map((group) => (
+          <Fragment key={group.label ?? "all"}>
+            {group.label !== null && (
+              <h3 className="col-span-full mt-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--accent)]/70 first:mt-0">
+                <span className="shrink-0">{`// ${group.label}`}</span>
+                <span
                   aria-hidden="true"
-                  className="h-4 w-4 shrink-0 text-[#6b6b70] transition-colors group-hover:text-[var(--accent)]"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-              )}
-            </>
-          );
-
-          if (entry.current) {
-            return (
-              <span
-                key={entry.id}
-                aria-current="page"
-                title={entry.detail}
-                className={className}
-              >
-                {/* Verbose label for screen readers; the chips stay visual. */}
-                <span className="sr-only">{entry.detail}</span>
-                <span aria-hidden="true" className="flex w-full items-center gap-3">
-                  {content}
+                  className="h-px min-w-4 flex-1 bg-[var(--accent)]/15"
+                />
+                <span className="shrink-0 font-mono tabular-nums text-[#6b6b70]">
+                  {group.entries.length}
                 </span>
-              </span>
-            );
-          }
+              </h3>
+            )}
+            {group.entries.map((entry) => {
+              const className = `${rowBase} ${tierClass[entry.tier]}`;
 
-          const href = entry.mainLine
-            ? `/anime/${entry.id}/watch/1${providerQs}`
-            : `/anime/${entry.id}${providerQs}`;
+              const content = (
+                <>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {entry.season !== undefined && (
+                      <span className={seasonClass[entry.tier]}>{`S${entry.season}`}</span>
+                    )}
+                    <span className={badgeClass[entry.tier]}>{entry.badge}</span>
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] sm:text-sm">
+                    {entry.title}
+                  </span>
+                  {entry.current ? (
+                    <span aria-hidden="true" className="shrink-0 text-[11px] leading-none">
+                      &#9654;
+                    </span>
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4 shrink-0 text-[#6b6b70] transition-colors group-hover:text-[var(--accent)]"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </>
+              );
 
-          return (
-            <Link
-              key={entry.id}
-              href={href}
-              title={entry.detail}
-              aria-label={entry.detail}
-              className={className}
-            >
-              <span aria-hidden="true" className="flex w-full items-center gap-3">
-                {content}
-              </span>
-            </Link>
-          );
-        })}
+              if (entry.current) {
+                return (
+                  <span
+                    key={entry.id}
+                    aria-current="page"
+                    title={entry.detail}
+                    className={className}
+                  >
+                    {/* Verbose label for screen readers; the chips stay visual. */}
+                    <span className="sr-only">{entry.detail}</span>
+                    <span aria-hidden="true" className="flex w-full items-center gap-3">
+                      {content}
+                    </span>
+                  </span>
+                );
+              }
+
+              const href = entry.mainLine
+                ? `/anime/${entry.id}/watch/1${providerQs}`
+                : `/anime/${entry.id}${providerQs}`;
+
+              return (
+                <Link
+                  key={entry.id}
+                  href={href}
+                  title={entry.detail}
+                  aria-label={entry.detail}
+                  className={className}
+                >
+                  <span aria-hidden="true" className="flex w-full items-center gap-3">
+                    {content}
+                  </span>
+                </Link>
+              );
+            })}
+          </Fragment>
+        ))}
       </div>
     </div>
   );

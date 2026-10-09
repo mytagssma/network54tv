@@ -37,7 +37,11 @@ export default function TagFilterGrid({ tags, onToggle, mode, onModeToggle }: Ta
           {mode === "OR" ? "Match Any" : "Match All"}
         </button>
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      {/* Compact chips: every label fits 3+ per row at 360px (text-[10px],
+          px-1, gap-1 grid), 32px tall so they stay tappable. The state glyph
+          is its own flex item so the 2px gap really applies — adjacent JSX
+          text nodes merge into one item and would touch the label. */}
+      <div className="flex flex-wrap gap-1">
         {GENRES.map((genre) => {
           const state = tags[genre];
           return (
@@ -45,8 +49,10 @@ export default function TagFilterGrid({ tags, onToggle, mode, onModeToggle }: Ta
               key={genre}
               type="button"
               aria-pressed={state === "include"}
+              // The glyph is visual-only; spell the tri-state out for SRs.
+              aria-label={`${genre}${state === "include" ? ", included" : state === "exclude" ? ", excluded" : ""}`}
               onClick={() => onToggle(genre)}
-              className={`flex min-h-[44px] items-center gap-1 rounded-none border px-3 font-mono text-xs transition-colors ${
+              className={`flex min-h-[32px] items-center gap-0.5 rounded-none border px-1 font-mono text-[10px] leading-none transition-colors ${
                 state === "include"
                   ? "border-[var(--accent)]/50 bg-[var(--accent)]/20 text-[var(--accent)]"
                   : state === "exclude"
@@ -54,7 +60,10 @@ export default function TagFilterGrid({ tags, onToggle, mode, onModeToggle }: Ta
                   : "border-[var(--accent)]/10 text-[var(--text-decorative)] hover:border-[var(--accent)]/30"
               }`}
             >
-              {state === "exclude" ? "−" : state === "include" ? "+" : "·"} {genre}
+              <span aria-hidden>
+                {state === "exclude" ? "−" : state === "include" ? "+" : "·"}
+              </span>
+              {genre}
             </button>
           );
         })}

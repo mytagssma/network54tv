@@ -54,6 +54,7 @@ query ($ids: [Int]) {
       format
       title { romaji english }
       coverImage { large }
+      startDate { year month day }
       relations {
         edges {
           relationType
@@ -174,6 +175,19 @@ export function isTvLikeFormat(format?: string | null): boolean {
   return raw === "" || raw === "TV" || raw === "TV_SHORT";
 }
 
+/**
+ * AniList `FuzzyDate { year month day }` → `YYYYMMDD` — the same convention as
+ * `Anime.startDate` in `types/anime.ts`. A missing/zero year yields
+ * `undefined` so "unknown date" stays distinguishable from a real one and can
+ * be sorted last instead of first.
+ */
+function fuzzyDateInt(
+  date?: { year?: number | null; month?: number | null; day?: number | null } | null
+): number | undefined {
+  if (typeof date?.year !== "number" || date.year <= 0) return undefined;
+  return date.year * 10000 + (date.month || 1) * 100 + (date.day || 1);
+}
+
 /** Release order — AniList ids track it closely enough to order a run. */
 export function byRelease(a: { id: number }, b: { id: number }): number {
   return a.id - b.id;
@@ -243,6 +257,12 @@ export interface FranchiseItem {
   cover: string;
   /** Uppercased AniList format (`TV`, `OVA`, `MOVIE` ...). */
   format: string;
+  /**
+   * First air/release date as `YYYYMMDD` (AniList `startDate`); `undefined`
+   * when the API didn't return one — the strip's Time/Type sorts put those
+   * last, keeping their relative (default) order.
+   */
+  startDate?: number;
   /** Relation edge that first pulled this member in ("" for the current entry). */
   relation: string;
   /** Numbered season along the PREQUEL->SEQUEL chain (`1`, `2`, ...). */
@@ -256,6 +276,13 @@ export interface FranchiseSeedMedia {
   format?: string | null;
   title?: { romaji?: string | null; english?: string | null } | null;
   coverImage?: { large?: string | null } | null;
+  /**
+   * `DETAIL_QUERY` does NOT select `startDate`, so seeds arriving from
+   * `getAnimeFull()`/`getAnimeDetail()` ship no date — `getFranchiseItems()`
+   * notices that and queues the root for the first batch instead (one
+   * round-trip, shared with the seed's own neighbours).
+   */
+  startDate?: { year?: number | null; month?: number | null; day?: number | null } | null;
   relations?: { edges?: FranchiseRelationEdge[] | null } | null;
 }
 
@@ -392,6 +419,7 @@ export async function getFranchiseItems(
     title: titleOf(node),
     cover: node?.coverImage?.large || "",
     format: String(node?.format || "").trim().toUpperCase(),
+    startDate: fuzzyDateInt(node?.startDate),
     relation: via.get(node.id) || "",
     bucket: "rest",
   });
@@ -404,9 +432,18 @@ export async function getFranchiseItems(
       title: titleOf(seed),
       cover: seed?.coverImage?.large || "",
       format: String(seed?.format || "").trim().toUpperCase(),
+      startDate: fuzzyDateInt(seed.startDate),
       relation: "",
       bucket: "current",
     });
+    // The seed rarely knows its own `startDate` (DETAIL_QUERY doesn't ask for
+    // one), and the watched entry NEEDS a date to sit in the right place under
+    // the strip's Time / Type sorts. Queue the root as the FIRST member of the
+    // opening batch — Map order puts it ahead of the seed's neighbours, so it
+    // still travels in the same round-trip — and let the fetched node overwrite
+    // the placeholder above. A failed batch just leaves the date unknown (the
+    // entry sorts last in Time mode); the page never fails over it.
+    if (fuzzyDateInt(seed.startDate) === undefined) pending.set(currentId, true);
     recordTargets(currentId, seed?.relations?.edges);
   } else {
     pending.set(currentId, true);

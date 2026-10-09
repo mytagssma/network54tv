@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import EpisodeList from "./EpisodeList";
+import { AudioCount, EmptyState, LoadingNote } from "./Availability";
 import type { Episode } from "@/types/anime";
 
 /**
@@ -15,26 +16,37 @@ interface AudioSummary {
   probed: boolean;
 }
 
+/** Mirrors `EpisodeListStatus` from `@/lib/providers` — same reason as above. */
+type ListStatus = "ok" | "none" | "suspect";
+
 interface EpisodeListFetcherProps {
   animeTitle: string;
   animeId: number;
   initialEpisodes: Episode[];
 }
 
-const UNKNOWN_COUNT = "\u2014"; // "—" when sub/dub availability isn't known
-
 export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisodes }: EpisodeListFetcherProps) {
   const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes);
   const [audio, setAudio] = useState<AudioSummary | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Why the list can be empty. `null` until an answer arrives, so an empty SSR
+  // payload never claims a reason it hasn't been given.
+  const [listStatus, setListStatus] = useState<ListStatus | null>(null);
+  // Start in the loading state whenever there's nothing to show yet: an empty
+  // SSR payload must read "Fetching...", never "no data" — the empty card is
+  // only honest *after* a fetch has actually resolved to zero episodes.
+  const [loading, setLoading] = useState(initialEpisodes.length === 0);
   const [checkingAudio, setCheckingAudio] = useState(false);
   const audioRequested = useRef(false);
 
-  const applyResponse = useCallback((data: { episodes?: Episode[]; audio?: AudioSummary }) => {
-    if (Array.isArray(data.episodes)) setEpisodes(data.episodes);
-    if (data.audio) setAudio(data.audio);
-    return data.audio;
-  }, []);
+  const applyResponse = useCallback(
+    (data: { episodes?: Episode[]; audio?: AudioSummary; listStatus?: ListStatus }) => {
+      if (Array.isArray(data.episodes)) setEpisodes(data.episodes);
+      if (data.audio) setAudio(data.audio);
+      if (data.listStatus) setListStatus(data.listStatus);
+      return data.audio;
+    },
+    []
+  );
 
   // Second pass: resolve unknown sub/dub flags with the provider-side probe.
   // Runs only when the fast response says flags are unknown AND probeable, and
@@ -100,28 +112,26 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
         </h2>
         {episodes.length > 0 && (
           <div className="flex items-center gap-2">
-            <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
-              Sub {subCount ?? UNKNOWN_COUNT}
-            </span>
-            <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
-              Dub {dubCount ?? UNKNOWN_COUNT}
-            </span>
+            <AudioCount label="Sub" value={subCount} />
+            <AudioCount label="Dub" value={dubCount} />
           </div>
         )}
-        {loading && (
-          <span className="text-[10px] text-[var(--accent)]/40 font-mono animate-pulse">Loading...</span>
-        )}
-        {!loading && checkingAudio && (
-          <span className="text-[10px] text-[var(--accent)]/40 font-mono animate-pulse">Checking audio...</span>
-        )}
+        {loading && <LoadingNote state="list" />}
+        {!loading && checkingAudio && <LoadingNote state="audio" />}
       </div>
 
       {episodes.length > 0 ? (
         <EpisodeList episodes={episodes} animeId={animeId} />
+      ) : loading ? (
+        // Real fetch in flight — the pulse above is driven by this same flag,
+        // so it stops the moment the request settles.
+        <LoadingNote state="rows" />
       ) : (
-        <p className="text-[#6b6b70] italic">
-          {loading ? "Fetching episodes..." : "No episodes available."}
-        </p>
+        // Resolved and still empty: say WHICH kind of empty it was.
+        <EmptyState
+          code="NO_EPISODE_DATA"
+          detail={listStatus === "suspect" ? "suspect" : undefined}
+        />
       )}
     </div>
   );

@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { Episode } from "@/types/anime";
+import { AvailabilityChip } from "@/components/anime/Availability";
 
 /**
  * Paged episode selector (YouTube playlist-panel style).
@@ -181,15 +182,18 @@ export default function EpisodeSelector({
                   <span aria-hidden="true" className="shrink-0 text-[9px] leading-none">
                     &#9654;
                   </span>
+                ) : isAvailable ? (
+                  <span
+                    aria-hidden="true"
+                    className="shrink-0 text-[var(--accent)] opacity-0 transition-opacity group-hover:opacity-100 text-[11px] leading-none"
+                  >
+                    ›
+                  </span>
                 ) : (
-                  isAvailable && (
-                    <span
-                      aria-hidden="true"
-                      className="shrink-0 text-[var(--accent)] opacity-0 transition-opacity group-hover:opacity-100 text-[11px] leading-none"
-                    >
-                      ›
-                    </span>
-                  )
+                  // Unavailable rows used to be dimmed with no explanation at
+                  // all — the same row EpisodeList labels `N/A`, in the same
+                  // visual language, now labelled here too.
+                  <AvailabilityChip kind="na" className="shrink-0" />
                 )}
               </>
             );

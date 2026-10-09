@@ -29,6 +29,14 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
   const fullMedia = await getAnimeFull(animeId);
   const franchiseItems = await getFranchiseItems(animeId, fullMedia);
 
+  // AniList scores are 0–100 → render as e.g. 8.5. Same gate and shape as
+  // AnimeCard.tsx (ratingLabel): a number > 0 only, so an unresolved/absent
+  // score renders no element at all rather than a stray ★.
+  const ratingLabel =
+    typeof anime.score === "number" && Number.isFinite(anime.score) && anime.score > 0
+      ? (anime.score / 10).toFixed(1)
+      : null;
+
   return (
     <div className="min-h-screen bg-[var(--background)] text-white">
       <div className="max-w-6xl mx-auto px-4 py-8">
@@ -65,6 +73,12 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
 
               {/* Status & Info badges */}
               <div className="flex flex-wrap gap-2 text-sm">
+                {ratingLabel && (
+                  <span className="inline-flex items-baseline gap-1 bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
+                    <span aria-hidden="true">★</span>
+                    <span className="tabular-nums">{ratingLabel}</span>
+                  </span>
+                )}
                 {anime.status && (
                   <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
                     {anime.status.replace(/_/g, " ")}

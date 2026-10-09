@@ -17,6 +17,7 @@ query ($page: Int, $perPage: Int) {
       bannerImage
       description
       averageScore
+      meanScore
       episodes
       duration
       status
@@ -34,10 +35,10 @@ query ($page: Int, $perPage: Int) {
 `;
 
 const SEARCH_QUERY = `
-query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season: MediaSeason, $status: MediaStatus, $status_not: MediaStatus, $genre_in: [String], $genre_not_in: [String], $sort: [MediaSort], $startDate_greater: FuzzyDateInt) {
+query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season: MediaSeason, $status: MediaStatus, $status_not: MediaStatus, $genre_in: [String], $genre_not_in: [String], $sort: [MediaSort], $startDate_greater: FuzzyDateInt, $countryOfOrigin_in: [CountryCode]) {
   Page(page: $page, perPage: $perPage) {
     pageInfo { total currentPage lastPage hasNextPage }
-    media(search: $search, type: ANIME, isAdult: false, format: $format, season: $season, status: $status, status_not: $status_not, genre_in: $genre_in, genre_not_in: $genre_not_in, sort: $sort, startDate_greater: $startDate_greater) {
+    media(search: $search, type: ANIME, isAdult: false, format: $format, season: $season, status: $status, status_not: $status_not, genre_in: $genre_in, genre_not_in: $genre_not_in, sort: $sort, startDate_greater: $startDate_greater, countryOfOrigin_in: $countryOfOrigin_in) {
       id
       title { romaji english native }
       synonyms
@@ -45,6 +46,7 @@ query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season
       bannerImage
       description
       averageScore
+      meanScore
       episodes
       duration
       status
@@ -67,6 +69,15 @@ query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season
 }
 `;
 
+/**
+ * Every query that feeds `anilistMediaToAnime` — this detail query and the
+ * list queries behind the cards (trending/popular/seasonal/recent/search) —
+ * selects BOTH score fields: AniList leaves
+ * `averageScore` null until it has computed it (brand-new / low-traffic
+ * entries) even when votes exist, while `meanScore` is populated — so
+ * `anilistMediaToAnime` falls back to `meanScore`. Established titles carry
+ * both, equal.
+ */
 const DETAIL_QUERY = `
 query ($id: Int) {
   Media(id: $id, type: ANIME) {
@@ -77,6 +88,7 @@ query ($id: Int) {
     bannerImage
     description
     averageScore
+    meanScore
     episodes
     duration
     status
@@ -109,6 +121,7 @@ query ($page: Int, $perPage: Int) {
       bannerImage
       description
       averageScore
+      meanScore
       episodes
       duration
       status
@@ -143,6 +156,7 @@ query ($airingAt_greater: Int, $airingAt_lesser: Int, $page: Int, $perPage: Int)
         bannerImage
         description
         averageScore
+        meanScore
         episodes
         duration
         status
@@ -159,6 +173,46 @@ query ($airingAt_greater: Int, $airingAt_lesser: Int, $page: Int, $perPage: Int)
 }
 `;
 
+// Upcoming feed (queue#10). `RECENTLY_AIRED_QUERY` gets its "already aired"
+// guarantee from the time window alone (`airingAt` between now-window and
+// now), but the schedule API has no media-status filter at all (AniList:
+// `Unknown argument "status" on field "airingSchedules"`), so it cannot ask
+// for "anime that have not started yet" — that has to be a `media` query.
+// `status: NOT_YET_RELEASED` alone is not enough either: ~5k entries match
+// and most are TBA with a null `startDate`, which AniList sorts AHEAD of
+// every real date in both directions, burying the soonest titles.
+// `startDate_greater` (same FuzzyDateInt filter SEARCH_QUERY speaks) drops
+// the TBA tail server-side; `sort: START_DATE` then yields premiere dates in
+// ascending order — soonest-first, page after page (pageInfo.hasNextPage is
+// real, so Load More is backed by actual pagination).
+const UPCOMING_QUERY = `
+query ($page: Int, $perPage: Int, $startDate_greater: FuzzyDateInt) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { total currentPage lastPage hasNextPage }
+    media(status: NOT_YET_RELEASED, type: ANIME, isAdult: false, sort: START_DATE, startDate_greater: $startDate_greater) {
+      id
+      title { romaji english native }
+      coverImage { large extraLarge color }
+      bannerImage
+      description
+      averageScore
+      meanScore
+      episodes
+      duration
+      status
+      season
+      seasonYear
+      format
+      genres
+      trending
+      popularity
+      studios { nodes { name } }
+      startDate { year month day }
+    }
+  }
+}
+`;
+
 const SEASONAL_QUERY = `
 query ($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int) {
   Page(page: $page, perPage: $perPage) {
@@ -170,6 +224,7 @@ query ($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int) {
       bannerImage
       description
       averageScore
+      meanScore
       episodes
       duration
       status
@@ -197,7 +252,10 @@ function anilistMediaToAnime(media: any): Anime {
     // Strip AniList HTML only — never truncate: a 300-char cut was slicing
     // synopses mid-word (the detail page clamps + modal handles length).
     description: media.description?.replace(/<[^>]*>/g, ""),
-    score: media.averageScore,
+    // averageScore stays null on brand-new / low-traffic entries until AniList
+    // has computed it (even with votes in); meanScore is populated there, so
+    // fall back to it. Established titles return both, equal.
+    score: media.averageScore ?? media.meanScore,
     episodes: media.episodes,
     duration: media.duration,
     status: media.status,
@@ -556,7 +614,15 @@ async function latestAiredAt(
 
 // ─── Search pipeline ─────────────────────────────────────────────────────
 
-type MediaFetcher = (query: string, variables: Record<string, any>) => Promise<any>;
+// The optional `signal` is queue#11's stale-response guard: browse passes the
+// AbortSignal of its query effect, and only the PRIMARY search request in
+// executeSearch() forwards it — the widening/ranking lookups are refinements
+// whose results the caller discards anyway (its own `cancelled` flag).
+type MediaFetcher = (
+  query: string,
+  variables: Record<string, any>,
+  signal?: AbortSignal
+) => Promise<any>;
 
 // When the server-side search comes back nearly empty (AniList's `search`
 // resolves server-side and a typo'd query can return nothing at all), retry
@@ -599,15 +665,33 @@ async function executeSearch(
   query: string,
   page: number,
   perPage: number,
-  filters?: SearchFilters
+  filters?: SearchFilters,
+  signal?: AbortSignal
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
   const variables: Record<string, any> = { page, perPage };
   if (query) variables.search = query;
+  // Queue#10 — with no explicit sort the order is the "Latest Updates" feed
+  // (the Sort select's none-label), so it must never surface titles that have
+  // not premiered yet: AniList's `search` happily returns them and the season
+  // fallback in rankSearchResults() ranks a future season at the top (it is
+  // clamped to "now"). Status = Upcoming asks for those titles explicitly and
+  // must not be contradicted by `status_not`; an explicit sort is a different
+  // feed (e.g. the landing "Most Popular") and is left alone. Upcoming titles
+  // remain reachable through the Status filter and the browse Upcoming
+  // section — see UPCOMING_QUERY.
+  const statusFilter = (filters?.status || "").toUpperCase();
+  const wantsUpcoming = statusFilter === "UPCOMING" || statusFilter === "NOT_YET_RELEASED";
+  if (!filters?.sort && !wantsUpcoming) {
+    variables.status_not = "NOT_YET_RELEASED";
+  }
   if (filters?.format) variables.format = filters.format.toUpperCase();
   if (filters?.season) variables.season = filters.season.toUpperCase();
   if (filters?.seasonYear) variables.seasonYear = filters.seasonYear;
   if (filters?.status) variables.status = STATUS_API_MAP[filters.status] || filters.status.toUpperCase();
   if (filters?.status_not) variables.status_not = filters.status_not.toUpperCase();
+  // Region (country of origin): "JP" | "CN" | "KR" → CountryCode list. Left
+  // unset entirely when the default "Any" is selected, so no filter is sent.
+  if (filters?.region) variables.countryOfOrigin_in = [filters.region.toUpperCase()];
   if (filters?.genres?.length) variables.genre_in = filters.genres;
   if (filters?.tagFilter) {
     const { include, exclude } = filters.tagFilter;
@@ -641,7 +725,10 @@ async function executeSearch(
     variables.startDate_greater = y * 10000 + m * 100 + d;
   }
 
-  const data = await fetcher(SEARCH_QUERY, variables);
+  // Primary search request — the only one carrying queue#11's signal, so an
+  // as-you-type query that gets superseded dies at the network instead of
+  // racing its replacement back to the component.
+  const data = await fetcher(SEARCH_QUERY, variables, signal);
   const pageData = data.Page;
   let rawMedia: any[] = pageData.media || [];
 
@@ -708,10 +795,10 @@ export const STATUS_API_MAP: Record<string, string> = {
 };
 
 export const GENRES = [
-  "Action", "Adventure", "Comedy", "Drama", "Fantasy",
-  "Horror", "Mecha", "Music", "Mystery", "Psychological",
-  "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural",
-  "Thriller",
+  "Action", "Adventure", "Comedy", "Drama", "Ecchi",
+  "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music",
+  "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life",
+  "Sports", "Supernatural", "Thriller",
 ] as const;
 
 export interface TagFilter {
@@ -730,6 +817,8 @@ export interface SearchFilters {
   tagFilter?: TagFilter;
   sort?: string;
   timeRange?: string;
+  /** Country of origin — AniList CountryCode ("JP" | "CN" | "KR"). Unset = Any. */
+  region?: string;
 }
 
 export async function searchAnime(
@@ -828,13 +917,58 @@ export async function getSeasonal(
   };
 }
 
+// ─── Upcoming feed (queue#10) ─────────────────────────────────────────────
+//
+// AniList has no sort by air date (MediaSort only orders by `startDate`), so
+// "soonest-first" means ascending premiere date. The lower bound is computed
+// per call — "yesterday" — so premieres *today* stay in the section until
+// they actually air (the filter is a strict `>`), while every TBA entry with
+// a null startDate is dropped server-side (AniList sorts those ahead of all
+// real dates). Titles whose listed premiere already passed but that are
+// still NOT_YET_RELEASED (delayed productions) fall out of both feeds — they
+// are reachable through the browse Status = Upcoming filter.
+function fuzzyDateDaysAgo(days: number): number {
+  const shifted = new Date(Date.now() - days * 86_400_000);
+  return (
+    shifted.getUTCFullYear() * 10000 +
+    (shifted.getUTCMonth() + 1) * 100 +
+    shifted.getUTCDate()
+  );
+}
+
+/**
+ * Not-yet-released anime with a known premiere date, soonest first — the
+ * data behind the browse page's `// UPCOMING` section.
+ */
+export async function getUpcoming(
+  page = 1,
+  perPage = 12
+): Promise<{ media: Anime[]; hasNextPage: boolean }> {
+  const data = await fetchGraphQL(UPCOMING_QUERY, {
+    page,
+    perPage,
+    startDate_greater: fuzzyDateDaysAgo(1),
+  });
+  const pageData = data.Page;
+  return {
+    media: pageData.media.map(anilistMediaToAnime),
+    hasNextPage: pageData.pageInfo.hasNextPage,
+  };
+}
+
 // ─── Client-side API wrappers (for use in "use client" components) ───────
 
-async function anilistFetch(query: string, variables: Record<string, any>) {
+async function anilistFetch(
+  query: string,
+  variables: Record<string, any>,
+  signal?: AbortSignal
+) {
   const res = await fetch("/api/anilist", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables }),
+    // queue#11 — undefined for every caller that doesn't search as you type.
+    signal,
   });
   if (!res.ok) throw new Error(`AniList API error: ${res.status}`);
   const json = await res.json();
@@ -878,9 +1012,11 @@ export async function searchAnimeClient(
   query: string,
   page = 1,
   perPage = 20,
-  filters?: SearchFilters
+  filters?: SearchFilters,
+  /** queue#11 — aborts the primary request when a newer query takes over. */
+  signal?: AbortSignal
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
-  return executeSearch(anilistFetch, query, page, perPage, filters);
+  return executeSearch(anilistFetch, query, page, perPage, filters, signal);
 }
 
 export async function getTrendingClient(
@@ -888,6 +1024,23 @@ export async function getTrendingClient(
   perPage = 20
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
   const data = await anilistFetch(TRENDING_QUERY, { page, perPage });
+  const pageData = data.Page;
+  return {
+    media: pageData.media.map(anilistMediaToAnime),
+    hasNextPage: pageData.pageInfo.hasNextPage,
+  };
+}
+
+/** Client twin of {@link getUpcoming} — same query, same soonest-first order. */
+export async function getUpcomingClient(
+  page = 1,
+  perPage = 12
+): Promise<{ media: Anime[]; hasNextPage: boolean }> {
+  const data = await anilistFetch(UPCOMING_QUERY, {
+    page,
+    perPage,
+    startDate_greater: fuzzyDateDaysAgo(1),
+  });
   const pageData = data.Page;
   return {
     media: pageData.media.map(anilistMediaToAnime),

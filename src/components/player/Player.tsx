@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Hls from "hls.js";
 import SubtitleOverlay from "./SubtitleOverlay";
 import SubtitlePickerContent from "./SubtitlePickerContent";
 import { proxyUrl } from "@/lib/utils";
+import { EmptyState } from "@/components/anime/Availability";
 import type { StreamSource, Subtitle } from "@/types/anime";
-import type { FranchiseEntry } from "@/components/watch/FranchiseStrip";
+import { franchiseSortGroups, type FranchiseEntry } from "@/components/watch/franchiseEntries";
+import { useFranchiseSort } from "@/hooks/useFranchiseSort";
 
 interface PlayerProps {
   animeTitle: string;
@@ -25,6 +28,17 @@ interface PlayerProps {
    * grid lists) — the dropdown docked at the top of the episode drawer.
    */
   franchise?: FranchiseEntry[];
+  /**
+   * The CURRENT episode's dub flag, straight from the episode list the watch
+   * page already resolved (`Episode.hasDub`):
+   *   `true`  this episode carries a dub        → DUB is offered
+   *   `false` this episode has no dub           → DUB renders muted + inert
+   *   `null`  the provider didn't say (megaplay ships `null` for everything)
+   *           → resolved through `/api/episodes?audio=1` below, and only if
+   *           that can't tell either does the old stream probe have a say.
+   * Data decides; the probe never overrides a known answer.
+   */
+  episodeHasDub?: boolean | null;
 }
 
 const SERVERS = ["vidstream-2", "vidcloud-1", "vidstream-1"];
@@ -175,9 +189,12 @@ function MoreRow({
       } ${className}`}
     >
       <span className="truncate">{label}</span>
-      <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/50">
-        {value}
-        <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+      {/* The value may be a long provider/server name — it truncates at the
+          band edge (min-w-0 lets the flex child shrink) instead of forcing a
+          horizontal overflow inside the menu panel. Only the chevron stays rigid. */}
+      <span className="flex min-w-0 items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/50">
+        <span className="truncate">{value}</span>
+        <svg className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>
       </span>
@@ -224,7 +241,7 @@ function isPlayableSource(s: StreamSource): boolean {
   return (s.isM3U8 && Hls.isSupported()) || isProgressiveUrl(s.url);
 }
 
-export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId, providerQuery, episodes, franchise }: PlayerProps) {
+export default function Player({ animeTitle, episodeNumber, anilistId, malId, nextEpisodeNumber, providerId, providerQuery, episodes, franchise, episodeHasDub }: PlayerProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -232,7 +249,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fetchIdRef = useRef(0);
   const failoverQueueRef = useRef<string[]>([]);
-  const workingServersRef = useRef<{ server: string; sources: StreamSource[]; subtitles: Subtitle[]; headers: Record<string, string> }[]>([]);
+  const workingServersRef = useRef<{ server: string; sources: StreamSource[]; subtitles: Subtitle[]; headers: Record<string, string>; providerId?: string }[]>([]);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressRef = useRef(false);
   const activeServerRef = useRef<string | null>(null);
@@ -254,7 +271,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const failAttemptRef = useRef<(() => void) | null>(null);
 
   // Refs for close-on-outside-click
-  const moreWrapRef = useRef<HTMLDivElement>(null); // the ⋯ menu (popup or sheet)
+  const moreWrapRef = useRef<HTMLDivElement>(null); // the ⋯ menu (right-anchored popup, all widths)
   const moreBtnRef = useRef<HTMLButtonElement>(null); // the ⋯ trigger
   // The dismiss layer under the ⋯ menu (transparent catcher on wide
   // viewports, scrim on phones). Excluded from the pointerdown "outside"
@@ -262,11 +279,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // still mounted when the click lands and the gesture can't fall through
   // to the video (which would toggle playback alongside the dismissal).
   const moreDismissRef = useRef<HTMLDivElement>(null);
-  const serverWrapRef = useRef<HTMLDivElement>(null);
-  const providerWrapRef = useRef<HTMLDivElement>(null);
-  const qualityWrapRef = useRef<HTMLDivElement>(null);
   const speedWrapRef = useRef<HTMLDivElement>(null);
-  const subWrapRef = useRef<HTMLDivElement>(null);
 
   // Stream state
   const [sources, setSources] = useState<StreamSource[]>([]);
@@ -274,9 +287,38 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [streamHeaders, setStreamHeaders] = useState<Record<string, string> | null>(null);
   const [loading, setLoading] = useState(true);
   const [streamError, setStreamError] = useState(false);
+  /**
+   * `/api/stream`'s own `data.error`, captured whenever a lookup answers with
+   * no sources — the server knows better than any local fallback whether this
+   * was "providers have nothing" versus a transport failure. Stays `null` for
+   * playback-side failures (dead manifest, exhausted source pool), which keep
+   * the generic copy. Rendered by `EmptyState` instead of it, only when set.
+   */
+  const [streamErrorDetail, setStreamErrorDetail] = useState<string | null>(null);
+  /**
+   * Scratch slot for the same string while a load window is in progress.
+   * Probes that run *after* a successful load also report `data.error` for the
+   * servers that missed, and materialising those would leave the card quoting a
+   * reason from a success. So probes only write the ref; the three API-driven
+   * failure sites below turn it into `streamErrorDetail`, and every load window
+   * starts by clearing both.
+   */
+  const lastApiErrorRef = useRef<string | null>(null);
   // Manual provider override — set when the user picks a provider after a failure
   const [providerOverride, setProviderOverride] = useState<string | null>(null);
   const activeProvider = providerOverride ?? providerId;
+  // Slow-load hint: armed at ~11s while the lookup is still running. Nothing
+  // resets it here — every site that *opens* a loading window clears the flag
+  // first, so a stale hint can never paint at the start of the next one.
+  const [slowLoad, setSlowLoad] = useState(false);
+
+  // ─── Slow-load hint ─────────────────────────────────────
+  // One timer per loading window; the window closing tears it down.
+  useEffect(() => {
+    if (!loading) return;
+    const t = setTimeout(() => setSlowLoad(true), 11_000);
+    return () => clearTimeout(t);
+  }, [loading]);
 
   // Playback state
   const [playing, setPlaying] = useState(false);
@@ -302,33 +344,83 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const isFullscreenRef = useRef(isFullscreen);
   isFullscreenRef.current = isFullscreen;
   const [showControls, setShowControls] = useState(true);
-  // Center play/pause feedback glyph — keyboard toggles flash this icon
-  // alone instead of the whole control bar
-  const [actionGlyph, setActionGlyph] = useState<{ id: number; action: "play" | "pause" } | null>(null);
-  const glyphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Seekbar buffer read-out — % ranges sampled from video.buffered (drawn as
+  // a lighter segment under the input's translucent tail) plus a "starved"
+  // flag driven purely by the media events (waiting/stalled vs playing/
+  // canplay), so the pulse only shows while the browser is actually fetching
+  // — never during normal playback.
+  const [bufferedRanges, setBufferedRanges] = useState<{ start: number; end: number }[]>([]);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const bufferedKeyRef = useRef("");
 
   // Audio type (sub / dub)
   const [audioType, setAudioType] = useState<"sub" | "dub">("sub");
-  const [dubAvailable, setDubAvailable] = useState(false);
+  // ─── Dub availability — data first, probe last ──────────────────────
+  // The episode's own `hasDub`, derived — never written during render or
+  // from an effect body: the server prop when it's known, otherwise the
+  // value the effect below fetched from the SAME `/api/episodes` endpoint
+  // the episode list uses, so the answer comes from the provider's flags /
+  // the shared megaplay probe instead of from a guess. The fetched value is
+  // keyed by episode, so a slow answer for the previous episode can never
+  // describe the current one (a key mismatch simply reads as "unknown").
+  const [fetchedDub, setFetchedDub] = useState<{ key: string; value: boolean } | null>(null);
+  // Legacy fallback only: did ANY server answer a `type=dub` stream request?
+  // Consulted exclusively while the flag is still unknown (titles the shared
+  // probe can't cover — e.g. >60 episodes with no per-episode flags).
+  const [dubProbeOk, setDubProbeOk] = useState(false);
+  const dubFlag: boolean | null =
+    episodeHasDub ??
+    (fetchedDub && fetchedDub.key === `${anilistId}:${episodeNumber}` ? fetchedDub.value : null);
+  const dubKnown = dubFlag !== null;
+  /** DUB may be switched to — a known "no dub" beats any probe result. */
+  const dubEnabled = dubKnown ? dubFlag === true : dubProbeOk;
+  /** The SUB/DUB control renders whenever we have ANY answer (yes *or* no). */
+  const showAudioToggle = dubKnown || dubProbeOk;
+
+  // Resolve a missing server flag once per episode, non-blocking: the toggle
+  // simply appears the moment the API answers. `audio=1` asks the route to
+  // run its (cached, ≤8s-budgeted) megaplay probe; a `null` back means the
+  // flags are unknowable for this title and the legacy probe below decides.
+  useEffect(() => {
+    if (episodeHasDub !== null && episodeHasDub !== undefined) return;
+    if (!anilistId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const params = new URLSearchParams({
+          title: animeTitle,
+          id: String(anilistId),
+          audio: "1",
+        });
+        const res = await fetch(`/api/episodes?${params}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const listed: { number?: number; hasDub?: boolean | null }[] | undefined = data?.episodes;
+        const ep = Array.isArray(listed) ? listed.find((e) => e.number === episodeNumber) : null;
+        if (!cancelled && typeof ep?.hasDub === "boolean") {
+          setFetchedDub({ key: `${anilistId}:${episodeNumber}`, value: ep.hasDub });
+        }
+      } catch {
+        /* network hiccup — stay unknown, the stream probe still answers */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [episodeHasDub, anilistId, animeTitle, episodeNumber]);
 
   // Server / session state
   const [activeServer, setActiveServer] = useState<string | null>(null);
   const [availableServers, setAvailableServers] = useState<string[]>([]);
-  const [showServerPicker, setShowServerPicker] = useState(false);
-
-  // Provider dropdown (control bar) — drives the same manual override as the error overlay
-  const [showProviderPicker, setShowProviderPicker] = useState(false);
 
   // Quality / speed state
   const [currentQuality, setCurrentQuality] = useState<string>("auto");
-  const [showQualityPicker, setShowQualityPicker] = useState(false);
   const [hlsLevels, setHlsLevels] = useState<{ index: number; height: number; name: string }[]>([]);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [showSpeedPicker, setShowSpeedPicker] = useState(false);
 
   // Subtitle state
   const [activeSubtitle, setActiveSubtitle] = useState<string | null>(null);
-  const [showSubPicker, setShowSubPicker] = useState(false);
 
   // Video filter state
   const [videoFilter, setVideoFilter] = useState<FilterId>("off");
@@ -339,12 +431,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // sub-page (provider / quality / …) inside the same popup.
   const [showMore, setShowMore] = useState(false);
   const [moreSection, setMoreSection] = useState<MoreSection | null>(null);
-  // SHAPE of the ⋯ menu, not just its contents. Below 640px — the same
-  // breakpoint the controls use to switch to touch-sized buttons — it opens
-  // as a full-width sheet docked to the bottom of the player over an
-  // in-player scrim; from 640px up it opens as a popup anchored above the
-  // control row. Read post-mount so the first render still matches the SSR
-  // output (the menu starts closed, so there is nothing to flash).
+  // SHAPE modifier for the ⋯ menu, not a different shape: the popup is
+  // right-anchored at every width (see `moreMenuAnchor` below), and below
+  // 640px — the same breakpoint the controls use to switch to touch-sized
+  // buttons — it only keeps a 36px floor on the root list's own rows
+  // (`[&>button]:min-h-9`; the drill panel is unfloored = desktop-density
+  // 28px options) and the width/height cap shared with the desktop popup.
+  // Read post-mount so the first render still matches the SSR output (the
+  // menu starts closed, so there is nothing to flash).
   const [isCompact, setIsCompact] = useState(false);
   // Mirror for the controls auto-hide timer (a []-deps effect reads this)
   const moreOpenRef = useRef(showMore);
@@ -403,6 +497,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const hasFranchise = (franchise?.length ?? 0) > 1;
   const hasDrawer = hasEpisodeList || hasFranchise;
   const currentFranchise = franchise?.find((entry) => entry.current);
+  // Series dropdown order — the SAME persisted mode the watch page's
+  // `// Franchise` grid uses (`useFranchiseSort`'s store notifies both), so
+  // flipping Default/Time/Type up there re-orders this list live too.
+  const [franchiseSort] = useFranchiseSort();
+  const franchiseGroups = useMemo(
+    () => (franchise ? franchiseSortGroups(franchise, franchiseSort) : []),
+    [franchise, franchiseSort]
+  );
 
   // ─── Series/episode switch overlay ───────────────────────────────
   // Armed by `beginSwitch` on the clicking instance, and re-armed from the
@@ -685,6 +787,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         const netRecoveries = { used: 0 };
         const mediaRecoveries = { used: 0 };
         setLoading(true); // honest: the bar stays up until media is ready
+        setSlowLoad(false);
         attemptStateRef.current = "pending";
 
         const fail = () => {
@@ -859,7 +962,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     async (type: "sub" | "dub") => {
       const fid = ++fetchIdRef.current;
       setLoading(true);
+      setSlowLoad(false);
       setStreamError(false);
+      setStreamErrorDetail(null);
+      lastApiErrorRef.current = null;
       // Set once a load attempt owns the loading state (it dismisses the bar
       // on MANIFEST_PARSED / loadedmetadata).
       let handedOffToAttempt = false;
@@ -888,14 +994,19 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             setSubtitles(data.subtitles || []);
             setStreamHeaders(data.headers || null);
             setStreamError(false);
+            setStreamErrorDetail(null);
+            lastApiErrorRef.current = null;
             handedOffToAttempt = true;
             loadHls(data.sources, data.headers || null, true);
             return;
           }
+          // No sources here: remember the server's reason for the card below.
+          if (typeof data?.error === "string" && data.error) lastApiErrorRef.current = data.error;
         }
 
         // If we exhausted all servers with no success
         if (fid === fetchIdRef.current) {
+          setStreamErrorDetail(lastApiErrorRef.current);
           setStreamError(true);
         }
       } catch {
@@ -916,6 +1027,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       sources: StreamSource[];
       subtitles: Subtitle[];
       headers: Record<string, string>;
+      providerId?: string;
     } | null> => {
       try {
         const params = new URLSearchParams({
@@ -934,8 +1046,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             sources: data.sources,
             subtitles: data.subtitles || [],
             headers: data.headers || {},
+            providerId: data.providerId,
           };
         }
+        // Probe failed — record the server's reason for the error card.
+        if (typeof data?.error === "string" && data.error) lastApiErrorRef.current = data.error;
       } catch { /* skip */ }
       return null;
     },
@@ -961,7 +1076,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     async (type: "sub" | "dub", serverOverride?: string) => {
       setAudioType(type);
       setLoading(true);
+      setSlowLoad(false);
       setStreamError(false);
+      setStreamErrorDetail(null);
+      lastApiErrorRef.current = null;
 
       // Get all working servers for this type
       const working = await discoverServers(type);
@@ -978,12 +1096,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         setSources(target.data.sources);
         setSubtitles(target.data.subtitles);
         setStreamHeaders(target.data.headers);
+        // One of the probes answered — any reason they reported is obsolete.
+        setStreamErrorDetail(null);
+        lastApiErrorRef.current = null;
         // Populate failover queue with the other working servers
         workingServersRef.current = working.map((w) => ({
           server: w.server,
           sources: w.data.sources,
           subtitles: w.data.subtitles,
           headers: w.data.headers,
+          providerId: w.data.providerId,
         }));
         failoverQueueRef.current = working
           .filter((w) => w.server !== target.server)
@@ -992,6 +1114,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         loadHls(target.data.sources, target.data.headers, true);
       } else {
         setLoading(false);
+        setStreamErrorDetail(lastApiErrorRef.current);
         setStreamError(true);
       }
     },
@@ -1003,8 +1126,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     let cancelled = false;
 
     setLoading(true);
+    setSlowLoad(false);
     setStreamError(false);
-    setDubAvailable(false);
+    setStreamErrorDetail(null);
+    lastApiErrorRef.current = null;
+    setDubProbeOk(false);
     hasProviderSkipRef.current = false;
     hasSetInitialSubRef.current = false;
 
@@ -1021,19 +1147,45 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setOsPage(1);
     setOsFilterQuery("");
 
-    // Check saved progress for audio type preference
+    // Check saved progress for audio type preference. A saved "dub" is only
+    // honoured when the episode doesn't already rule a dub out — data beats
+    // habit, so a dub-less episode never boots into a dub request.
+    //
+    // Both tests below read `dubFlag`, the ONE derived dub truth declared next
+    // to the prop (server prop, else the keyed `/api/episodes` answer). They
+    // used to re-read the raw `episodeHasDub` prop directly, which is the same
+    // value only until the fetched answer lands — two rules for one question
+    // was the last remaining re-derivation of dub truth inside the player.
     const saved = restoreProgress();
-    const preferredType: "sub" | "dub" = saved?.audioType === "dub" ? "dub" : "sub";
+    const preferredType: "sub" | "dub" =
+      saved?.audioType === "dub" && dubFlag !== false ? "dub" : "sub";
 
-    // Start dub probes in parallel immediately (don't wait for sub)
-    const dubProbePromise = Promise.all(
-      SERVERS.map(async (s) => {
-        try {
-          const d = await probeServer(s, "dub");
-          return !!d;
-        } catch { return false; }
-      })
-    );
+    // Legacy dub probe — only while the episode list left the flags unknown
+    // (megaplay ships `null`, and >60-episode titles can't be probed there).
+    // When the flag IS known this is a no-op: no requests, no guess, and
+    // `dubEnabled` reads straight from the data instead.
+    //
+    // It deliberately starts only ONCE the preferred stream has settled
+    // (see both call sites below) instead of racing it from mount: it is three
+    // more `/api/stream` calls, i.e. three more provider walks fired at the
+    // exact moment episode load is most congested. Same probes, same gate,
+    // same `dubProbeOk` answer — only the ordering changed, and it no longer
+    // holds the error overlay hostage to a probe the user didn't ask for.
+    const startDubProbe = () => {
+      if (cancelled || dubFlag !== null) return;
+      void Promise.all(
+        SERVERS.map(async (s) => {
+          try {
+            const d = await probeServer(s, "dub");
+            return !!d;
+          } catch {
+            return false;
+          }
+        })
+      ).then((dubResults) => {
+        if (!cancelled && dubResults.some(Boolean)) setDubProbeOk(true);
+      });
+    };
 
     (async () => {
       // Fetch preferred stream type — try servers sequentially until one works
@@ -1061,10 +1213,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             activeServerRef.current = server;
             setAvailableServers([server]);
             setStreamError(false);
+            setStreamErrorDetail(null);
+            lastApiErrorRef.current = null;
             setAudioType(preferredType);
             // Don't dismiss the loading bar here — the attempt owns it and
             // clears it on MANIFEST_PARSED / loadedmetadata (or fails over).
             loadHls(data.sources, data.headers || null, true);
+
+            // Dub probe now that the stream itself is in hand.
+            startDubProbe();
 
             // Use provider skip times if available (more accurate than AniSkip)
             if (data.intro || data.outro) {
@@ -1084,22 +1241,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             const allSub = [server, ...subExtras.filter(Boolean)] as string[];
             if (!cancelled) setAvailableServers(allSub);
 
-            // Check dub probe results (started at mount, should be done by now)
-            const dubResults = await dubProbePromise;
-            if (!cancelled && dubResults.some(Boolean)) {
-              setDubAvailable(true);
-            }
             return;
           }
+          // No sources on this server — keep the reason for the error card.
+          if (typeof data?.error === "string" && data.error) lastApiErrorRef.current = data.error;
         } catch { /* continue to next server */ }
       }
 
-      // All sub servers failed — still check dub results
-      const dubResults = await dubProbePromise;
-      if (!cancelled && dubResults.some(Boolean)) {
-        setDubAvailable(true);
-      }
+      // All sub servers failed. The error must not wait on the dub probe —
+      // start it in the background so the toggle still gets its answer.
+      startDubProbe();
       if (!cancelled) {
+        setStreamErrorDetail(lastApiErrorRef.current);
         setStreamError(true);
         setLoading(false);
       }
@@ -1112,6 +1265,44 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [animeTitle, episodeNumber, activeProvider]);
+
+  // ─── Warm the next episode's stream (#5) ─────────────────────
+  // Switching episodes costs the *new* episode a full provider walk, and in
+  // fullscreen that walk sits under the switch card with nothing else on
+  // screen — so the same wait reads as "fullscreen is slower" while windowed
+  // hides it behind a page that has already repainted. Arming the request as
+  // soon as `nextEpisodeTarget` exists moves that walk off the click: by the
+  // time the countdown fires or the user hits next, `/api/stream` for the next
+  // episode is already in the route cache (5 min for a hit, 90 s for a miss,
+  // so even an unplayable episode switches instantly).
+  //
+  // Gated on `!loading` so it never races this episode's own provider walk —
+  // both would miss the shared (provider, title) session cache and duplicate
+  // the search — and on a short delay so it also clears the "remaining servers"
+  // discovery that runs right after a successful load. Omitting neither would
+  // cost an extra walk for no benefit. `server` is pinned to the player's first
+  // choice so an anikoto answer lands under the key the player will ask for.
+  useEffect(() => {
+    if (!nextEpisodeTarget || loading) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({
+        title: animeTitle,
+        episode: String(nextEpisodeTarget),
+        type: audioType,
+        server: SERVERS[0],
+      });
+      if (anilistId) params.set("anilistId", String(anilistId));
+      if (activeProvider) params.set("providerId", activeProvider);
+      void fetch(`/api/stream?${params}`, { signal: controller.signal }).catch(() => {
+        /* aborted / offline — the switch simply pays the walk itself */
+      });
+    }, 1500);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [nextEpisodeTarget, loading, audioType, animeTitle, anilistId, activeProvider]);
 
   // ─── Fetch AniSkip timestamps independently (non-blocking) ──
   useEffect(() => {
@@ -1293,7 +1484,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       setActiveSubtitle(url);
       // Track which OS subtitle is active
       setActiveOSSubtitleId(fileId);
-      setShowSubPicker(false);
       closeMore();
     } catch (e) {
       setOsDownloadError(e instanceof Error ? e.message : "Download failed");
@@ -1312,18 +1502,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }, 3000);
   }, []);
 
-  // ─── Center action glyph (YouTube-style play/pause feedback) ──
-  const showActionGlyph = useCallback((action: "play" | "pause") => {
-    setActionGlyph((prev) => ({ id: (prev?.id ?? 0) + 1, action }));
-    if (glyphTimerRef.current) clearTimeout(glyphTimerRef.current);
-    glyphTimerRef.current = setTimeout(() => setActionGlyph(null), 750);
-  }, []);
-
   useEffect(() => {
     // Play/pause must not force the HUD visible — it used to flash the whole
     // control bar on every keyboard toggle. Only refresh the hide countdown
-    // when the bar is already showing; otherwise leave it alone (the action
-    // glyph carries the feedback instead).
+    // when the bar is already showing; otherwise leave it alone: the toggle
+    // itself carries no overlay, so a hidden bar simply stays hidden.
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     if (showControlsRef.current) {
       controlsTimerRef.current = setTimeout(() => {
@@ -1347,11 +1530,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           !moreDismissRef.current?.contains(t)) {
         closeMore();
       }
-      if (showServerPicker && serverWrapRef.current && !serverWrapRef.current.contains(t)) setShowServerPicker(false);
-      if (showProviderPicker && providerWrapRef.current && !providerWrapRef.current.contains(t)) setShowProviderPicker(false);
-      if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
       if (showSpeedPicker && speedWrapRef.current && !speedWrapRef.current.contains(t)) setShowSpeedPicker(false);
-      if (showSubPicker && subWrapRef.current && !subWrapRef.current.contains(t)) setShowSubPicker(false);
       // Drawer's franchise dropdown: the trigger's wrapper counts as inside
       // (the trigger toggles it itself — exposing it would close-then-reopen
       // on the same tap). The drawer's own backdrop click closes the drawer,
@@ -1362,7 +1541,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showMore, showServerPicker, showProviderPicker, showQualityPicker, showSpeedPicker, showSubPicker, franchiseOpen, closeMore]);
+  }, [showMore, showSpeedPicker, franchiseOpen, closeMore]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -1372,6 +1551,66 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
     }
   }, []);
+
+  // Sample video.buffered → seekbar % ranges. Quantised to 0.5% and keyed so
+  // the frequent `progress` events never re-render when nothing moved; an
+  // empty buffer (episode switch, detach) clears the segment list.
+  const handleBufferProgress = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.buffered.length === 0) {
+      if (bufferedKeyRef.current !== "") {
+        bufferedKeyRef.current = "";
+        setBufferedRanges([]);
+      }
+      return;
+    }
+    if (!isFinite(v.duration) || v.duration <= 0) return;
+    const ranges: { start: number; end: number }[] = [];
+    for (let i = 0; i < v.buffered.length; i++) {
+      ranges.push({
+        start: (v.buffered.start(i) / v.duration) * 100,
+        end: (v.buffered.end(i) / v.duration) * 100,
+      });
+    }
+    const key = ranges.map((r) => `${Math.round(r.start * 2)}-${Math.round(r.end * 2)}`).join(",");
+    if (key === bufferedKeyRef.current) return;
+    bufferedKeyRef.current = key;
+    setBufferedRanges(ranges);
+  }, []);
+  // ─── Content aspect — the windowed box follows the stream's own ratio ──
+  // The frame starts at 16:9 (what it shows before any metadata exists) and
+  // then adopts the element's real videoWidth:videoHeight. The dims guard
+  // makes this stick: it only ever acts on an ACTUAL dimension change, so an
+  // HLS level switch to another level with the same storage size — or a
+  // different size at the same ratio — cannot oscillate the layout (the
+  // functional update below also no-ops when the ratio is unchanged).
+  const [contentAspect, setContentAspect] = useState(16 / 9);
+  const contentDimsRef = useRef<{ w: number; h: number } | null>(null);
+  const syncContentAspect = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const w = v.videoWidth;
+    const h = v.videoHeight;
+    if (!w || !h) return; // metadata not there yet — keep the default
+    const ratio = w / h;
+    if (ratio < 0.5 || ratio > 3.5) return; // ignore nonsense metadata
+    const prev = contentDimsRef.current;
+    if (prev && prev.w === w && prev.h === h) return; // dimensions didn't change
+    contentDimsRef.current = { w, h };
+    setContentAspect((cur) => (Math.abs(cur - ratio) < 0.001 ? cur : ratio));
+  }, []);
+
+  // Dimensions can also change AFTER load (an HLS level switch to a level
+  // stored at a different size) — the media element's `resize` event is the
+  // exact signal that videoWidth/videoHeight changed, so re-read there.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.addEventListener("resize", syncContentAspect);
+    return () => v.removeEventListener("resize", syncContentAspect);
+  }, [syncContentAspect]);
+
   const handleLoadedMetadata = () => {
     // Progressive/direct-src attempt now has media metadata — it is playable,
     // so this is where its loading bar is dismissed (HLS dismisses on
@@ -1379,6 +1618,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     markAttemptReady();
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      // Metadata carries the real frame size — adopt it for the box aspect.
+      syncContentAspect();
       // Restore saved preferences
       const saved = restoreProgress();
       if (saved) {
@@ -1413,7 +1654,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     failAttemptRef.current?.();
   };
 
-  const togglePlay = (showGlyph: boolean = true) => {
+  const togglePlay = () => {
     if (!videoRef.current) return;
     // Pressing play after the episode ended restarts it — the countdown is off
     setCountdown(null);
@@ -1421,11 +1662,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       videoRef.current.play().catch(() => {});
       videoRef.current.playbackRate = playbackRateRef.current;
       setPlaying(true);
-      if (showGlyph) showActionGlyph("play");
     } else {
       videoRef.current.pause();
       setPlaying(false);
-      if (showGlyph) showActionGlyph("pause");
     }
   };
 
@@ -1455,7 +1694,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     setCountdown(null);
   };
 
-  // ─── Skip ±10s (control-bar buttons) ─────────────────────
+  // ─── Skip ±10s (control-bar buttons; j/l are its keyboard twins) ──
   const seekBy = (delta: number) => {
     const video = videoRef.current;
     if (!video) return;
@@ -1512,11 +1751,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // when it opens: a control-bar picker left open underneath would reappear
     // the moment the drawer closes, and the drawer is the modal now. No-ops
     // (false → false) in the normal flow, so the usual path stays put.
-    setShowServerPicker(false);
-    setShowProviderPicker(false);
-    setShowQualityPicker(false);
     setShowSpeedPicker(false);
-    setShowSubPicker(false);
     setDrawerOpen(true);
     // The panel is already in the DOM (closed, off-screen); slide it in on
     // the next frame so the browser has a style to transition from. Each
@@ -1670,8 +1905,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, []);
 
   const changeQuality = (q: string) => {
-    setShowQualityPicker(false);
-
     // No change needed if already at this quality
     if (q === currentQuality) return;
 
@@ -1721,7 +1954,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // override changes `activeProvider`, which re-runs the load effect
   // and reloads the stream with that provider.
   const selectProvider = (id: string) => {
-    setShowProviderPicker(false);
     const current = providerOverride ?? providerId ?? "";
     if (id === current) {
       // Already the active provider — on a failed stream, retry it
@@ -1738,10 +1970,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const switchAudioType = useCallback(
     (type: "sub" | "dub") => {
       if (type === audioType) return;
+      // Defence in depth for the muted DUB button: keyboard/AT activation can
+      // reach a control a pointer never could, and the data says no dub.
+      if (type === "dub" && !dubEnabled) return;
       destroyHls();
       loadByType(type);
     },
-    [audioType, destroyHls, loadByType]
+    [audioType, dubEnabled, destroyHls, loadByType]
   );
 
   const handleMouseMove = () => {
@@ -1967,8 +2202,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           break;
         case 'k':
           e.preventDefault();
-          // No HUD flash for keyboard toggles — the center glyph is the feedback
+          // No HUD flash for keyboard toggles — the toggle is silent; the
+          // controls surface only if the viewer already has them open
           togglePlay();
+          break;
+        // j / l — YouTube-style ±10s seek, the keyboard twins of the skip
+        // buttons (whose tooltips name them). Holding the key repeats, so a
+        // press-and-hold scrubs, exactly like the arrow keys.
+        case 'j':
+          e.preventDefault();
+          seekBy(-10);
+          break;
+        case 'l':
+          e.preventDefault();
+          seekBy(10);
           break;
         case 'f':
           e.preventDefault();
@@ -1979,6 +2226,23 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           video.muted = !video.muted;
           setMuted(video.muted);
           resetControlsTimer();
+          break;
+        // c — subtitles on/off. Only when a track exists (no-op otherwise);
+        // repeat-guarded so a held key can't flicker the track. Both visible
+        // states read activeSubtitle — the ⋯ row's On/Off value and the
+        // picker's highlight — so they follow with no extra wiring. Turning
+        // it back on prefers English, same as the per-stream auto-select.
+        // The handler's deps re-subscribe on subtitle changes, so these
+        // values are never stale inside the []-style closure.
+        case 'c':
+          e.preventDefault();
+          if (!e.repeat && subtitles.length > 0) {
+            setActiveSubtitle(
+              activeSubtitle
+                ? null
+                : (subtitles.find((s) => s.lang.toLowerCase().includes("en")) ?? subtitles[0]).url
+            );
+          }
           break;
         case 'ArrowLeft':
           e.preventDefault();
@@ -2022,11 +2286,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           }
           setCountdown(null);
           closeMore();
-          setShowServerPicker(false);
-          setShowProviderPicker(false);
-          setShowQualityPicker(false);
           setShowSpeedPicker(false);
-          setShowSubPicker(false);
           closeDrawer();
           break;
         // speed steps are handled above via e.code (shift + ,/.)
@@ -2047,7 +2307,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           videoRef.current.playbackRate = playbackRateRef.current;
           longPressRef.current = false;
         } else if (!e.repeat) {
-          // Short tap — toggle play/pause (glyph feedback, no HUD flash)
+          // Short tap — toggle play/pause (silent toggle, no HUD flash)
           togglePlay();
         }
       }
@@ -2059,45 +2319,60 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
     };
+    // Subtitle state is a dep so the `c` handler reads the current track
+    // (everything else in here is refs/stable setters).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [subtitles, activeSubtitle]);
 
-  // ─── ⋯ "More" menu — one panel, two anchors ────────────────────
+  // ─── ⋯ "More" menu — one panel, one popup language ───────────────
   // The panel never picks its own spot: `moreMenuAnchor` below does, and
   // every offset in it resolves against the `relative overflow-hidden`
-  // container, so the menu can never render past the player's frame. Wide
-  // viewports get a popup above the control row; phones get a bottom sheet.
-  // The panel just renders the contents — every control the row hides at
-  // this width, plus the low-priority toggles that never sit inline — and
-  // scrolls internally when it runs out of room.
-  const moreMenuAnchor = isCompact
-    ? // Sheet: docked to the player's bottom edge, capped at 80% of its
-      // height so the scrim above stays tappable; rows grow to 44px.
-      "absolute inset-x-0 bottom-0 max-h-[80%] [&_button]:min-h-11"
-    : // Popup: bottom-right on the 68px line (pb-3 12 + control row 32 +
-      // mb-2 8 + seekbar 16) — clear of the whole control cluster. The
-      // max-height subtracts that 68px plus 8px of headroom from the
-      // container's own height, so a short windowed player scrolls the list
-      // instead of pushing it off the top edge.
-      "absolute right-2 bottom-[68px] w-56 max-h-[calc(100%_-_76px)] sm:right-3";
+  // container, so the menu can never render past the player's frame.
+  // ROOT LIST and DRILL-DOWN both use the SAME shape at every width: a
+  // content-sized popup anchored bottom-right on the 76px line, above the
+  // ⋯ trigger — the desktop silhouette, not a full-width band.
+  // • Width `w-56` (root) / `w-52` (drill) at ≥640px; below 640px the
+  //   shared cap `min(15rem, 100% - 1.5rem)` keeps that same ~15rem column
+  //   while guaranteeing ≥1.5rem of player on EACH side — the `right-3`
+  //   offset matches desktop exactly, and the `1.5rem` term only wins on
+  //   players narrower than ~15rem + 1.5rem, so the panel never reaches an
+  //   edge (let alone past it). It is content-height by default (absolute,
+  //   `bottom-` set, no `top`/`height`) — dead vertical space can't happen.
+  // • `max-h` subtracts the 76px control line + ~20px headroom, so a short
+  //   windowed player scrolls the list instead of pushing it off the top.
+  //   Floor split below 640: the ROOT panel floors only its direct-child
+  //   rows (`[&>button]:min-h-9` = MoreRow + toggles at 36px; the nested
+  //   ✕ and SUB/DUB halves pick their own smaller sizes), while the DRILL
+  //   panel carries NO floor — submenu options render at their natural
+  //   28px like desktop. ≥640px is floor-free everywhere (natural ~28px).
+  const moreMenuAnchor =
+    moreSection !== null
+      ? isCompact
+        ? "absolute right-3 bottom-[76px] w-[min(15rem,calc(100%_-_1.5rem))] max-h-[calc(100%_-_96px)]"
+        : "absolute right-3 bottom-[76px] w-52 max-h-[calc(100%_-_84px)]"
+      : isCompact
+      ? "absolute right-3 bottom-[76px] w-[min(15rem,calc(100%_-_1.5rem))] max-h-[calc(100%_-_96px)] [&>button]:min-h-9"
+      : "absolute right-2 bottom-[76px] w-56 max-h-[calc(100%_-_84px)] sm:right-3";
   const moreMenu = (
     <div
       ref={moreWrapRef}
       role="menu"
       aria-label="More controls"
-      className={`rounded-none border border-[var(--accent)]/20 bg-[#131318] py-0.5 shadow-xl backdrop-blur-sm z-50 overflow-y-auto overscroll-contain ${moreMenuAnchor}`}
+      className={`rounded-none border border-[var(--accent)]/20 bg-[#131318] pt-1 pb-2 shadow-xl backdrop-blur-sm z-50 overflow-y-auto overscroll-contain ${moreMenuAnchor}`}
     >
       {moreSection === null ? (
         <>
           <div className="flex items-center justify-between gap-2 px-3 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">
             <span className="py-1">More</span>
-            {/* Sheet-only dismiss target: on phones the sheet is docked over
-                the bottom of the player, so it covers the ⋯ trigger. */}
+            {/* Touch-only dismiss target: on phones the ✕ is a clearer
+                close affordance than the transparent catcher (desktop uses
+                catcher/⋯); the popup no longer covers the ⋯ trigger, so this
+                is a convenience, not a necessity. */}
             <button
               type="button"
               onClick={closeMore}
               aria-label="Close more controls"
-              className="-mr-1 flex h-11 w-11 shrink-0 items-center justify-center text-[var(--accent)]/60 transition-colors hover:text-[var(--accent)] sm:hidden"
+              className="-mr-1 flex h-9 w-9 shrink-0 items-center justify-center text-[var(--accent)]/60 transition-colors hover:text-[var(--accent)] sm:hidden"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
                 <path strokeLinecap="round" d="M6 18L18 6M6 6l12 12" />
@@ -2105,48 +2380,72 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </button>
           </div>
 
-          {/* Sub / Dub — inline from lg up */}
-          {dubAvailable && (
-            <div className="px-2 py-1.5 lg:hidden">
-              <div className="flex overflow-hidden rounded-none border border-[var(--accent)]/20 bg-black/40">
-                <button
-                  type="button"
-                  onClick={() => switchAudioType("sub")}
-                  className={`flex-1 px-3 py-1.5 text-[11px] font-semibold tracking-wide transition-colors rounded-none ${
-                    audioType === "sub"
-                      ? "bg-[var(--accent)] text-black"
-                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
-                  }`}
-                >
-                  SUB
-                </button>
-                <div className="w-px bg-[var(--accent)]/20" />
-                <button
-                  type="button"
-                  onClick={() => switchAudioType("dub")}
-                  className={`flex-1 px-3 py-1.5 text-[11px] font-semibold tracking-wide transition-colors rounded-none ${
-                    audioType === "dub"
-                      ? "bg-[var(--accent)] text-black"
-                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
-                  }`}
-                >
-                  DUB
-                </button>
+          {/* Sub / Dub — rendered whenever the episode list answers (even
+              with "no dub"): the DUB half then reads muted and refuses the
+              click, instead of silently vanishing. Styled as a segmented
+              control, not a highlighter fill — active half = 15% accent tint
+              + accent text + a full 1px accent border (the .header-search
+              focus language), inactive = muted mono text on the panel glass.
+              The halves overlap their adjacent borders (-ml-px) into one
+              seam; the active half carries z-10 so it owns that seam. */}
+          {showAudioToggle && (
+            <>
+              {/* Compact at <640 (28px halves inside a 4px wrapper = 34px
+                  block); ≥640 keeps the round-4 sizing (py-1.5, 8px wrapper). */}
+              <div className="px-2 pt-1 pb-1 max-sm:pt-0.5 max-sm:pb-0.5 lg:hidden">
+                <div className="flex rounded-none">
+                  <button
+                    type="button"
+                    onClick={() => switchAudioType("sub")}
+                    aria-pressed={audioType === "sub"}
+                    className={`flex-1 rounded-none border px-3 py-1.5 max-sm:py-1 min-h-7 font-mono text-[11px] font-medium uppercase tracking-[0.14em] transition-colors ${
+                      audioType === "sub" || !dubEnabled
+                        ? "z-10 border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_15%,transparent)] text-[var(--accent)]"
+                        : "border-[var(--accent)]/20 bg-black/40 text-[var(--accent)]/50 hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
+                    }`}
+                  >
+                    SUB
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => switchAudioType("dub")}
+                    disabled={!dubEnabled}
+                    aria-pressed={audioType === "dub" && dubEnabled}
+                    title={dubEnabled ? undefined : "No dub for this episode"}
+                    className={`-ml-px flex-1 rounded-none border px-3 py-1.5 max-sm:py-1 min-h-7 font-mono text-[11px] font-medium uppercase tracking-[0.14em] transition-colors ${
+                      audioType === "dub" && dubEnabled
+                        ? "z-10 border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_15%,transparent)] text-[var(--accent)]"
+                        : dubEnabled
+                        ? "border-[var(--accent)]/20 bg-black/40 text-[var(--accent)]/50 hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
+                        : "cursor-not-allowed border-[var(--accent)]/10 bg-black/40 text-[var(--accent)]/25"
+                    }`}
+                  >
+                    DUB
+                  </button>
+                </div>
               </div>
-            </div>
+              {/* Section rhythm: a tight hairline break under the toggle
+                  group before the settings rows (4px + 1px + 4px — desktop
+                  density, not the old 16px sheet gap; both sides only exist
+                  below lg, where the row itself carries SUB/DUB). */}
+              <div
+                aria-hidden="true"
+                className="mx-3 my-1 h-px bg-[color-mix(in_srgb,var(--accent)_15%,transparent)] lg:hidden"
+              />
+            </>
           )}
 
-          {/* Second tier — rows mirror the inline controls' `lg` breakpoint,
-              so a control is never offered twice (here AND on the row) */}
+          {/* Settings rows — provider / server / quality / subtitles no
+              longer sit inline anywhere, so they show at EVERY width. Only
+              Speed (and the SUB/DUB copy above) still hide at lg, where the
+              row itself carries them — a control is never offered twice. */}
           <MoreRow
-            className="lg:hidden"
             label="Provider"
             value={PROVIDER_OPTIONS.find((p) => p.id === (providerOverride ?? providerId ?? ""))?.label ?? "Auto"}
             onClick={() => setMoreSection("provider")}
           />
           {availableServers.length > 0 && (
             <MoreRow
-              className="lg:hidden"
               label="Server"
               value={activeServer || "Auto"}
               onClick={() => setMoreSection("server")}
@@ -2154,7 +2453,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           )}
           {availableQualities.length > 0 && (
             <MoreRow
-              className="lg:hidden"
               label="Quality"
               value={currentQuality === "auto" ? "Auto" : currentQuality}
               onClick={() => setMoreSection("quality")}
@@ -2167,7 +2465,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             onClick={() => setMoreSection("speed")}
           />
           <MoreRow
-            className="lg:hidden"
             label="Subtitles"
             value={activeSubtitle ? "On" : "Off"}
             onClick={() => setMoreSection("subs")}
@@ -2224,19 +2521,23 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         </>
       ) : (
         <>
-          {/* Section header — back one level, name the level */}
-          <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-[var(--accent)]/15 bg-[#131318] px-2 py-1.5">
+          {/* Section header — back one level, name the level. A chevron-only
+              target (not a ✕, not a word) so the bar stays narrow enough for
+              the sub-panel's compact popover at every width. Compact cuts:
+              py-0.5 + a 24px chevron (was py-1 + 28px) = 28px + hairline;
+              ≥640 keeps the round-4 sizing via the sm: fallbacks. */}
+          <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-[var(--accent)]/15 bg-[#131318] px-1.5 py-1 max-sm:py-0.5">
             <button
               type="button"
               onClick={() => setMoreSection(null)}
-              className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
+              aria-label="Back to more controls"
+              className="flex h-7 w-7 max-sm:h-6 max-sm:w-6 shrink-0 items-center justify-center text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
             >
-              <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
               </svg>
-              More
             </button>
-            <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/30">
+            <span className="truncate font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/40">
               {moreSection === "provider"
                 ? "Provider"
                 : moreSection === "server"
@@ -2375,44 +2676,40 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     <div className="w-full">
     <div
       ref={containerRef}
-      // Windowed: in-flow, 2:1 → video. Fullscreen: <html> is the fullscreen
+      // Windowed: in-flow, and the BOX follows the content's own aspect ratio
+      // (16:9 until metadata, then videoWidth:videoHeight via
+      // syncContentAspect) — edge-to-edge at full column width, with the
+      // video contained inside it. Fullscreen: <html> is the fullscreen
       // element, so the player pins itself to the viewport — above every page
       // layer (the navbar is z-50) — and fills the screen exactly like the old
-      // element-fullscreen did, with nothing else visible underneath.
+      // element-fullscreen did, with nothing else visible underneath; no
+      // aspect or height constraint there, the viewport wins and the video
+      // letterboxes itself.
       className={`w-full bg-black overflow-hidden group outline-none ${
         isFullscreen
           ? "fixed inset-0 z-[100]"
-          : "relative aspect-[2/1] sm:aspect-video"
+          : `relative${
+              // Height cap only for content TALLER than 16:9 (its job is
+              // keeping 4:3 from taking over a short viewport). When the cap
+              // clamps, the box ends up wider than the ratio and the
+              // contained video simply pillarboxes — still never stretched.
+              // 16:9/wide content is never capped, so it keeps exactly the
+              // look it has today.
+              contentAspect < 16 / 9 ? " max-h-[calc(100vh_-_8rem)]" : ""
+            }`
       }`}
+      style={isFullscreen ? undefined : { aspectRatio: contentAspect }}
       tabIndex={0}
       onMouseMove={handleMouseMove}
       onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
         if (next && containerRef.current && !containerRef.current.contains(next)) {
-          setShowServerPicker(false);
-          setShowProviderPicker(false);
-          setShowQualityPicker(false);
           setShowSpeedPicker(false);
-          setShowSubPicker(false);
         }
       }}
     >
-      {/* Action-glyph + switch-overlay keyframes (inline so they ship with the player) */}
+      {/* Switch-overlay + skip-chip keyframes (inline so they ship with the player) */}
       <style>{`
-        @keyframes n54-glyph-grow {
-          from { transform: scale(0.7); }
-          to { transform: scale(2.1); }
-        }
-        @keyframes n54-glyph-fade {
-          0% { opacity: 1; }
-          12% { opacity: 1; }
-          100% { opacity: 0; }
-        }
-        .n54-action-glyph {
-          animation:
-            n54-glyph-grow 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards,
-            n54-glyph-fade 620ms linear forwards;
-        }
         /* Accent band sweeping down the switch overlay — the "scan" read */
         @keyframes n54-switch-sweep {
           0% { transform: translateY(-60%); opacity: 0; }
@@ -2425,10 +2722,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
         @keyframes n54-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
         .n54-blink { animation: n54-blink 900ms steps(1, end) infinite; }
+        /* Skip chip entrance — fades up the moment a segment window opens */
+        @keyframes n54-skip-in {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .n54-skip-in { animation: n54-skip-in 240ms cubic-bezier(0.16, 1, 0.3, 1); }
         @media (prefers-reduced-motion: reduce) {
-          .n54-action-glyph { animation: n54-glyph-fade 620ms linear forwards; }
           .n54-switch-sweep { animation: none; opacity: 0.6; }
           .n54-blink { animation: none; }
+          .n54-skip-in { animation: none; }
         }
       `}</style>
 
@@ -2446,7 +2749,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           // so a pending up-next card has no business auto-advancing.
           setCountdown(null);
         }}
-        onPause={() => setPlaying(false)}
+        onPause={() => {
+          setPlaying(false);
+          setIsBuffering(false);
+        }}
+        // Buffer read-out (queue #4): `progress` feeds the seekbar's buffered
+        // segments; waiting/stalled vs playing/canplay flip the "starved"
+        // flag that drives the playhead pulse — normal playback never sets it.
+        onProgress={handleBufferProgress}
+        onWaiting={() => setIsBuffering(true)}
+        onStalled={() => setIsBuffering(true)}
+        onPlaying={() => setIsBuffering(false)}
+        onCanPlay={() => setIsBuffering(false)}
         onEnded={() => {
           setPlaying(false);
           // Arm the countdown instead of jumping: with auto-play on and a next
@@ -2474,6 +2788,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             <div className="font-mono text-[10px] text-[var(--accent)]/50 tracking-[0.2em]">
               [ {animeTitle?.substring(0, 20) || "STREAM"} ]
             </div>
+            {/* Slow-load honesty: the provider chain can legitimately take
+                ~20s, so say so instead of spinning in silence. The timer that
+                arms this lives with `loading` and is torn down when it settles. */}
+            {slowLoad && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="font-mono text-[10px] tracking-[0.15em] text-[var(--accent)]/70"
+              >
+                Still checking providers…
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2552,29 +2878,44 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         />
       )}
 
-      {/* Error overlay */}
+      {/* Error overlay — a real "no stream" state, not a generic error string.
+          Retry re-runs the whole lookup (server → provider chain); the escape
+          hatch goes back to the episode list rather than leaving the viewer
+          stuck on a player that has nothing to play. */}
       {streamError && !loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-10">
           <div className="text-center max-w-sm px-4">
-            <p className="text-[#9a9aa0] text-sm mb-1">Stream unavailable</p>
-            <p className="text-[#6b6b70] text-xs mb-4 leading-relaxed">
-              {activeProvider
-                ? `No working sources from ${activeProvider}. Pick a different provider below or retry.`
-                : "All streaming providers returned no sources. Pick a provider below or try again later."}
-            </p>
-            <div className="flex gap-2 justify-center">
+            {/* Heading + reason are the shared card's. `note` is whatever
+                `/api/stream` told us; when it had nothing to add we fall back
+                to the generic line. */}
+            <EmptyState code="NO_STREAM_FOUND" note={streamErrorDetail} className="" />
+            <div className="flex flex-wrap gap-2 justify-center">
               <button
                 onClick={() => { destroyHls(); loadByType(audioType); }}
                 className="text-xs px-5 py-2.5 border border-[var(--accent)]/30 text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors rounded-none min-h-[44px]"
               >
                 Retry
               </button>
-              <button
-                onClick={() => { destroyHls(); loadByType(audioType === "sub" ? "dub" : "sub"); }}
-                className="text-xs px-5 py-2.5 border border-white/10 text-[#9a9aa0] hover:bg-white/5 transition-colors rounded-none min-h-[44px]"
-              >
-                {audioType === "sub" ? "Try Dub" : "Try Sub"}
-              </button>
+              {/* The dub escape hatch is gated by the same data as the SUB/DUB
+                  control — offering "Try Dub" for an episode the list says has
+                  no dub would be the guess we just removed. A dub track that IS
+                  playing still offers "Try Sub". */}
+              {(audioType !== "sub" || dubEnabled) && (
+                <button
+                  onClick={() => { destroyHls(); loadByType(audioType === "sub" ? "dub" : "sub"); }}
+                  className="text-xs px-5 py-2.5 border border-white/10 text-[#9a9aa0] hover:bg-white/5 transition-colors rounded-none min-h-[44px]"
+                >
+                  {audioType === "sub" ? "Try Dub" : "Try Sub"}
+                </button>
+              )}
+              {anilistId && (
+                <Link
+                  href={`/anime/${anilistId}${providerQuery ? `?provider=${encodeURIComponent(providerQuery)}` : ""}`}
+                  className="text-xs px-5 py-2.5 border border-white/10 text-[#9a9aa0] hover:text-[var(--accent)] hover:border-[var(--accent)]/40 transition-colors rounded-none min-h-[44px] inline-flex items-center"
+                >
+                  All Episodes
+                </Link>
+              )}
             </div>
             {/* Provider picker — only shown when the stream fails */}
             <div className="mt-4 pt-3 border-t border-white/10">
@@ -2614,61 +2955,54 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         </div>
       )}
 
-      {/* Center action glyph — shown on play/pause instead of flashing the HUD.
-          Grows along a fast-start/decelerating curve while it fades out.
-          Styling is a site chip, not a translucent bubble: hard corners, hairline
-          accent border, accent icon + mono micro-label, soft accent glow. */}
-      {actionGlyph && (
-        <div
-          key={actionGlyph.id}
-          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center"
-        >
-          <div className="n54-action-glyph flex h-24 w-24 flex-col items-center justify-center gap-1.5 rounded-none border border-[var(--accent)]/70 bg-black/55 text-[var(--accent)] backdrop-blur-[3px] accent-shadow-sm">
-            {actionGlyph.action === "pause" ? (
-              <svg className="h-8 w-8" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-              </svg>
-            ) : (
-              <svg className="h-8 w-8" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            )}
-            {/* tracking pushes the last glyph left of centre — pad it back */}
-            <span className="pl-[0.3em] font-mono text-[9px] uppercase leading-none tracking-[0.3em] text-[var(--accent)]/70">
-              {actionGlyph.action === "pause" ? "Pause" : "Play"}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Skip intro/outro buttons — only shown when AniSkip timestamps exist.
-          Positioned bottom-right above the control bar: bottom-20 (80px) clears
-          the progress bar (80px tall mobile / 68px desktop measured from the
-          bottom) and sits inside the controls gradient. Open right-side picker
-          menus are z-50 + opaque, so they paint over these (z-30) rather than
-          colliding. */}
+      {/* Skip intro/outro — the PRIMARY action while a segment window is
+          open: solid accent chip (mono uppercase, rounded-none, house
+          glow), parked bottom-20 / right-3 — the measured 80px clearance
+          over the control cluster (80px tall mobile / 68px desktop) — so it
+          mirrors the right-hand controls and never covers the transport.
+          The drain strip under the label shows the window emptying; the chip
+          auto-dismisses the instant the window closes (armed auto-skip still
+          jumps at that same end), and the 240ms entrance gives the moment
+          the window opens a beat of its own. z-30 keeps it over the HUD
+          while stepping to z-[19] when the speed picker is open, so the
+          picker — which lives inside the HUD's z-20 stacking context —
+          always paints over it; the ⋯ panel and drawer are top-level z-50
+          and need no such help. */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
-        <div className="absolute bottom-20 left-auto right-3 flex justify-end gap-2 sm:gap-3 z-30">
+        <div className={`absolute bottom-20 right-3 flex justify-end gap-2 sm:gap-3 ${showSpeedPicker ? "z-[19]" : "z-30"}`}>
           {inIntro && introSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
-              className="flex items-center gap-1.5 sm:gap-2 px-4 py-2 sm:px-3 sm:py-1.5 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[11px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+              className="n54-skip-in group relative overflow-hidden rounded-none border border-[var(--accent)] bg-[var(--accent)] px-4 py-2.5 text-black accent-shadow-sm transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-              </svg>
-              Skip Intro
+              <span className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase leading-none tracking-[0.18em]">
+                Skip Intro
+                <svg className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" strokeWidth={2.4} viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 5l7 7-7 7M13 5l7 7-7 7" />
+                </svg>
+              </span>
+              {/* Drain strip: width = share of the segment window left */}
+              <span
+                className="absolute inset-x-0 bottom-0 h-[3px] bg-black/30"
+                style={{ width: `${Math.max(0, Math.min(100, ((introSegment.end - currentTime) / Math.max(1, introSegment.end - introSegment.start)) * 100))}%` }}
+              />
             </button>
           )}
           {inOutro && outroSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = outroSegment.end; }}
-              className="flex items-center gap-1.5 sm:gap-2 px-4 py-2 sm:px-3 sm:py-1.5 bg-[var(--accent)]/10 border border-[var(--accent)]/40 text-[var(--accent)] text-[11px] sm:text-xs font-mono uppercase tracking-wider hover:bg-[var(--accent)]/20 transition-colors rounded-none"
+              className="n54-skip-in group relative overflow-hidden rounded-none border border-[var(--accent)] bg-[var(--accent)] px-4 py-2.5 text-black accent-shadow-sm transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
             >
-              Skip Outro
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-              </svg>
+              <span className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase leading-none tracking-[0.18em]">
+                Skip Outro
+                <svg className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" strokeWidth={2.4} viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 5l7 7-7 7M13 5l7 7-7 7" />
+                </svg>
+              </span>
+              <span
+                className="absolute inset-x-0 bottom-0 h-[3px] bg-black/30"
+                style={{ width: `${Math.max(0, Math.min(100, ((outroSegment.end - currentTime) / Math.max(1, outroSegment.end - outroSegment.start)) * 100))}%` }}
+              />
             </button>
           )}
         </div>
@@ -2681,8 +3015,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Progress bar */}
-        <div className="mb-2 group/bar h-4 flex items-center">
+        {/* Progress bar — buffered ranges paint a lighter segment UNDER the
+            input (its tail is translucent white, so they read through); the
+            pulse + label ride the playhead (edge-clamped) only while the
+            media is starved — waiting/stalled — never in normal playback. */}
+        <div className="group/bar relative mb-2 h-4 flex items-center">
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2" aria-hidden="true">
+            {bufferedRanges.map((r, i) => (
+              <div
+                key={i}
+                className="absolute top-0 h-full bg-white/25"
+                style={{ left: `${r.start}%`, width: `${Math.max(0, r.end - r.start)}%` }}
+              />
+            ))}
+          </div>
           <input
             type="range"
             min={0}
@@ -2690,6 +3036,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             step={0.1}
             value={currentTime}
             onChange={handleSeek}
+            aria-label="Seek"
             className="progress-range w-full h-1 appearance-none cursor-pointer relative z-10
                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
                        [&::-webkit-slider-thumb]:-mt-[4px] [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none
@@ -2705,6 +3052,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               background: `linear-gradient(to right, rgba(var(--accent-rgb),0.9) ${progress}%, rgba(var(--accent-rgb),0.2) ${progress}%, rgba(255,255,255,0.1) ${progress}%)`,
             }}
           />
+          {isBuffering && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 z-20 -translate-y-1/2"
+              style={{ left: `clamp(12px, ${progress}%, calc(100% - 12px))` }}
+            >
+              <span className="absolute bottom-[14px] left-1/2 -translate-x-1/2 whitespace-nowrap font-mono text-[9px] uppercase leading-none tracking-[0.2em] text-[var(--accent)]">
+                Buffering
+              </span>
+              <span className="block h-2.5 w-2.5 -translate-x-1/2 animate-pulse bg-[var(--accent)]" />
+            </div>
+          )}
         </div>
 
         {/* Controls row — grouped by priority, never scrolled. Left group:
@@ -2736,22 +3095,25 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </svg>
             </button>
 
-            {/* Skip back 10s */}
+            {/* Skip back 10s — double-chevron rewind (`<<`); J is its
+                keyboard twin, and the tooltip says so */}
             <button
               onClick={() => seekBy(-10)}
-              title="Back 10 seconds"
+              title="Back 10 seconds (J)"
               aria-label="Skip back 10 seconds"
               className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8"
             >
-              <svg className="w-6 h-6 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 4.8a7.2 7.2 0 1 0 7.2 7.2" />
-                <path d="M12 1.8 12 7.8 8.4 4.8z" fill="currentColor" stroke="none" />
-                <text x="12" y="12.2" textAnchor="middle" dominantBaseline="central" fontSize="7.6" fontWeight="700" fill="currentColor" stroke="none">10</text>
+              <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 18l-8.5-6L20 6v12zM11 6v12L2.5 12 11 6z" />
               </svg>
             </button>
 
             {/* Play/Pause */}
-            <button onClick={() => togglePlay(false)} className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-10 h-10 sm:w-8 sm:h-8">
+            <button
+              onClick={() => togglePlay()}
+              aria-label={playing ? "Pause" : "Play"}
+              className="flex items-center justify-center text-[var(--accent)] hover:text-white transition-colors w-10 h-10 sm:w-8 sm:h-8"
+            >
               {playing ? (
                 <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
@@ -2763,17 +3125,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               )}
             </button>
 
-            {/* Skip forward 10s */}
+            {/* Skip forward 10s — double-chevron fast-forward (`>>`); L is
+                its keyboard twin */}
             <button
               onClick={() => seekBy(10)}
-              title="Forward 10 seconds"
+              title="Forward 10 seconds (L)"
               aria-label="Skip forward 10 seconds"
               className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8"
             >
-              <svg className="w-6 h-6 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 4.8a7.2 7.2 0 1 1-7.2 7.2" />
-                <path d="M12 1.8 12 7.8 15.6 4.8z" fill="currentColor" stroke="none" />
-                <text x="12" y="12.2" textAnchor="middle" dominantBaseline="central" fontSize="7.6" fontWeight="700" fill="currentColor" stroke="none">10</text>
+              <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" />
               </svg>
             </button>
 
@@ -2796,7 +3157,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
             {/* Volume */}
             <div className="flex items-center gap-1 group/vol">
-              <button onClick={toggleMute} className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8">
+              <button
+                onClick={toggleMute}
+                aria-label={muted || volume === 0 ? "Unmute" : "Mute"}
+                className="flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors w-10 h-10 sm:w-8 sm:h-8"
+              >
                 {muted || volume === 0 ? (
                   <svg className="w-6 h-6 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
@@ -2815,6 +3180,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   step={0.05}
                   value={muted ? 0 : volume}
                   onChange={handleVolume}
+                  aria-label="Volume"
                   className="w-20 sm:w-24 h-1 appearance-none cursor-pointer
                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
                              [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:rounded-none"
@@ -2836,17 +3202,19 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           {/* Right group: second-tier pickers (lg+), ⋯ menu, fullscreen.
               (The episode drawer is NOT here — it is an edge handle, see below) */}
           <div className="flex items-center gap-1.5 justify-end shrink-0">
-            {/* Second tier — hidden by priority, not by scrolling: below lg
-                these collapse into the ⋯ menu (whose rows carry `lg:hidden`,
-                so a control is never offered twice). Above lg they sit inline. */}
+            {/* Second tier — lg+ only inline; below lg the same controls
+                live in the ⋯ menu, so nothing is ever offered twice */}
             <div className="hidden lg:contents">
-            {/* Sub / Dub segmented toggle */}
-            {dubAvailable && (
+            {/* Sub / Dub segmented toggle — data-gated: shown as soon as the
+                episode's flag is known, with DUB dimmed + inert when it isn't
+                there. Never a guess: a known "no dub" wins over any probe. */}
+            {showAudioToggle && (
               <div className="flex items-center bg-black/40 border border-[var(--accent)]/20 overflow-hidden rounded-none">
                 <button
                   onClick={() => switchAudioType("sub")}
+                  aria-pressed={audioType === "sub"}
                   className={`px-3 text-[11px] font-semibold tracking-wide transition-colors h-7 ${
-                    audioType === "sub"
+                    audioType === "sub" || !dubEnabled
                       ? "bg-[var(--accent)] text-black"
                       : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
                   }`}
@@ -2856,10 +3224,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 <div className="w-px h-4 bg-[var(--accent)]/20" />
                 <button
                   onClick={() => switchAudioType("dub")}
+                  disabled={!dubEnabled}
+                  aria-pressed={audioType === "dub" && dubEnabled}
+                  title={dubEnabled ? undefined : "No dub for this episode"}
                   className={`px-3 text-[11px] font-semibold tracking-wide transition-colors h-7 ${
-                    audioType === "dub"
+                    audioType === "dub" && dubEnabled
                       ? "bg-[var(--accent)] text-black"
-                      : "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                      : dubEnabled
+                      ? "text-[var(--accent)]/50 hover:text-[var(--accent)]"
+                      : "cursor-not-allowed text-[var(--accent)]/25"
                   }`}
                 >
                   DUB
@@ -2867,117 +3240,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </div>
             )}
 
-            {/* Provider picker */}
-            <div ref={providerWrapRef} className="relative h-full flex items-center gap-1">
-              <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden xl:inline">Pv</span>
-              <button
-                onClick={() => { setShowProviderPicker(!showProviderPicker); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); closeMore(); }}
-                className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
-                title="Streaming provider"
-              >
-                {PROVIDER_OPTIONS.find((p) => p.id === (providerOverride ?? providerId ?? ""))?.label ?? "Auto"}
-                <svg className="w-3 h-3 opacity-50" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M7 10l5 5 5-5z" />
-                </svg>
-              </button>
-              {showProviderPicker && (
-                <div className="absolute right-0 bottom-full mb-1 w-40 bg-[#131318] border border-[var(--accent)]/20 shadow-xl z-50 backdrop-blur-sm py-0.5 rounded-none">
-                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">Provider</div>
-                  {PROVIDER_OPTIONS.map((p) => {
-                    const current = providerOverride ?? providerId ?? "";
-                    const isActive = current === p.id;
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => selectProvider(p.id)}
-                        className={`w-full text-left px-3 py-1.5 text-xs transition-colors rounded-none ${
-                          isActive
-                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Server/Session picker */}
-            {availableServers.length > 0 && (
-              <div ref={serverWrapRef} className="relative h-full flex items-center gap-1">
-                <span className="text-[10px] text-[var(--accent)]/40 uppercase tracking-wider font-mono hidden xl:inline">Srv</span>
-                <button
-                  onClick={() => { setShowServerPicker(!showServerPicker); setShowProviderPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); closeMore(); }}
-                  className="text-[11px] px-2.5 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none h-7 flex items-center gap-1"
-                >
-                  {activeServer || "Auto"}
-                </button>
-                {showServerPicker && (
-                  <div className="absolute right-0 bottom-full mb-1 w-40 bg-[#131318] border border-[var(--accent)]/20 shadow-xl z-50 backdrop-blur-sm py-0.5 rounded-none">
-                    <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)]/30 font-semibold font-mono">Server</div>
-                    {availableServers.map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => { setActiveServer(s); activeServerRef.current = s; setShowServerPicker(false); loadByType(audioType, s); }}
-                        className={`w-full text-left px-3 py-1.5 text-xs transition-colors rounded-none ${
-                          activeServer === s
-                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                        }`}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Quality picker */}
-            {availableQualities.length > 0 && (
-              <div ref={qualityWrapRef} className="relative h-full flex items-center">
-                <button
-                  onClick={() => { setShowQualityPicker(!showQualityPicker); setShowProviderPicker(false); setShowServerPicker(false); setShowSpeedPicker(false); setShowSubPicker(false); closeMore(); }}
-                  className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
-                >
-                  <svg className="w-3 h-3 opacity-60" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" />
-                  </svg>
-                  {currentQuality === "auto" ? "Auto" : currentQuality}
-                  <svg className="w-3 h-3 opacity-50" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M7 10l5 5 5-5z" />
-                  </svg>
-                </button>
-                {showQualityPicker && (
-                  <div className="absolute right-0 bottom-full mb-1.5 w-32 bg-[#131318] border border-[var(--accent)]/20 shadow-xl overflow-hidden z-50 backdrop-blur-sm rounded-none">
-                    <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
-                      Quality
-                    </div>
-                    {availableQualities.map((q) => (
-                      <button
-                        key={q}
-                        onClick={() => changeQuality(q)}
-                        className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
-                          // Highlight if it's the current quality, or if auto is active and this is the first item
-                          q === currentQuality
-                            ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-                            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
-                        }`}
-                      >
-                        {q === "auto" ? "Auto" : q}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Speed selector */}
             <div ref={speedWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSpeedPicker(!showSpeedPicker); setShowProviderPicker(false); setShowServerPicker(false); setShowQualityPicker(false); setShowSubPicker(false); closeMore(); }}
+                onClick={() => { setShowSpeedPicker(!showSpeedPicker); closeMore(); }}
                 className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
               >
                 <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -2989,7 +3255,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 </svg>
               </button>
               {showSpeedPicker && (
-                <div className="absolute right-0 bottom-full mb-1.5 w-28 bg-[#131318] border border-[var(--accent)]/20 shadow-xl overflow-hidden z-50 backdrop-blur-sm rounded-none">
+                <div className="absolute right-0 bottom-full mb-1.5 w-28 bg-[#131318] border border-[var(--accent)]/20 shadow-xl max-h-[min(14rem,45vh)] overflow-y-auto overflow-x-hidden z-50 backdrop-blur-sm rounded-none">
                   <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
                     Speed
                   </div>
@@ -3010,54 +3276,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               )}
             </div>
 
-            {/* Subtitle toggle + picker */}
-            <div ref={subWrapRef} className="relative h-full flex items-center">
-              <button
-                onClick={() => { setShowSubPicker(!showSubPicker); setShowProviderPicker(false); setShowServerPicker(false); setShowQualityPicker(false); setShowSpeedPicker(false); closeMore(); }}
-                className={`h-7 flex items-center gap-1 text-[11px] px-2 border transition-colors rounded-none ${
-                  activeSubtitle
-                    ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
-                    : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
-                }`}
-              >
-                <svg className="w-3 h-3 opacity-80" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z" />
-                </svg>
-                CC
-              </button>
-              {showSubPicker && (
-                <div className="absolute right-0 bottom-full mb-1.5 w-52 bg-[#131318] border border-[var(--accent)]/20 shadow-xl z-50 max-h-80 overflow-y-auto backdrop-blur-sm rounded-none">
-                  <SubtitlePickerContent
-                    activeSubtitle={activeSubtitle}
-                    subtitles={subtitles}
-                    onSelect={(url) => { setActiveSubtitle(url); setActiveOSSubtitleId(null); setShowSubPicker(false); }}
-                    subtitleOffset={subtitleOffset}
-                    onOffsetChange={setSubtitleOffset}
-                    subtitleSize={subtitleSize}
-                    onSizeChange={setSubtitleSize}
-                    osSearched={osSearched}
-                    osLoading={osLoading}
-                    osError={osError}
-                    osResults={osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id))}
-                    osPage={osPage}
-                    osFilterQuery={osFilterQuery}
-                    onSearchOpenSubtitles={(page) => { searchOpenSubtitles(page); }}
-                    onFilterChange={setOsFilterQuery}
-                    onSelectOpenSubtitle={(fileId) => selectOSSubtitle(fileId)}
-                    onResetOpenSubtitles={() => { setOsSearched(false); setOsResults([]); setOsError(null); setOsPage(1); setOsFilterQuery(""); failedOSIdsRef.current.clear(); }}
-                    activeOSSubtitleId={activeOSSubtitleId}
-                    osDownloadError={osDownloadError}
-                    onClearDownloadError={() => setOsDownloadError(null)}
-                  />
-                </div>
-              )}
             </div>
 
-            </div>
-
-            {/* More (⋯) — always present, never scrolls away. Below lg it
-                carries the whole second tier; at every width it carries the
-                least-priority toggles (auto-play, auto-skip, FX filter). */}
+            {/* More (⋯) — always present, never scrolls away. It carries the
+                settings that used to be inline pickers (provider, server,
+                quality, subtitles) plus the toggles at their peak (auto-play,
+                auto-skip, FX filter). */}
             <button
               ref={moreBtnRef}
               onClick={() => {
@@ -3068,17 +3292,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   setMoreSection(null);
                   setShowControls(true);
                 }
-                setShowServerPicker(false);
-                setShowProviderPicker(false);
-                setShowQualityPicker(false);
                 setShowSpeedPicker(false);
-                setShowSubPicker(false);
-                    }}
+              }}
               aria-label="More controls"
               aria-haspopup="menu"
               aria-expanded={showMore}
               title="More"
-              className={`w-10 h-10 sm:w-8 sm:h-8 flex items-center justify-center border transition-colors rounded-none ${
+              className={`w-9 h-10 shrink-0 sm:w-8 sm:h-8 flex items-center justify-center border transition-colors rounded-none ${
                 showMore
                   ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
                   : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
@@ -3091,8 +3311,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
             {/* Enter fullscreen (hidden when already fullscreen — top-right exit button handles that) */}
             {!isFullscreen && (
-              <button onClick={toggleFullscreen} className="w-10 h-10 sm:w-8 sm:h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors">
-                <svg className="w-5 h-5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24">
+              <button
+                onClick={toggleFullscreen}
+                aria-label="Enter fullscreen"
+                title="Fullscreen"
+                className="w-9 h-10 shrink-0 sm:w-8 sm:h-8 flex items-center justify-center text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors"
+              >
+                <svg className="w-5 h-5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
                 </svg>
               </button>
@@ -3336,90 +3561,109 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                     aria-label="Franchise"
                     className="absolute inset-x-0 top-full z-30 mt-1 max-h-[min(50vh,18rem)] overflow-y-auto overscroll-contain border border-[var(--accent)]/30 bg-[#131318] shadow-xl"
                   >
-                    {franchise?.map((entry) => {
-                      const isCurrent = entry.current;
-                      const qs = providerQuery
-                        ? `?provider=${encodeURIComponent(providerQuery)}`
-                        : "";
-                      // Same href rules as the watch page's `// Franchise`
-                      // grid: mainline seasons deep-link to episode 1, the
-                      // rest fall through to their detail page.
-                      const href = entry.mainLine
-                        ? `/anime/${entry.id}/watch/1${qs}`
-                        : `/anime/${entry.id}${qs}`;
+                    {/* Same persisted order as the watch page's `// Franchise`
+                        grid (presentational here: every row stays a plain
+                        menu item). */}
+                    {franchiseGroups.map((group) => (
+                      <Fragment key={group.label ?? "all"}>
+                        {group.label !== null && (
+                          <div
+                            role="presentation"
+                            className="flex items-center gap-2 border-b border-[var(--accent)]/10 bg-black/30 px-3 py-1.5 font-mono text-[9px] uppercase tracking-wider text-[var(--accent)]/55"
+                          >
+                            <span className="shrink-0">{group.label}</span>
+                            <span aria-hidden="true" className="h-px flex-1 bg-[var(--accent)]/15" />
+                            <span className="shrink-0 tabular-nums text-[#6b6b70]">
+                              {group.entries.length}
+                            </span>
+                          </div>
+                        )}
+                        {group.entries.map((entry) => {
+                          const isCurrent = entry.current;
+                          const qs = providerQuery
+                            ? `?provider=${encodeURIComponent(providerQuery)}`
+                            : "";
+                          // Same href rules as the watch page's `// Franchise`
+                          // grid: mainline seasons deep-link to episode 1, the
+                          // rest fall through to their detail page.
+                          const href = entry.mainLine
+                            ? `/anime/${entry.id}/watch/1${qs}`
+                            : `/anime/${entry.id}${qs}`;
 
-                      return (
-                        <button
-                          key={entry.id}
-                          type="button"
-                          role="menuitem"
-                          aria-current={isCurrent ? "page" : undefined}
-                          title={entry.detail}
-                          onClick={() => {
-                            setFranchiseOpen(false);
-                            if (isCurrent) return; // already here — just close
-                            closeDrawer();
-                            if (entry.mainLine) {
-                              // Watch-page switch: arm the overlay + handoff,
-                              // then push. Fullscreen lives on <html>, so it
-                              // carries across the remount untouched.
-                              beginSwitch({ kind: "series", series: entry.title, episode: 1 });
-                              router.push(href);
-                            } else {
-                              // Detail page — there is no player to hand over
-                              // to, so drop out of fullscreen deliberately
-                              // rather than strand a fullscreened text page.
-                              exitFullscreen();
-                              router.push(href);
-                            }
-                          }}
-                          className={`flex min-h-[44px] w-full items-center gap-2.5 border-l-2 px-3 py-2.5 text-left transition-colors rounded-none ${
-                            isCurrent
-                              ? "border-[var(--accent)] bg-[var(--accent)]/15"
-                              : entry.tier === "main"
-                                ? "border-l-[var(--accent)]/45 bg-[var(--accent)]/5 hover:bg-[var(--accent)]/10"
-                                : "border-l-transparent hover:bg-[var(--accent)]/5"
-                          }`}
-                        >
-                          {entry.season !== undefined && (
-                            <span
-                              className={`shrink-0 border px-1.5 py-1 font-mono text-[11px] font-bold leading-none tabular-nums ${
+                          return (
+                            <button
+                              key={entry.id}
+                              type="button"
+                              role="menuitem"
+                              aria-current={isCurrent ? "page" : undefined}
+                              title={entry.detail}
+                              onClick={() => {
+                                setFranchiseOpen(false);
+                                if (isCurrent) return; // already here — just close
+                                closeDrawer();
+                                if (entry.mainLine) {
+                                  // Watch-page switch: arm the overlay + handoff,
+                                  // then push. Fullscreen lives on <html>, so it
+                                  // carries across the remount untouched.
+                                  beginSwitch({ kind: "series", series: entry.title, episode: 1 });
+                                  router.push(href);
+                                } else {
+                                  // Detail page — there is no player to hand over
+                                  // to, so drop out of fullscreen deliberately
+                                  // rather than strand a fullscreened text page.
+                                  exitFullscreen();
+                                  router.push(href);
+                                }
+                              }}
+                              className={`flex min-h-[44px] w-full items-center gap-2.5 border-l-2 px-3 py-2.5 text-left transition-colors rounded-none ${
                                 isCurrent
-                                  ? "border-[var(--accent)]/50 bg-[var(--accent)]/15 text-[var(--accent)]"
-                                  : "border-[var(--accent)]/30 text-[var(--accent)]/70"
+                                  ? "border-[var(--accent)] bg-[var(--accent)]/15"
+                                  : entry.tier === "main"
+                                    ? "border-l-[var(--accent)]/45 bg-[var(--accent)]/5 hover:bg-[var(--accent)]/10"
+                                    : "border-l-transparent hover:bg-[var(--accent)]/5"
                               }`}
                             >
-                              {`S${entry.season}`}
-                            </span>
-                          )}
-                          <span
-                            className={`shrink-0 border px-1.5 py-1 font-mono text-[9px] uppercase leading-none tracking-wider ${
-                              isCurrent
-                                ? "border-[var(--accent)]/40 text-[var(--accent)]/85"
-                                : "border-[var(--accent)]/20 text-[var(--accent)]/55"
-                            }`}
-                          >
-                            {entry.badge}
-                          </span>
-                          <span
-                            className={`min-w-0 flex-1 truncate text-xs ${
-                              isCurrent
-                                ? "text-[var(--accent)]"
-                                : entry.tier === "main"
-                                  ? "text-[#e6e6ea]"
-                                  : "text-[#9a9aa0]"
-                            }`}
-                          >
-                            {entry.title}
-                          </span>
-                          {isCurrent && (
-                            <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/70">
-                              Now
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
+                              {entry.season !== undefined && (
+                                <span
+                                  className={`shrink-0 border px-1.5 py-1 font-mono text-[11px] font-bold leading-none tabular-nums ${
+                                    isCurrent
+                                      ? "border-[var(--accent)]/50 bg-[var(--accent)]/15 text-[var(--accent)]"
+                                      : "border-[var(--accent)]/30 text-[var(--accent)]/70"
+                                  }`}
+                                >
+                                  {`S${entry.season}`}
+                                </span>
+                              )}
+                              <span
+                                className={`shrink-0 border px-1.5 py-1 font-mono text-[9px] uppercase leading-none tracking-wider ${
+                                  isCurrent
+                                    ? "border-[var(--accent)]/40 text-[var(--accent)]/85"
+                                    : "border-[var(--accent)]/20 text-[var(--accent)]/55"
+                                }`}
+                              >
+                                {entry.badge}
+                              </span>
+                              <span
+                                className={`min-w-0 flex-1 truncate text-xs ${
+                                  isCurrent
+                                    ? "text-[var(--accent)]"
+                                    : entry.tier === "main"
+                                      ? "text-[#e6e6ea]"
+                                      : "text-[#9a9aa0]"
+                                }`}
+                              >
+                                {entry.title}
+                              </span>
+                              {isCurrent && (
+                                <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]/70">
+                                  Now
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </Fragment>
+                    ))}
                   </div>
                 )}
               </div>
@@ -3474,11 +3718,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           below are its direct children, so every offset resolves against the
           player frame — nothing can render past its edge (see `moreMenuAnchor`
           for the geometry of each shape):
-          • ≥640px: a popup bottom-right above the control cluster, over a
-            transparent catcher that swallows clicks meant for the video, so
-            dismissing the menu never also toggles playback.
-          • <640px: a full-width sheet docked to the player's bottom edge over
-            an in-player scrim, rows grown to 44px for touch.
+          • BOTH breakpoints: a popup bottom-right on the 76px line — root list
+            or drill-down — over a TRANSPARENT catcher that swallows clicks
+            meant for the video, so dismissing the menu never also toggles
+            playback. The catcher stops at 76px, leaving the whole control
+            cluster live underneath (⋯ included, so it toggles shut). There is
+            deliberately no dark scrim: the popup is a small floating card, not
+            a takeover, and desktop has never dimmed the video behind it.
           z-40 on the dismiss layer sits above the HUD and stacked overlays
           (z-20/30), below the panel (z-50) — and below the up-next card
           (z-45), which stays actionable if it fires mid-menu. */}
@@ -3488,11 +3734,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             ref={moreDismissRef}
             onClick={closeMore}
             aria-hidden="true"
-            className={
-              isCompact
-                ? "absolute inset-0 z-40 bg-black/60"
-                : "absolute inset-x-0 top-0 bottom-[68px] z-40"
-            }
+            className="absolute inset-x-0 top-0 bottom-[76px] z-40"
           />
           {moreMenu}
         </>

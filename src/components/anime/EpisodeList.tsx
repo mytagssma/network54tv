@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { Episode } from "@/types/anime";
+import { AvailabilityChip } from "./Availability";
 
 interface EpisodeListProps {
   episodes: Episode[];
@@ -44,16 +45,8 @@ export default function EpisodeList({ episodes, animeId, provider }: EpisodeList
             </div>
             {(hasSub || hasDub) && (
               <span className="flex items-center gap-1 shrink-0">
-                {hasSub && (
-                  <span className="border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
-                    SUB
-                  </span>
-                )}
-                {hasDub && (
-                  <span className="border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
-                    DUB
-                  </span>
-                )}
+                {hasSub && <AvailabilityChip kind="sub" />}
+                {hasDub && <AvailabilityChip kind="dub" />}
               </span>
             )}
             {isClicked ? (
@@ -82,9 +75,7 @@ export default function EpisodeList({ episodes, animeId, provider }: EpisodeList
                 {episode.title || `Episode ${episode.number}`}
               </p>
             </div>
-            <span className="text-[10px] font-mono text-[#6b6b70] uppercase tracking-wider shrink-0">
-              N/A
-            </span>
+            <AvailabilityChip kind="na" className="shrink-0" />
           </div>
         );
       })}

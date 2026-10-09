@@ -100,50 +100,178 @@ function titleSimilarity(a: string, b: string): number {
 /** Minimum similarity for accepting a non-title-matching search fallback. */
 const SEARCH_FALLBACK_MIN_SIMILARITY = 0.5;
 
+/** Tokens that can form a trailing season/sequel marker in a title. */
+const SEASON_TOKEN_RE =
+  /^(?:\d+(?:st|nd|rd|th)?|season|part|cour|ova|special|final|last)$/;
+
+/**
+ * Trailing season marker of a normalized title: the maximal run of
+ * season-ish tokens at its end, kept only when it actually signals a
+ * season/sequel (contains a digit, or `final`/`last`/`ova`/`special`).
+ * "theatre of darkness yamishibai 17" → ["17"]; "oshi no ko" → [].
+ */
+function trailingSeasonMarker(clean: string): string[] {
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  let i = tokens.length;
+  while (i > 0 && SEASON_TOKEN_RE.test(tokens[i - 1])) i--;
+  const tail = tokens.slice(i);
+  const signalsSeason = tail.some(
+    (t) => /^\d/.test(t) || t === "final" || t === "last" || t === "ova" || t === "special"
+  );
+  return signalsSeason ? tail : [];
+}
+
 // ─── Provider Adapters ────────────────────────────────────────────────
+
+/**
+ * Every name a search hit may be indexed under, normalized and deduped:
+ * the provider's `title` plus the alias fields it ships alongside it.
+ *
+ * Providers frequently display an English/localized title while carrying the
+ * romaji name the user actually searched with in a sibling field (anikoto
+ * answers `{ id: "wushen-zhuzai-6sro6", title: "The God of War Dominates",
+ * romaji: "Wushen Zhuzai" }`). Matching on `title` alone silently dropped
+ * those hits, so a provider that DID carry the anime never got consulted.
+ */
+function resultNames(r: any): string[] {
+  const names: string[] = [];
+  const push = (v: unknown): void => {
+    if (typeof v !== "string" || !v.trim()) return;
+    const n = normalize(v);
+    if (n && !names.includes(n)) names.push(n);
+  };
+  const t = r?.title;
+  if (typeof t === "string") push(t);
+  else if (t && typeof t === "object") {
+    push(t.romaji);
+    push(t.english);
+  }
+  push(r?.romaji);
+  return names;
+}
+
+/**
+ * Query variants worth sending to a provider's `search`, most specific first:
+ * the full title, then its head segment when the title carries a subtitle
+ * ("Wushen Zhuzai: Da Wei Pian" → "Wushen Zhuzai"). Providers frequently
+ * index only the base name, so the full string returns nothing useful while
+ * the head returns the right entry (which the result's own `romaji`/title
+ * then identifies — see `resultNames`).
+ *
+ * Variants are only consulted once the full title produced no candidate, so a
+ * lookup that already works costs exactly what it did before.
+ *
+ * The season guard is ALWAYS derived from the original `title`, never from a
+ * variant — otherwise "…Yamishibai 17" would relax to the base entry.
+ */
+function titleQueryVariants(title: string): string[] {
+  const variants: string[] = [];
+  const push = (v: string): void => {
+    const t = v.trim();
+    if (t && !variants.includes(t)) variants.push(t);
+  };
+  push(title);
+  // Head before ":" / "：" / " - " (a bare "Re:" must NOT yield "Re").
+  const head = (title.split(/\s+[:：-]\s+|[:：]/)[0] ?? "").trim();
+  if (head && head !== title && normalize(head).split(/\s+/).filter(Boolean).length >= 2) {
+    push(head);
+  }
+  return variants;
+}
 
 /**
  * Try to find anime matching `title` using a provider's `search` function.
  * Returns an ordered, deduped list of provider-specific candidate IDs:
- * all title-matching results first (original order). When nothing matched,
- * a fallback is returned only if the search produced exactly ONE result and
- * its title is still recognisably the same anime (≥ `SEARCH_FALLBACK_MIN_SIMILARITY`
+ * title-matching results first (original order, exact-name matches ranked
+ * ahead of sub-part and season/superset variants). When nothing matched, a
+ * fallback is returned only if a search produced exactly ONE result and its
+ * title is still recognisably the same anime (≥ `SEARCH_FALLBACK_MIN_SIMILARITY`
  * token overlap). Unconditionally taking `results[0]` used to attach a
  * different anime's episode list to the page.
+ *
+ * A hit matches when ANY of its names (title / provider alias, see
+ * `resultNames`) is substring-related to the query, and that particular name
+ * passes the season guard below — so an alias never smuggles a result past
+ * the guard its own title would have failed.
+ *
+ * `idOfResult` maps a search hit onto the ID its `fetchAnimeInfo` expects —
+ * some providers (allmanga) key their info/episode endpoints on a different
+ * namespace (numeric AniList ID) than their search hit's own id (Mongo _id).
+ *
+ * A query whose trailing tokens form a season marker ("…Yamishibai 17")
+ * never attaches to a result lacking that marker: the base entry would
+ * otherwise serve the wrong season's episode list — and for still-airing
+ * titles (AniList `episodes: null`) no expected count exists to gate it.
  */
 async function searchProvider(
   providerName: string,
   searchFn: (q: string) => Promise<any>,
-  title: string
+  title: string,
+  idOfResult?: (r: any) => string | number | null
 ): Promise<(string | number)[]> {
   try {
-    const res = await searchFn(title);
-    const results = res?.results ?? res?.data ?? [];
-    if (!Array.isArray(results) || results.length === 0) return [];
-
     const clean = normalize(title);
-    const candidates: (string | number)[] = [];
-    const seen = new Set<string | number>();
-    const idOf = (r: any): string | number | null => r?.id ?? r?.animeId ?? null;
-    const nameOf = (r: any): string =>
-      typeof r.title === "string" ? r.title : r.title?.romaji || r.title?.english || "";
+    const marker = trailingSeasonMarker(clean);
+    const markerOk = (name: string): boolean => {
+      if (marker.length === 0) return true;
+      // Ordinal canonicalization: "3rd" and "3" are the same season digit.
+      const canon = (t: string): string => t.replace(/^(\d+)(?:st|nd|rd|th)$/, "$1");
+      const required = marker.filter(
+        (t) => /^\d/.test(canon(t)) || t === "final" || t === "last" || t === "ova" || t === "special"
+      );
+      const tokens = new Set(name.split(/\s+/).filter(Boolean).map(canon));
+      return required.every((t) => tokens.has(canon(t)));
+    };
+    const idOf = (r: any): string | number | null =>
+      idOfResult ? idOfResult(r) : (r?.id ?? r?.animeId ?? null);
 
-    for (const r of results) {
-      const rName = normalize(nameOf(r));
-      if (!rName.includes(clean) && !clean.includes(rName)) continue;
-      const id = idOf(r);
-      if (id === null || seen.has(id)) continue;
-      seen.add(id);
-      candidates.push(id);
+    // Ranking tier: 0 = a name equals the query, 1 = the name is a sub-part
+    // of it ("Wushen Zhuzai" ⊂ "Wushen Zhuzai: Da Wei Pian"), 2 = the name
+    // extends the query (season/superset variant).
+    const collect = (results: any[]): { id: string | number; tier: number }[] => {
+      const found: { id: string | number; tier: number }[] = [];
+      const seen = new Set<string | number>();
+      for (const r of results) {
+        let tier = -1;
+        for (const n of resultNames(r)) {
+          if (!n.includes(clean) && !clean.includes(n)) continue;
+          if (!markerOk(n)) continue;
+          const t = n === clean ? 0 : clean.includes(n) ? 1 : 2;
+          if (tier < 0 || t < tier) tier = t;
+        }
+        if (tier < 0) continue;
+        const id = idOf(r);
+        if (id === null || seen.has(id)) continue;
+        seen.add(id);
+        found.push({ id, tier });
+      }
+      // Best match first (stable within a tier): a base query ("…Yamishibai")
+      // must prefer the exact base entry over whichever season the provider
+      // listed first, and a sub-part alias over a loose superset hit.
+      return found.sort((a, b) => a.tier - b.tier);
+    };
+
+    let loneHit: any = null;
+    for (const q of titleQueryVariants(title)) {
+      const res = await searchFn(q);
+      const results = res?.results ?? res?.data ?? [];
+      if (!Array.isArray(results) || results.length === 0) continue;
+      const candidates = collect(results);
+      if (candidates.length > 0) return candidates.map((c) => c.id);
+      // Remember the first sole hit for the similarity fallback below — but
+      // never a blind `results[0]`.
+      if (results.length === 1 && loneHit === null) loneHit = results[0];
     }
-    if (candidates.length > 0) return candidates;
+    if (loneHit === null) return [];
 
-    // No title match: only ever accept a sole search hit whose title still
-    // scores against the requested one — never a blind `results[0]`.
-    if (results.length !== 1) return [];
-    const lone = results[0];
-    if (titleSimilarity(clean, nameOf(lone)) < SEARCH_FALLBACK_MIN_SIMILARITY) return [];
-    const loneId = idOf(lone);
+    let bestSimilarity = -1;
+    for (const n of resultNames(loneHit)) {
+      if (!markerOk(n)) continue;
+      const sim = titleSimilarity(clean, n);
+      if (sim > bestSimilarity) bestSimilarity = sim;
+    }
+    if (bestSimilarity < SEARCH_FALLBACK_MIN_SIMILARITY) return [];
+    const loneId = idOf(loneHit);
     return loneId !== null ? [loneId] : [];
   } catch (err) {
     console.warn(`[providers] searchProvider(${providerName}) failed:`, err instanceof Error ? err.message : err);
@@ -291,7 +419,21 @@ const PROVIDERS: ProviderDef[] = [
       getSessionForProvider(
         "allmanga",
         title,
-        () => searchProvider("allmanga", (q) => allmanga.search(q), title),
+        () =>
+          searchProvider(
+            "allmanga",
+            (q) => allmanga.search(q),
+            title,
+            // fetchAnimeInfo needs the numeric AniList ID (it resolves AniZip /
+            // AniList media and builds `watch/allmanga/<anilistId>/<ep>` ids
+            // that fetchSources parses); search hits carry their Mongo show
+            // `_id` in `id` — passing that always throws. Null aniListId ⇒
+            // null ⇒ the candidate is skipped instead of aborting the walk.
+            (r) =>
+              r?.aniListId !== null && r?.aniListId !== undefined && r.aniListId !== ""
+                ? String(r.aniListId)
+                : null
+          ),
         (id) => allmanga.fetchAnimeInfo(id),
         episodeNumber
       ),
@@ -498,8 +640,31 @@ export async function getMegaPlaySources(
 
 // ─── Episode Availability Filter & Cache ─────────────────────────────
 
-interface AvailabilityEntry {
+/**
+ * Why an episode list is missing — the plausibility gate used to collapse all
+ * three answers into an empty array, so a caller could not tell "no provider
+ * answered" from "a provider answered with junk we threw away".
+ *  - `ok`      a list was accepted (normal case)
+ *  - `none`    no provider returned any list
+ *  - `suspect` lists came back, but every one of them was rejected by the gate
+ */
+export type EpisodeListStatus = "ok" | "none" | "suspect";
+
+export interface EpisodeListResult {
   episodes: Episode[];
+  listStatus: EpisodeListStatus;
+}
+
+interface AvailabilityEntry {
+  /**
+   * The RAW, provider-selected list — deliberately WITHOUT `available` folded
+   * in. `available` is derived on every read (see `applyAvailability`), which
+   * is what makes the cached and fresh paths structurally incapable of
+   * disagreeing: there is only one definition and the cache never stores a
+   * second, stale copy of it.
+   */
+  list: Episode[];
+  listStatus: EpisodeListStatus;
   expiresAt: number;
 }
 
@@ -508,9 +673,20 @@ const AVAILABILITY_CACHE_MAX = 200;
 /**
  * TTL is mandatory here: a single poisoned fetch (e.g. anikoto's lone "Full"
  * episode during a megaplay/kickassanime hiccup) used to be memoised for the
- * whole process lifetime. 5 minutes matches the AniList revalidate window.
+ * whole process lifetime.
+ *
+ * Raised from 5 minutes to 10. The old value was pinned to AniList's
+ * `revalidate: 300` window, but the LIST ITSELF comes from the providers, not
+ * from AniList — AniList only supplies the expected count that SCORES a list,
+ * and that lookup keeps its own separate 300s cache. What a longer TTL costs
+ * is a newly aired episode appearing up to 10 minutes late (providers already
+ * lag a simulcast by minutes, and an episode that just aired is not watchable
+ * in that window anyway); what it buys is roughly half the cold provider
+ * walks — each of which is a multi-second search+info round trip, the exact
+ * cost queue #8 complains about — on every detail-page mount and every
+ * `/api/episodes` call.
  */
-const AVAILABILITY_CACHE_TTL_MS = 5 * 60 * 1000;
+const AVAILABILITY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * The expected count is part of the key: a list cached by an ungated caller
@@ -526,18 +702,22 @@ function getAvailabilityCacheKey(
   return `${providerName || "auto"}::${anilistId || ""}:${expectedCount ?? ""}:${normalize(title)}`;
 }
 
-function readAvailabilityCache(key: string): Episode[] | undefined {
+function readAvailabilityCache(key: string): AvailabilityEntry | undefined {
   const entry = availabilityCache.get(key);
   if (!entry) return undefined;
   if (Date.now() >= entry.expiresAt) {
     availabilityCache.delete(key);
     return undefined;
   }
-  return entry.episodes;
+  return entry;
 }
 
-function writeAvailabilityCache(key: string, episodes: Episode[]): void {
-  availabilityCache.set(key, { episodes, expiresAt: Date.now() + AVAILABILITY_CACHE_TTL_MS });
+function writeAvailabilityCache(
+  key: string,
+  list: Episode[],
+  listStatus: EpisodeListStatus
+): void {
+  availabilityCache.set(key, { list, listStatus, expiresAt: Date.now() + AVAILABILITY_CACHE_TTL_MS });
   if (availabilityCache.size > AVAILABILITY_CACHE_MAX) {
     const firstKey = availabilityCache.keys().next().value;
     if (firstKey) availabilityCache.delete(firstKey);
@@ -546,6 +726,7 @@ function writeAvailabilityCache(key: string, episodes: Episode[]): void {
 
 function isEpisodeAvailable(ep: Episode): boolean {
   if (!ep.id) return false;
+  // Known-both-absent: the probe proved neither version exists.
   if (ep.hasSub === false && ep.hasDub === false) return false;
   if (!ep.number || ep.number <= 0) return false;
   // If airDate is provided and is in the future, episode is not available yet
@@ -558,15 +739,18 @@ function isEpisodeAvailable(ep: Episode): boolean {
   return true;
 }
 
-function filterAvailableEpisodes(
-  episodes: Episode[],
-  _animeTitle: string,
-  _anilistId?: number
-): Episode[] {
-  return episodes.map((ep) => ({
-    ...ep,
-    available: isEpisodeAvailable(ep),
-  }));
+/**
+ * THE definition of `available`. Nothing else in the codebase may derive it.
+ *
+ * It used to be computed twice: once inside `getEpisodes` when the list was
+ * cached (with megaplay's `hasSub`/`hasDub` still `null`), and again inside
+ * `getAudioFlags` by a bolt-on override once a probe had learned the truth —
+ * so the cache could say `available: true` while the response handed to the
+ * caller said `false`. One pure function, applied on every read and on the
+ * probe path, removes that second definition.
+ */
+function applyAvailability(episodes: Episode[]): Episode[] {
+  return episodes.map((ep) => ({ ...ep, available: isEpisodeAvailable(ep) }));
 }
 
 // ─── Sub/Dub Availability ────────────────────────────────────────────
@@ -708,40 +892,61 @@ function countKnown(episodes: Episode[], key: "hasSub" | "hasDub"): number | nul
 }
 
 /**
+ * Fold verified flags into a list. `flags` describes megaplay's listing only,
+ * so another provider's episodes are never tagged with them. Pure — returns a
+ * new array, never mutates (the input may be the shared availability cache).
+ */
+function mergeAudioFlags(list: Episode[], flags: Map<number, AudioFlag>): Episode[] {
+  return list.map((ep) => {
+    if (ep.providerId !== "megaplay") return ep;
+    const flag = flags.get(ep.number);
+    if (!flag) return ep;
+    return { ...ep, hasSub: ep.hasSub ?? flag.sub, hasDub: ep.hasDub ?? flag.dub };
+  });
+}
+
+/**
+ * The flags any earlier `?audio=1` probe already learned for this title, with
+ * zero I/O. This is the cache the module doc promised ("every later request —
+ * including the fast path — reuses them"), and it is now genuinely on the fast
+ * path: `getEpisodes` merges it before deriving `available`, so the plain
+ * response and the probed response can no longer differ.
+ */
+function withKnownFlags(episodes: Episode[], anilistId?: number): Episode[] {
+  const cached = anilistId ? audioFlagCache.get(anilistId) : undefined;
+  if (!cached || cached.size === 0) return episodes;
+  return mergeAudioFlags(episodes, cached);
+}
+
+/**
  * Resolve sub/dub flags for a freshly fetched episode list.
  *
  * Without `probe` this is pure bookkeeping (no I/O): it folds in flags an
  * earlier probe already learned and summarizes what is known. With `probe` it
  * also hits megaplay once per unknown (episode, version), up to
- * `AUDIO_PROBE_MAX_EPISODES`. Returns a NEW array when flags change — the
- * caller's array may be the shared availability cache.
+ * `AUDIO_PROBE_MAX_EPISODES`.
+ *
+ * `available` is NOT re-derived here — that is `applyAvailability`'s job, and
+ * this function simply calls it after the flags are as settled as they are
+ * going to get. (The old bespoke "availability override" block lived here and
+ * produced a second, divergent definition; it is gone.)
  */
 export async function getAudioFlags(
   episodes: Episode[],
   anilistId?: number,
   probe = false
 ): Promise<{ episodes: Episode[]; audio: AudioSummary }> {
-  const merge = (list: Episode[], flags: Map<number, AudioFlag>): Episode[] =>
-    list.map((ep) => {
-      // Probe results describe megaplay's listing only — never tag another
-      // provider's episodes with them.
-      if (ep.providerId !== "megaplay") return ep;
-      const flag = flags.get(ep.number);
-      if (!flag) return ep;
-      return { ...ep, hasSub: ep.hasSub ?? flag.sub, hasDub: ep.hasDub ?? flag.dub };
-    });
-
-  let resolved = episodes;
-  const cached = anilistId ? audioFlagCache.get(anilistId) : undefined;
-  if (cached && cached.size > 0) resolved = merge(resolved, cached);
+  let resolved = withKnownFlags(episodes, anilistId);
 
   const canProbe = canProbeAudio(resolved, anilistId);
   let probed = false;
   if (probe && canProbe && anilistId) {
     const flags = await probeMegaPlayAudio(anilistId, resolved);
-    resolved = merge(resolved, flags);
+    resolved = mergeAudioFlags(resolved, flags);
     probed = true;
   }
+
+  resolved = applyAvailability(resolved);
 
   return {
     episodes: resolved,
@@ -825,13 +1030,21 @@ function sessionToEpisodes(session: ProviderSession, providerId: string): Episod
 
 /**
  * Fetch the episode list for an anime by trying all providers.
- * Filters out unavailable episodes (no sources / unstreamable).
  *
  * Auto mode collects candidate lists and returns the BEST one instead of the
  * first non-empty one: the count closest to `expectedCount` wins, and lists
  * that are clearly wrong (a lone "Full" episode for a multi-episode anime) are
- * rejected outright. `expectedCount` is AniList's episode count; when omitted
- * it is resolved internally (fetch-cached) so every caller gets the gate.
+ * rejected. `expectedCount` is AniList's episode count; when omitted it is
+ * resolved internally (fetch-cached) so every caller gets the gate.
+ *
+ * The gate used to make rejection indistinguishable from "nothing answered" —
+ * both came back as `[]` — so `listStatus` now says which of the three things
+ * actually happened (`ok` / `none` / `suspect`) and the UI can say it too.
+ *
+ * What is cached is the RAW selected list; `available` is derived from it on
+ * every read by `applyAvailability` after merging any flags a previous
+ * `?audio=1` probe learned. That is what makes "cached path" and "fresh path"
+ * the same computation rather than two that merely agree today.
  *
  * If `providerName` is given, only that provider is tried and its raw list is
  * returned un-gated (explicit/debug provider selection).
@@ -841,7 +1054,7 @@ export async function getEpisodes(
   anilistId?: number,
   providerName?: string,
   expectedCount?: number
-): Promise<Episode[]> {
+): Promise<EpisodeListResult> {
   // A forced provider never compares against other lists, so don't spend an
   // AniList lookup resolving a count it will not use.
   const expected =
@@ -849,9 +1062,19 @@ export async function getEpisodes(
 
   const cacheKey = getAvailabilityCacheKey(animeTitle, anilistId, providerName, expected);
   const cached = readAvailabilityCache(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    // Same two functions the uncached branch below runs — flags first, then
+    // the single availability definition.
+    return {
+      episodes: applyAvailability(withKnownFlags(cached.list, anilistId)),
+      listStatus: cached.listStatus,
+    };
+  }
 
   let candidateEpisodes: Episode[] = [];
+  /** A list came back and the gate threw it away (feeds `suspect`). */
+  let sawRejected = false;
+  let listStatus: EpisodeListStatus = "none";
 
   // Try specific provider if requested (un-gated: exactly what it lists).
   if (providerName) {
@@ -879,6 +1102,7 @@ export async function getEpisodes(
       const episodes = sessionToEpisodes(session, providerId);
       const score = scoreEpisodeList(episodes, expected);
       if (score === null) {
+        sawRejected = true;
         console.warn(
           `[providers] getEpisodes: rejected implausible ${providerId} list ` +
             `(${episodes.length} ep, expected ${expected ?? "?"}) for "${animeTitle}"`
@@ -922,11 +1146,177 @@ export async function getEpisodes(
     candidateEpisodes = best.episodes ?? [];
   }
 
-  if (candidateEpisodes.length === 0) return [];
+  if (candidateEpisodes.length === 0) {
+    // `suspect` only when we KNOW we rejected something; otherwise nobody
+    // answered at all. Not cached — an empty answer stays as cheap to retry as
+    // it always was, so a title that gains a list picks it up immediately.
+    return { episodes: [], listStatus: sawRejected ? "suspect" : "none" };
+  }
 
-  const availableEpisodes = filterAvailableEpisodes(candidateEpisodes, animeTitle, anilistId);
-  writeAvailabilityCache(cacheKey, availableEpisodes);
-  return availableEpisodes;
+  listStatus = "ok";
+  writeAvailabilityCache(cacheKey, candidateEpisodes, listStatus);
+  // Raw in, derived out — see `applyAvailability`.
+  return {
+    episodes: applyAvailability(withKnownFlags(candidateEpisodes, anilistId)),
+    listStatus,
+  };
+}
+
+// ─── Provider walk: timeouts & bounded parallelism ─────────────────────
+
+/**
+ * kaizoku-core's HTTP layer sets no timeout of its own, so a dead upstream
+ * used to stall a walk until undici's ~10s connect timeout (observed:
+ * KickAssAnime `ConnectTimeoutError 10000ms`). Every provider attempt is
+ * therefore given one hard budget. The underlying request is not cancelled —
+ * kaizoku-core exposes no AbortSignal — but the walk stops waiting for it.
+ */
+const PROVIDER_TIMEOUT_MS = 5_000;
+
+/**
+ * Phase 2 used to run strictly serially, so its cost was the *sum* of every
+ * provider's search + info + sources. It now overlaps a small batch at a time.
+ * Three rather than "all of them" is deliberate: it collapses a 6-provider
+ * walk into two waves while keeping a single walk's upstream request volume
+ * close to the old serial behaviour, in case a provider rate-limits us.
+ */
+const PHASE2_PARALLELISM = 3;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+    // These handlers stay attached for the promise's whole lifetime, so a
+    // rejection that lands after we already gave up is still "handled".
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+/** Search + episode match + sources for one provider. Never throws. */
+async function attemptProvider(
+  provider: ProviderDef,
+  animeTitle: string,
+  episodeNumber: number,
+  type: "sub" | "dub",
+  server?: string
+): Promise<StreamResult | null> {
+  try {
+    const session = await provider.getSession(animeTitle, undefined, episodeNumber);
+    if (!session) return null;
+    const targetEp = session.episodes.find((ep) => ep.number === episodeNumber);
+    if (!targetEp?.id) return null;
+    const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
+    return result ? { ...result, providerId: provider.name } : null;
+  } catch (err) {
+    console.warn(`[providers] ${provider.name} attempt failed:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/** MegaPlay lookup by AniList id (it has no title search). Never throws. */
+async function attemptMegaPlay(
+  anilistId: number,
+  animeTitle: string,
+  episodeNumber: number,
+  type: "sub" | "dub"
+): Promise<StreamResult | null> {
+  try {
+    const session = await getMegaPlaySession(anilistId, animeTitle);
+    if (!session) return null;
+    const targetEp = session.episodes.find((ep) => ep.number === episodeNumber);
+    if (!targetEp?.id) return null;
+    const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
+    return result ? { ...result, providerId: "megaplay" } : null;
+  } catch (err) {
+    console.warn(`[providers] megaplay attempt failed:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Run `providers` with bounded concurrency, launching them in array order, and
+ * resolve with the first SUCCESS in array order — not whichever one happened to
+ * finish first. A result is only returned once no earlier (higher-priority)
+ * provider could still beat it, and candidates queued behind a confirmed winner
+ * are never started, so a fast provider early in the list keeps the old
+ * "stop as soon as we have a source" behaviour.
+ */
+function walkProvidersByPriority(
+  providers: ProviderDef[],
+  attempt: (provider: ProviderDef) => Promise<StreamResult | null>
+): Promise<StreamResult | null> {
+  const total = providers.length;
+  if (total === 0) return Promise.resolve(null);
+
+  // finished[i] covers "settled, success or failure"; indices still queued are
+  // deliberately left unfinished so they count as "could still beat the best".
+  const finished = new Array<boolean>(total).fill(false);
+
+  return new Promise<StreamResult | null>((resolve) => {
+    let settled = false;
+    let nextIndex = 0;
+    let inFlight = 0;
+    let doneCount = 0;
+    let bestIndex = -1;
+    let best: StreamResult | null = null;
+
+    const settle = (value: StreamResult | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const check = () => {
+      if (settled) return;
+      if (bestIndex >= 0) {
+        const lowestOpen = finished.indexOf(false);
+        // Nothing earlier is still running or queued ⇒ the winner can't change.
+        if (lowestOpen === -1 || bestIndex < lowestOpen) settle(best);
+        return;
+      }
+      if (doneCount === total) settle(null);
+    };
+
+    const pump = () => {
+      while (!settled && inFlight < PHASE2_PARALLELISM && nextIndex < total) {
+        const index = nextIndex++;
+        const provider = providers[index];
+        inFlight++;
+        void (async () => {
+          let result: StreamResult | null = null;
+          try {
+            result = await attempt(provider);
+          } catch (err) {
+            // Timeouts reject here; `attemptProvider` itself never throws.
+            console.warn(
+              `[providers] ${provider.name} phase2 failed:`,
+              err instanceof Error ? err.message : err
+            );
+          }
+          if (result && (bestIndex === -1 || index < bestIndex)) {
+            bestIndex = index;
+            best = result;
+          }
+          inFlight--;
+          doneCount++;
+          finished[index] = true;
+          pump();
+          check();
+        })();
+      }
+      check();
+    };
+
+    pump();
+  });
 }
 
 /**
@@ -953,16 +1343,12 @@ export async function getStreamingSources(
     if (preferredProvider === "megaplay" && anilistId) {
       tried.push("megaplay");
       try {
-        const session = await getMegaPlaySession(anilistId, animeTitle);
-        if (session) {
-          const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
-          if (targetEp?.id) {
-            const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
-            if (result) {
-              return { ...result, providerId: "megaplay" };
-            }
-          }
-        }
+        const result = await withTimeout(
+          attemptMegaPlay(anilistId, animeTitle, episodeNumber, type),
+          PROVIDER_TIMEOUT_MS,
+          "megaplay phase1"
+        );
+        if (result) return result;
       } catch (err) {
         console.warn(`[providers] megaplay phase1 failed:`, err instanceof Error ? err.message : err);
       }
@@ -973,20 +1359,12 @@ export async function getStreamingSources(
       if (provider.name !== preferredProvider) continue;
       tried.push(provider.name);
       try {
-        const session = await provider.getSession(animeTitle, undefined, episodeNumber);
-        if (!session) {
-          continue;
-        }
-
-        const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
-        if (!targetEp?.id) {
-          continue;
-        }
-
-        const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
-        if (result) {
-          return { ...result, providerId: provider.name };
-        }
+        const result = await withTimeout(
+          attemptProvider(provider, animeTitle, episodeNumber, type, server),
+          PROVIDER_TIMEOUT_MS,
+          `${provider.name} phase1`
+        );
+        if (result) return result;
       } catch (err) {
         console.warn(`[providers] ${provider.name} phase1 failed:`, err instanceof Error ? err.message : err);
       }
@@ -994,47 +1372,32 @@ export async function getStreamingSources(
     }
   }
 
-  // ── Phase 2: Try all providers in order ──
-  for (const provider of PROVIDERS) {
-    // Skip if already tried as preferred
-    if (preferredProvider && provider.name === preferredProvider) continue;
-    tried.push(provider.name);
-
-    try {
-      const session = await provider.getSession(animeTitle, undefined, episodeNumber);
-      if (!session) {
-        continue;
-      }
-
-      const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
-      if (!targetEp?.id) {
-        continue;
-      }
-
-      const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
-      if (result) {
-        return { ...result, providerId: provider.name };
-      }
-    } catch (err) {
-      console.warn(`[providers] ${provider.name} phase2 failed:`, err instanceof Error ? err.message : err);
-      continue;
-    }
+  // ── Phase 2: every remaining provider, overlapped, first success by priority ──
+  const phase2 = PROVIDERS.filter(
+    (provider) => !(preferredProvider && provider.name === preferredProvider)
+  );
+  if (phase2.length > 0) {
+    tried.push(...phase2.map((p) => p.name));
+    const winner = await walkProvidersByPriority(phase2, (provider) =>
+      withTimeout(
+        attemptProvider(provider, animeTitle, episodeNumber, type, server),
+        PROVIDER_TIMEOUT_MS,
+        `${provider.name} phase2`
+      )
+    );
+    if (winner) return winner;
   }
 
   // ── Phase 3: Try megaplay directly with AniList ID (if not already tried) ──
   if (anilistId && preferredProvider !== "megaplay") {
     tried.push("megaplay");
     try {
-      const session = await getMegaPlaySession(anilistId, animeTitle);
-      if (session) {
-        const targetEp = session.episodes.find((ep: any) => ep.number === episodeNumber);
-        if (targetEp?.id) {
-          const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
-          if (result) {
-            return { ...result, providerId: "megaplay" };
-          }
-        }
-      }
+      const result = await withTimeout(
+        attemptMegaPlay(anilistId, animeTitle, episodeNumber, type),
+        PROVIDER_TIMEOUT_MS,
+        "megaplay phase3"
+      );
+      if (result) return result;
     } catch (err) {
       console.warn(`[providers] megaplay phase3 failed:`, err instanceof Error ? err.message : err);
     }
@@ -1044,59 +1407,10 @@ export async function getStreamingSources(
   return null;
 }
 
-/**
- * Fallback: try every provider with both sub and dub, returns first success.
- */
-export async function getStreamingSourcesFallback(
-  animeTitle: string,
-  episodeNumber: number,
-  anilistId?: number
-): Promise<
-  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
-  | null
-> {
-  // Try sub first
-  const subResult = await getStreamingSources(animeTitle, episodeNumber, "sub", undefined, anilistId);
-  if (subResult) return subResult;
-
-  // Try dub
-  const dubResult = await getStreamingSources(animeTitle, episodeNumber, "dub", undefined, anilistId);
-  if (dubResult) return dubResult;
-
-  return null;
-}
-
-/**
- * Discover which providers have sessions available for this anime.
- * Returns provider names ordered by preference.
- */
-export async function getAvailableProviders(
-  animeTitle: string,
-  anilistId?: number
-): Promise<string[]> {
-  const results: string[] = [];
-
-  // Try megaplay first (most reliable with anilist ID)
-  if (anilistId) {
-    try {
-      const session = await getMegaPlaySession(anilistId, animeTitle);
-      if (session) results.push("megaplay");
-    } catch { /* skip */ }
-  }
-
-  // Try all other providers in parallel
-  const providerResults = await Promise.allSettled(
-    PROVIDERS.map(async (p) => {
-      const session = await p.getSession(animeTitle);
-      return session ? p.name : null;
-    })
-  );
-
-  for (const r of providerResults) {
-    if (r.status === "fulfilled" && r.value) {
-      if (!results.includes(r.value)) results.push(r.value);
-    }
-  }
-
-  return results;
-}
+// `getAvailableProviders()` used to live here. It had ZERO callers, so it was
+// dead code: the list path already picks one provider and records it per
+// episode (`Episode.providerId`), which is strictly more useful than a bare
+// "who has a session" list nothing rendered. Wiring it in would have added a
+// SECOND full provider walk (search + info per provider, un-timed,
+// un-gated) to every `/api/episodes` call for information no UI reads — the
+// opposite of queue #8. Deleted rather than wired.

@@ -4,6 +4,12 @@ import { useState, useEffect } from "react";
 import { getRecentlyAiredClient } from "@/lib/anilist";
 import type { Anime } from "@/types/anime";
 import AnimeCard from "@/components/anime/AnimeCard";
+import { appendUnique, createPageBuffer, useLastRowFill } from "@/hooks/useLastRowFill";
+
+const FEED_WINDOW_DAYS = 30;
+// Fixed page size: the width-aware Load More only decides how many *visible*
+// cards to release per fill (see useLastRowFill), never the AniList perPage.
+const FEED_PER_PAGE = 24;
 
 /**
  * Landing feed — the latest releases only. Search and filtering live on
@@ -13,10 +19,11 @@ export default function Home() {
   const [results, setResults] = useState<Anime[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [page, setPage] = useState(1);
-  const [hasNextPage, setHasNextPage] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [navigatingId, setNavigatingId] = useState<number | null>(null);
+  // Whole-page cursor + pending queue: pages are fetched with FEED_PER_PAGE
+  // and released to the grid in row-sized bites, so the last row of the grid
+  // is always complete without skipping or duplicating items.
+  const [feedBuffer] = useState(() => createPageBuffer<Anime>());
 
   // Load recently aired on initial mount
   useEffect(() => {
@@ -24,10 +31,10 @@ export default function Home() {
     async function loadLatest() {
       setLoading(true);
       try {
-        const data = await getRecentlyAiredClient(30, 1, 24);
+        const data = await getRecentlyAiredClient(FEED_WINDOW_DAYS, 1, FEED_PER_PAGE);
         if (cancelled) return;
         setResults(data.media);
-        setHasNextPage(data.hasNextPage);
+        feedBuffer.reset(data.hasNextPage);
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Failed to load latest anime.");
       } finally {
@@ -36,22 +43,24 @@ export default function Home() {
     }
     loadLatest();
     return () => { cancelled = true; };
-  }, []);
+  }, [feedBuffer]);
 
-  async function loadMore() {
-    const nextPage = page + 1;
-    setLoadingMore(true);
-    try {
-      const data = await getRecentlyAiredClient(30, nextPage, 24);
-      setResults((prev) => [...prev, ...data.media]);
-      setHasNextPage(data.hasNextPage);
-      setPage(nextPage);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load more.");
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  // Width-aware fill: keeps the grid's last row complete on Load More, on
+  // viewport changes, and after every fetch — until the source is exhausted.
+  const { setContainer, loadMore, loadingMore } = useLastRowFill({
+    ready: !loading,
+    count: results.length,
+    hasMore: feedBuffer.canFetch(),
+    fetchNeeded: async (need) => {
+      const items = await feedBuffer.take(
+        need,
+        (page) => getRecentlyAiredClient(FEED_WINDOW_DAYS, page, FEED_PER_PAGE)
+      );
+      if (items.length > 0) setResults((prev) => appendUnique(prev, items));
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : "Failed to load more."),
+    fallbackNeed: FEED_PER_PAGE,
+  });
 
   return (
     <div className="min-h-screen bg-[var(--background)] text-white">
@@ -75,38 +84,41 @@ export default function Home() {
         )}
 
         {/* Feed — the grid container stays mounted so the page structure is
-            stable while the first page loads. */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-          {results.map((anime) => (
-            <AnimeCard
-              key={anime.id}
-              anime={{
-                id: anime.id,
-                title: anime.title,
-                image: anime.coverImage,
-                genres: anime.genres,
-                rating: anime.score,
-                episodes: anime.episodes,
-              }}
-              loading={anime.id === navigatingId}
-              onClick={() => setNavigatingId(anime.id)}
-            />
-          ))}
-        </div>
-
-        {/* Load More */}
-        {!loading && results.length > 0 && hasNextPage && (
-          <div className="flex justify-center mt-8">
-            <button
-              type="button"
-              onClick={loadMore}
-              disabled={loadingMore}
-              className="min-h-[44px] bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none"
-            >
-              {loadingMore ? "Loading..." : "Load More"}
-            </button>
+            stable while the first page loads. The wrapper also scopes the
+            width-aware Load More: its `data-rowfill` grid is the one measured. */}
+        <div ref={setContainer}>
+          <div data-rowfill="" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            {results.map((anime) => (
+              <AnimeCard
+                key={anime.id}
+                anime={{
+                  id: anime.id,
+                  title: anime.title,
+                  image: anime.coverImage,
+                  genres: anime.genres,
+                  rating: anime.score,
+                  episodes: anime.episodes,
+                }}
+                loading={anime.id === navigatingId}
+                onClick={() => setNavigatingId(anime.id)}
+              />
+            ))}
           </div>
-        )}
+
+          {/* Load More */}
+          {!loading && results.length > 0 && feedBuffer.canFetch() && (
+            <div className="flex justify-center mt-8">
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="min-h-[44px] bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-6 py-2.5 text-[var(--accent)] font-mono text-sm uppercase tracking-wider hover:bg-[var(--accent)]/20 disabled:opacity-50 transition-colors rounded-none"
+              >
+                {loadingMore ? "Loading..." : "Load More"}
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Empty */}
         {!loading && !error && results.length === 0 && (

@@ -15,6 +15,9 @@ interface GroupedResultsProps {
   onNavigate: (id: number) => void;
 }
 
+// Every grid below carries `data-rowfill`: the width-aware Load More measures
+// the LAST one inside its container to keep that grid's final row complete
+// (see useLastRowFill).
 const GRID =
   "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3";
 
@@ -54,7 +57,7 @@ export default function GroupedResults({
     .map((group) => group.items[0]);
 
   if (!groupFranchise || franchiseGroups.length === 0) {
-    return <div className={GRID}>{items.map(renderCard)}</div>;
+    return <div data-rowfill="" className={GRID}>{items.map(renderCard)}</div>;
   }
 
   return (
@@ -69,7 +72,7 @@ export default function GroupedResults({
               group.items.length
             } title${group.items.length === 1 ? "" : "s"}`}
           />
-          <div className={GRID}>{group.items.map(renderCard)}</div>
+          <div data-rowfill="" className={GRID}>{group.items.map(renderCard)}</div>
         </section>
       ))}
       {standaloneItems.length > 0 && (
@@ -84,7 +87,7 @@ export default function GroupedResults({
               standaloneItems.length === 1 ? "" : "s"
             }`}
           />
-          <div className={GRID}>{standaloneItems.map(renderCard)}</div>
+          <div data-rowfill="" className={GRID}>{standaloneItems.map(renderCard)}</div>
         </div>
       )}
     </>

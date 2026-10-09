@@ -29,13 +29,15 @@ export default function FilterPanel({ id, open, label = "Filters", children }: F
         open && "animate-fadeIn"
       )}
     >
-      <div className="border-b border-[var(--accent)]/10 bg-[var(--background)]/50 px-4 py-2.5">
+      {/* Mobile-only padding trim: at 360px the chip row needs the width
+          (p-4 → p-3); `sm:` restores the original spacing on desktop. */}
+      <div className="border-b border-[var(--accent)]/10 bg-[var(--background)]/50 px-3 py-2.5 sm:px-4">
         <span className="font-mono text-xs uppercase tracking-wider text-[var(--accent)]/70">
           {"// "}
           {label}
         </span>
       </div>
-      <div className="flex flex-wrap items-end gap-x-4 gap-y-4 p-4">{children}</div>
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-4 p-3 sm:p-4">{children}</div>
     </div>
   );
 }

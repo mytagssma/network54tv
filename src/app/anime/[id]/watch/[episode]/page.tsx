@@ -1,11 +1,11 @@
 import { getAnimeById, getAnimeFull } from "@/lib/anilist";
-import { getEpisodes } from "@/lib/providers";
+import { getAudioFlags, getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
 import Player from "@/components/player/Player";
 import EpisodeBrowser from "@/components/watch/EpisodeBrowser";
-import FranchiseStrip, {
-  buildFranchiseEntries,
-} from "@/components/watch/FranchiseStrip";
+import { EmptyState } from "@/components/anime/Availability";
+import FranchiseStrip from "@/components/watch/FranchiseStrip";
+import { buildFranchiseEntries } from "@/components/watch/franchiseEntries";
 import { getFranchiseItems } from "@/lib/franchise";
 import Link from "next/link";
 
@@ -32,10 +32,18 @@ export default async function WatchPage({ params, searchParams }: Props) {
   // shared resolver then expands the relation graph transitively (batched
   // `id_in` fetches, each cached for 300s) so this strip lists exactly the
   // same entries, with the same season numbers, as the detail page's row.
-  const [fullMedia, episodes] = await Promise.all([
+  const [fullMedia, episodeList] = await Promise.all([
     getAnimeFull(animeId),
     getEpisodes(anime.title, animeId, provider),
   ]);
+  const rawEpisodes = episodeList.episodes;
+  // Why the list below can be empty — `ok` / `none` / `suspect`. It only
+  // changes the reason line under `// NO EPISODE DATA`, never the heading.
+  const { listStatus } = episodeList;
+  // Fold in any sub/dub flags an earlier audio probe already learned — pure
+  // cache lookup, zero I/O, so it costs nothing here. `episodeHasDub` below is
+  // the ONE dub truth the player consumes; it does not re-derive it.
+  const { episodes } = await getAudioFlags(rawEpisodes, animeId, false);
   const franchise = buildFranchiseEntries(
     await getFranchiseItems(animeId, fullMedia),
     animeId
@@ -45,7 +53,16 @@ export default async function WatchPage({ params, searchParams }: Props) {
   const currentEp = episodes.find((ep) => ep.number === episodeNumber);
   const episodeProviderId = currentEp?.providerId;
 
-  // Filter available episodes for navigation
+  // Navigation runs over the SAME `available` the lists below render — one
+  // definition, applied by `applyAvailability` in providers.ts.
+  //
+  // Decision: prev/next TRUNCATES the run (it steps over a dimmed row) while
+  // the episode list KEEPS that row visible with an `N/A` reason label. They
+  // are two views of one field, and both are deliberate: hiding the row would
+  // make the numbering look broken, while routing through it would let the
+  // countdown and the next button hand the viewer a row the list itself marks
+  // dead — a dead end with no way back. The gap is therefore visible where you
+  // scan (the list) and invisible where you navigate (the buttons).
   const availableEpisodes = episodes.filter((ep) => ep.available !== false);
   const currentEpIndex = availableEpisodes.findIndex(
     (ep) => ep.number === episodeNumber
@@ -87,7 +104,9 @@ export default async function WatchPage({ params, searchParams }: Props) {
         </span>
       </h1>
 
-      {/* Player */}
+      {/* Player — bleeds the container's 16px padding on both sides
+          (`-mx-4`) so the frame runs edge-to-edge with the page column */}
+      <div className="-mx-4">
       <Player
         animeTitle={anime.title}
         episodeNumber={episodeNumber}
@@ -100,73 +119,94 @@ export default async function WatchPage({ params, searchParams }: Props) {
         // Same entries as the `// Franchise` grid below — the fullscreen
         // drawer's series dropdown is fed from this one list.
         franchise={franchise}
+        // This episode's own dub flag (true / false / null = provider didn't
+        // say). The player gates the DUB button on it instead of guessing.
+        episodeHasDub={currentEp?.hasDub ?? null}
       />
+      </div>
 
-      {/* Episode navigation */}
-      <div className="flex items-center justify-between mt-4">
-        <div>
+      {/* Episode navigation — ONE aligned row: prev + the episode-list
+          action sit left, next sits right. All three share the same quiet
+          text+chevron treatment and a 44px touch height (the ⋯ sheet's row
+          language), so "All Episodes" no longer floats center as a bare
+          link between two boxed buttons at mobile. */}
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center">
           {prevEp && (
             <Link
               href={`/anime/${animeId}/watch/${prevEp.number}${providerQs}`}
-              className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none min-h-[44px] sm:min-h-0"
+              className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
             >
               <svg
-                className="w-4 h-4"
+                className="h-4 w-4 shrink-0"
                 fill="currentColor"
                 viewBox="0 0 24 24"
+                aria-hidden="true"
               >
                 <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
               </svg>
-              <span className="hidden sm:inline">
+              <span className="hidden whitespace-nowrap sm:inline">
                 EP {String(prevEp.number).padStart(2, "0")}
               </span>
-              <span className="sm:hidden">Prev</span>
+              <span className="whitespace-nowrap sm:hidden">Prev</span>
             </Link>
           )}
-        </div>
-
-        <div>
           <Link
-              href={`/anime/${animeId}${providerQs}`}
-            className="text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors uppercase tracking-wider py-2 inline-block"
+            href={`/anime/${animeId}${providerQs}`}
+            className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
           >
-            All Episodes
+            <svg
+              className="h-4 w-4 shrink-0"
+              fill="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M3 5h18v2H3zM3 11h18v2H3zM3 17h18v2H3z" />
+            </svg>
+            <span className="whitespace-nowrap">All Episodes</span>
           </Link>
         </div>
-
-        <div>
-          {nextEp && (
-            <Link
-              href={`/anime/${animeId}/watch/${nextEp.number}${providerQs}`}
-              className="group flex items-center gap-2 text-sm text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 px-4 py-2 rounded-none min-h-[44px] sm:min-h-0"
+        {nextEp && (
+          <Link
+            href={`/anime/${animeId}/watch/${nextEp.number}${providerQs}`}
+            className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
+          >
+            <span className="hidden whitespace-nowrap sm:inline">
+              EP {String(nextEp.number).padStart(2, "0")}
+            </span>
+            <span className="whitespace-nowrap sm:hidden">Next</span>
+            <svg
+              className="h-4 w-4 shrink-0"
+              fill="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
             >
-              <span className="hidden sm:inline">
-                EP {String(nextEp.number).padStart(2, "0")}
-              </span>
-              <span className="sm:hidden">Next</span>
-              <svg
-                className="w-4 h-4"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
-              </svg>
-            </Link>
-          )}
-        </div>
+              <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+            </svg>
+          </Link>
+        )}
       </div>
 
       {/* Franchise / season switcher (hidden when there are no relations) */}
       <FranchiseStrip entries={franchise} provider={provider} />
 
-      {/* Paged episode selector — the full run, natural height */}
-      {episodes.length > 0 && (
+      {/* Paged episode selector — the full run, natural height.
+          Zero episodes is a real provider answer, not a loading gap, so it
+          says so instead of rendering nothing under the player. */}
+      {episodes.length > 0 ? (
         <div className="mt-8">
           <EpisodeBrowser
             episodes={episodes}
             animeId={animeId}
             provider={provider}
             currentEpisode={episodeNumber}
+          />
+        </div>
+      ) : (
+        <div className="mt-8">
+          <EmptyState
+            code="NO_EPISODE_DATA"
+            detail={listStatus === "suspect" ? "suspect" : undefined}
           />
         </div>
       )}

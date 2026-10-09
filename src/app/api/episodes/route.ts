@@ -37,11 +37,16 @@ export async function GET(req: NextRequest) {
 
   try {
     const expectedCount = await resolveExpectedEpisodeCount(animeId);
-    const episodes = await getEpisodes(title, animeId, provider, expectedCount);
+    // `listStatus` reports what the plausibility gate decided: `ok` (a list
+    // was accepted), `none` (no provider answered) or `suspect` (a list came
+    // back and was rejected as implausible). The empty states need it —
+    // "nothing exists" and "something existed but looked wrong" are different
+    // stories and used to be rendered identically.
+    const { episodes, listStatus } = await getEpisodes(title, animeId, provider, expectedCount);
     const { episodes: withFlags, audio } = await getAudioFlags(episodes, animeId, probeAudio);
     // `{ episodes }` is the stable shape (watch page / availability consumers);
-    // `audio` is additive.
-    return NextResponse.json({ episodes: withFlags, audio });
+    // `audio` and `listStatus` are additive.
+    return NextResponse.json({ episodes: withFlags, audio, listStatus });
   } catch (e) {
     return NextResponse.json({ error: "Failed to fetch episodes" }, { status: 500 });
   }
