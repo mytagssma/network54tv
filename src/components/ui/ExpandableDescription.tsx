@@ -189,7 +189,7 @@ export default function ExpandableDescription({ description, maxLines = 3 }: Exp
 
   return (
     <>
-      <div className="text-[#9a9aa0] leading-relaxed">
+      <div className="text-[var(--text-secondary)] leading-relaxed">
         <p ref={previewRef} className="whitespace-pre-line" style={clampStyle}>
           {displayText}
         </p>
@@ -240,7 +240,7 @@ export default function ExpandableDescription({ description, maxLines = 3 }: Exp
               </div>
 
               {/* Full description — its own scroll area */}
-              <div className="max-h-[70vh] overflow-y-auto overscroll-contain px-5 py-4 text-[15px] leading-relaxed whitespace-pre-line text-[#9a9aa0]">
+              <div className="max-h-[70vh] overflow-y-auto overscroll-contain px-5 py-4 text-[15px] leading-relaxed whitespace-pre-line text-[var(--text-secondary)]">
                 {displayText}
               </div>
             </div>

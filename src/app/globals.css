@@ -4,12 +4,20 @@
    Cyberpunk Anime Streaming — Dynamic Accent Design System
    ══════════════════════════════════════════════════════════════ */
 
+/* Neutral semantic tokens — the ONLY places these values are written down.
+   Every surface/ink decision in the app resolves through a var() so a hex
+   never reappears in a component. Values are byte-identical to the literals
+   they replaced (zero visual diff); see DesignSpecimen's token table. */
 :root {
   --accent: #e8ff00;
   --accent-rgb: 232, 255, 0;
   --background: #0a0a0f;
   --panel: #131318;
+  /* One step lighter than --panel: hover/raised rows and sticky headers */
+  --surface: #1a1a20;
   --foreground: #ffffff;
+  /* Bright emphasis text (selected row, overlay title) — a notch under white */
+  --text-primary: #e6e6ea;
   --text-secondary: #9a9aa0;
   --text-decorative: #6b6b70;
 }
@@ -157,6 +165,21 @@ input[type="range"]::-moz-range-thumb {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* ── Micro label ──────────────────────────────────────────
+   `font-mono text-[10px] uppercase tracking-wider`, written by hand 26+
+   times across cards, menus, chips and spec tables. One class, one place.
+   Declarations mirror the compiled utilities exactly (font-mono →
+   var(--font-mono), 10px, uppercase, tracking-wider → .05em), so swapping
+   the four utilities for this class is a byte-for-byte no-op. Unlayered on
+   purpose, like the other hand-written utilities in this file. */
+
+.label-micro {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
 }
 
 /* ── Gradient radial (tailwind v4 compat) ──────────────── */

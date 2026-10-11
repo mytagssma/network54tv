@@ -78,7 +78,7 @@ export default function FranchiseRow({ items, currentId }: FranchiseRowProps) {
         <h2 className="text-lg font-semibold text-[var(--accent)] uppercase tracking-wider">
           // Same Franchise
         </h2>
-        <span className="shrink-0 font-mono text-[10px] uppercase tabular-nums tracking-wider text-[#6b6b70]">
+        <span className="shrink-0 label-micro tabular-nums text-[var(--text-decorative)]">
           {entries.length} related
         </span>
       </div>

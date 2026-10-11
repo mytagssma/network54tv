@@ -8,6 +8,7 @@ import {
   type FranchiseEntry,
 } from "@/components/watch/franchiseEntries";
 import { useFranchiseSort } from "@/hooks/useFranchiseSort";
+import { ChevronRightIcon } from "@/components/ui/icons";
 
 /**
  * Franchise selector for the watch page — every *watchable* franchise entry,
@@ -23,7 +24,7 @@ import { useFranchiseSort } from "@/hooks/useFranchiseSort";
  * ── Weight ────────────────────────────────────────────────────────────────
  * Rows, not chips: the selector is a responsive grid of large buttons that
  * borrow the episode list's visual language (`EpisodeList` /
- * `EpisodeSelector`) — `bg-[#131318]`, a 2px accent rail down the left edge
+ * `EpisodeSelector`) — `bg-[var(--panel)]`, a 2px accent rail down the left edge
  * (`border-l-2 border-[var(--accent)]/30`, solid while active), mono chips up
  * front, the title filling the middle, a chevron on the right. The current
  * entry is the only solid one (accent fill + ▶) and never a link; mainline
@@ -68,7 +69,7 @@ export default function FranchiseStrip({ entries, provider }: FranchiseStripProp
     main: "border-l-[var(--accent)]/60 bg-[var(--accent)]/10 text-white hover:border-l-[var(--accent)] hover:bg-[var(--accent)]/20",
     // Recaps / side stories / movies: quiet rail on the list's own surface.
     minor:
-      "border-l-[var(--accent)]/30 bg-[#131318] text-[#9a9aa0] hover:border-l-[var(--accent)] hover:bg-[#1a1a20] hover:text-white",
+      "border-l-[var(--accent)]/30 bg-[var(--panel)] text-[var(--text-secondary)] hover:border-l-[var(--accent)] hover:bg-[var(--surface)] hover:text-white",
   };
 
   // Season number — the "episode number" of the row.
@@ -93,7 +94,7 @@ export default function FranchiseStrip({ entries, provider }: FranchiseStripProp
         <h2 className="shrink-0 text-sm font-semibold uppercase tracking-wider text-[var(--accent)]">
           // Franchise
         </h2>
-        <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider tabular-nums text-[#6b6b70]">
+        <span className="shrink-0 label-micro tabular-nums text-[var(--text-decorative)]">
           {entries.length - 1} related
         </span>
 
@@ -144,7 +145,7 @@ export default function FranchiseStrip({ entries, provider }: FranchiseStripProp
                   aria-hidden="true"
                   className="h-px min-w-4 flex-1 bg-[var(--accent)]/15"
                 />
-                <span className="shrink-0 font-mono tabular-nums text-[#6b6b70]">
+                <span className="shrink-0 font-mono tabular-nums text-[var(--text-decorative)]">
                   {group.entries.length}
                 </span>
               </h3>
@@ -168,16 +169,7 @@ export default function FranchiseStrip({ entries, provider }: FranchiseStripProp
                       &#9654;
                     </span>
                   ) : (
-                    <svg
-                      aria-hidden="true"
-                      className="h-4 w-4 shrink-0 text-[#6b6b70] transition-colors group-hover:text-[var(--accent)]"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      viewBox="0 0 24 24"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
+                    <ChevronRightIcon className="h-4 w-4 shrink-0 text-[var(--text-decorative)] transition-colors group-hover:text-[var(--accent)]" />
                   )}
                 </>
               );

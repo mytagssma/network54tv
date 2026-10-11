@@ -65,7 +65,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
               <div>
                 <h1 className="text-2xl font-bold text-white uppercase tracking-wider">{anime.title}</h1>
                 {anime.englishTitle && anime.englishTitle !== anime.title && (
-                  <p className="text-lg text-[#9a9aa0] mt-1">
+                  <p className="text-lg text-[var(--text-secondary)] mt-1">
                     {anime.englishTitle}
                   </p>
                 )}
@@ -112,7 +112,7 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
                 {anime.description ? (
                   <ExpandableDescription description={anime.description} maxLines={3} />
                 ) : (
-                  <p className="text-[#6b6b70] italic">
+                  <p className="text-[var(--text-decorative)] italic">
                     No synopsis available.
                   </p>
                 )}

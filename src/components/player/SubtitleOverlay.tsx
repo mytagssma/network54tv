@@ -145,14 +145,212 @@ function parseVTTTime(time: string): number {
   return 0;
 }
 
+/* ─── ASS/SSA inline overrides ──────────────────────────────────────────
+ * `{…}` blocks carry both layout (`\pos`, `\an8`, `\fad`) and TEXT STYLE
+ * (`\i1`, `\b0`, …). The old code deleted every block, which threw the
+ * styles away with the layout: an ASS `\i1` is a STATEFUL toggle that stays
+ * on until `\i0` or the end of the line, so the cue rendered roman while a
+ * neighbouring cue that used a WebVTT `<i>` rendered italic — the mid-sentence
+ * flip. Keep dropping the layout overrides, but rewrite the four basic
+ * styles the renderer already understands into balanced HTML tags.
+ */
+function applyAssOverrides(text: string): string {
+  let out = "";
+  let last = 0;
+  const open: string[] = [];
+  const blockRe = /\{([^}]*)\}/g;
+  let block: RegExpExecArray | null;
+
+  while ((block = blockRe.exec(text)) !== null) {
+    out += text.slice(last, block.index);
+    last = block.index + block[0].length;
+
+    const body = block[1];
+
+    // `\N` (hard break) and `\n` (soft wrap) are LINE BREAKS, not styles.
+    // Deleting the block — which the old strip did — silently merged the two
+    // halves: `of {\N} in legends` rendered as one line, `of in legends`,
+    // the break flattened into the surrounding spaces. Emit a real newline;
+    // the per-line trim in normalizeSpacing then drops the spaces around it
+    // and the render stacks the two lines. Handled before the `\r` reset
+    // below so a combined `{\r\N}` keeps its break too.
+    const breaks = body.match(/\\[Nn]/g);
+    if (breaks) out += "\n".repeat(breaks.length);
+
+    // `\r` / `\rStyleName` resets every style back to default.
+    if (/\\r(\w+)?/.test(body)) {
+      for (let i = open.length - 1; i >= 0; i--) out += `</${open[i]}>`;
+      open.length = 0;
+      continue;
+    }
+
+    const toggleRe = /\\([iubs])([01])/g;
+    let toggle: RegExpExecArray | null;
+    while ((toggle = toggleRe.exec(body)) !== null) {
+      const tag = toggle[1];
+      const on = toggle[2] === "1";
+      const at = open.lastIndexOf(tag);
+      if (on) {
+        if (at === -1) { out += `<${tag}>`; open.push(tag); }
+      } else if (at !== -1) {
+        // Close this tag plus everything opened inside it, then reopen the rest.
+        const closing = open.splice(at);
+        for (let i = closing.length - 1; i >= 0; i--) out += `</${closing[i]}>`;
+        for (let i = closing.length - 2; i >= 0; i--) out += `<${closing[i]}>`;
+      }
+    }
+  }
+
+  out += text.slice(last);
+  for (let i = open.length - 1; i >= 0; i--) out += `</${open[i]}>`;
+  return out;
+}
+
+/** Inline tags the renderer actually styles — the only ones worth re-opening. */
+const STYLE_TAG_RE = /^(?:b|i|u|s)$/;
+
+/** Which style tags are still open at `index` in `text`. */
+function tagsOpenAt(text: string, index: number): string[] {
+  const open: string[] = [];
+  const re = /<(\/)?([a-z]+)>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null && m.index < index) {
+    const name = m[2].toLowerCase();
+    if (!STYLE_TAG_RE.test(name)) continue;
+    if (m[1]) {
+      const at = open.lastIndexOf(name);
+      if (at !== -1) open.splice(at, 1);
+    } else if (!open.includes(name)) {
+      open.push(name);
+    }
+  }
+  return open;
+}
+
+/**
+ * Split a cue into the lines the overlay renders — one box per line — and
+ * balance the style tags across each break.
+ *
+ * Two jobs a plain split cannot do:
+ *
+ * - Drop whitespace-only and tag-only lines. The sentence split slices its
+ *   pieces at the boundary MATCH, which includes the trailing whitespace —
+ *   so a cue like `Now, now, Frieren. \nTonight, we drink for free.` produced
+ *   the piece `Now, now, Frieren.\n`, and that trailing newline rendered a
+ *   second, EMPTY box: a padding-sized block that reads on screen as a smear
+ *   of excess whitespace next to the real line (measured: 6/21/5 per episode
+ *   on Frieren/One Piece/Black Clover). A line that is only `</i>` is the
+ *   same box with a tag in it.
+ *
+ * - Re-open/close the style tags the break cut through. `<i>Gold Roger,\n
+ *   the King of the Pirates,</i>` opens on one line and closes on the next;
+ *   processed per line, each half fell outside a balanced pair and rendered
+ *   unstyled — the mid-sentence flip again, this time at every hard wrap.
+ *   Same contract as the piece split in parseVTT: re-open what was open at
+ *   the line's start, close what is still open at its end.
+ */
+function splitStyledLines(text: string): string[] {
+  const re = /<br\s*\/?>|\n/gi;
+  const lines: string[] = [];
+  let pos = 0;
+  let m: RegExpExecArray | null;
+
+  const push = (start: number, end: number) => {
+    const piece = text.slice(start, end);
+    if (!piece.replace(/<[^>]*>/g, "").trim()) return;
+    const openBefore = tagsOpenAt(text, start);
+    const openAfter = tagsOpenAt(text, end);
+    let line = "";
+    for (const tag of openBefore) if (!piece.includes(`<${tag}>`)) line += `<${tag}>`;
+    line += piece.trim();
+    for (let i = openAfter.length - 1; i >= 0; i--) {
+      if (!piece.includes(`</${openAfter[i]}>`)) line += `</${openAfter[i]}>`;
+    }
+    lines.push(line);
+  };
+
+  while ((m = re.exec(text)) !== null) {
+    push(pos, m.index);
+    pos = m.index + m[0].length;
+  }
+  push(pos, text.length);
+  return lines;
+}
+
+/**
+ * Collapse every run of horizontal whitespace to one space, trim the edges,
+ * and squeeze blank lines out.
+ *
+ * This exists purely for the tag-remnant gap: deleting an ASS override block
+ * removes the block but NOT the spaces around it, so `spoken of {\i1} in
+ * legends` becomes `spoken of  in legends`, and `{\N}` wedged between two
+ * spaces does the same until it is converted to a real newline (see
+ * applyAssOverrides). The source files are innocent — all three real VTTs
+ * this app ships hold zero consecutive spaces across ~1000 cues — so every
+ * doubled space on screen is introduced by the tag strip, and this folds it
+ * back.
+ *
+ * Per-CUE only. Running it over the whole file would eat the blank lines that
+ * separate blocks, and `split(/\n\n+/)` would then glue every cue in the file
+ * into one (measured: 291 cues collapsed to 22).
+ *
+ * `\n` is STRUCTURAL — the render path turns each one into its own line — so
+ * line breaks are preserved and every line is trimmed instead of merged.
+ */
+function normalizeSpacing(text: string): string {
+  // `<br>` is a line break like `\n` — convert first, so the per-line pass
+  // below reaches the spaces on both sides of it (`of <br> in` kept them and
+  // rendered as a box with a stray edge space).
+  let collapsed = text.replace(/<br\s*\/?>/gi, "\n");
+
+  // A whitespace run can STRADDLE a tag: `{\i1}` is kept as `<i>`, so
+  // `of {\i1} in` leaves `of <i> in` — two spaces with a (zero-width) tag
+  // between them, which the plain run-collapse below cannot see as one run.
+  // Keep the tags, leave exactly one space before the group, drop the ones
+  // on either side. Repeats so `a <i> <b> c` settles too. Any HORIZONTAL
+  // whitespace counts, not just the ASCII space: `of\u00A0<i>\u00A0in` has a
+  // non-breaking space on each side, and collapsing those one at a time (as
+  // the per-line pass must) turns the pair into two ASCII spaces with the
+  // tag between — a doubled space no later pass can see. `\n` stays
+  // excluded: it is the line structure the render stacks.
+  let previous: string;
+  do {
+    previous = collapsed;
+    collapsed = collapsed.replace(/[^\S\n]+(<[^>]+>)+[^\S\n]+/g, " $1");
+  } while (collapsed !== previous);
+
+  return (
+    collapsed
+      .split("\n")
+      .map((line) =>
+        line
+          .replace(/[^\S\n]+/g, " ")
+          .trim()
+          // A space hugging a tag at the line edge (`world </i>`, `<i> hello`)
+          // hides from the trim above — trim cannot see past the tag — and
+          // renders as padding-sized whitespace inside the line box.
+          .replace(/^((?:<[^>]+>)+) +/, "$1")
+          .replace(/ +((?:<[^>]+>)+)$/, "$1")
+      )
+      .join("\n")
+      // Squeeze blank lines, then drop the blank lines a piece-slice can
+      // leave at the edges (`Sentence.\n` from the sentence split): kept,
+      // they render as an empty subtitle box — excess whitespace on screen.
+      .replace(/\n{2,}/g, "\n")
+      .replace(/^\n+|\n+$/g, "")
+  );
+}
+
 function parseVTT(vttContent: string): Cue[] {
   const cues: Cue[] = [];
   let text = vttContent.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-  // Strip ASS/SSA style overrides: {\b1}, {\an8}, {\pos(x,y)}, {\fad(...)}, etc.
-  text = text.replace(/\{[^}]*\}/g, "");
+  // ASS/SSA style overrides: keep {\i1}/{\b0}… as tags, drop {\pos}/{\an8}/{\fad(…)}…
+  text = applyAssOverrides(text);
 
-  // Normalize ASS line breaks (\N, \n) to real newlines
+  // Bare ASS line breaks (\N, \n) without a {…} wrapper → real newlines.
+  // Brace-wrapped ones ({\N}) were already converted by applyAssOverrides;
+  // this catches the unwrapped leftovers.
   text = text.replace(/\\[Nn]/g, "\n");
 
   const headerMatch = text.match(/^WEBVTT.*?\n\n/);
@@ -181,35 +379,75 @@ function parseVTT(vttContent: string): Cue[] {
 
     const start = parseVTTTime(timingMatch[1]);
     const end = parseVTTTime(timingMatch[2]);
-    const cueText = lines.slice(timingIdx + 1).filter((l) => !l.startsWith("NOTE")).join("\n").trim();
+    // Per-cue whitespace normalization — collapses the tag-remnant runs the
+    // override strip left behind (see normalizeSpacing). Must run here, on
+    // the joined cue text, and NOT on the whole file: the blank lines between
+    // blocks are what `split(/\n\n+/)` uses to tell cues apart.
+    const cueText = normalizeSpacing(
+      lines.slice(timingIdx + 1).filter((l) => !l.startsWith("NOTE")).join("\n").trim()
+    );
 
     if (!cueText) continue;
 
     // Split long cues that contain multiple speakers' dialogue.
     // Detect sentence boundaries (. ! ?) followed by a capital letter or space+capital,
     // which typically marks a new speaker's line in merged subtitles.
+    //
+    // The split must NOT strip the inline tags: a cue wrapped in <i>…</i> that
+    // happens to contain a sentence boundary lost its tags (roman) while a
+    // sibling cue without a boundary kept them (italic) — the mid-sentence
+    // flip. Instead, re-open whatever style tags were already open at each
+    // piece's offset so every piece stays styled the way its parent cue was.
     const duration = end - start;
-    const sentences = cueText
-      .split(/(?<=[.!?])\s+(?=[A-Z""\u201c])/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const boundaries: number[] = [0];
+    const boundaryRe = /(?<=[.!?])\s+(?=[A-Z""\u201c])/g;
+    let boundary: RegExpExecArray | null;
+    while ((boundary = boundaryRe.exec(cueText)) !== null) {
+      boundaries.push(boundary.index + boundary[0].length);
+    }
+    boundaries.push(cueText.length);
 
-    if (sentences.length > 1) {
+    const pieces: { text: string; plain: string; from: number; to: number }[] = [];
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const from = boundaries[i];
+      const to = boundaries[i + 1];
+      // Re-normalize per piece: the global pass above already cleaned the
+      // whole file, but this is the boundary the instruction cares about —
+      // every piece that reaches a cue gets the run-collapse + edge trim.
+      const raw = normalizeSpacing(cueText.slice(from, to));
+      if (!raw) continue;
+      const plain = raw.replace(/<[^>]*>/g, "");
+      if (!plain.trim()) continue;
+      pieces.push({ text: raw, plain, from, to });
+    }
+
+    if (pieces.length > 1) {
       // Distribute time proportionally across sentences
-      const totalChars = sentences.reduce((sum, s) => sum + s.length, 0);
+      const totalChars = pieces.reduce((sum, p) => sum + p.plain.length, 0);
       let t = start;
-      for (const sentence of sentences) {
-        const share = sentence.length / totalChars;
+      for (const piece of pieces) {
+        const share = totalChars > 0 ? piece.plain.length / totalChars : 1 / pieces.length;
         const cueEnd = t + duration * share;
-        // Strip HTML tags for clean text
-        const clean = sentence.replace(/<[^>]*>/g, "").trim();
-        if (clean) {
-          cues.push({ start: t, end: Math.min(cueEnd, end), text: clean });
+        // The piece is a raw substring, so it may start inside a tag that was
+        // opened before it and end inside one that closes after it. Balance it
+        // against the tags open at each edge, but only for the tags the piece
+        // doesn't already carry — otherwise the closing `</i>` that is already
+        // in the slice gets a second one bolted on.
+        const openBefore = tagsOpenAt(cueText, piece.from);
+        const openAfter = tagsOpenAt(cueText, piece.to);
+        let styled = "";
+        for (const tag of openBefore) if (!piece.text.includes(`<${tag}>`)) styled += `<${tag}>`;
+        styled += piece.text;
+        for (let i = openAfter.length - 1; i >= 0; i--) {
+          if (!piece.text.includes(`</${openAfter[i]}>`)) styled += `</${openAfter[i]}>`;
         }
+        cues.push({ start: t, end: Math.min(cueEnd, end), text: styled });
         t = cueEnd;
       }
     } else {
-      cues.push({ start, end, text: cueText });
+      // Unsplit cue — same treatment as the pieces above (idempotent; the
+      // file-wide pass already cleaned this text).
+      cues.push({ start, end, text: normalizeSpacing(cueText) });
     }
   }
 
@@ -339,14 +577,25 @@ export default function SubtitleOverlay({
       }`}
     >
       {activeText.map((text, i) => {
-        const lines = text.split(/<br\s*\/?>/i).flatMap((l) => l.split("\n"));
+        // One box per line — see splitStyledLines for the tag balancing and
+        // the empty-line drop.
+        const lines = splitStyledLines(text);
+        if (lines.length === 0) return null;
 
         return (
-          <div key={i} className="text-center max-w-full">
+          // Flex COLUMN, not a plain text-align:center block: as inline-level
+          // boxes in a block container the line spans flowed HORIZONTALLY, so
+          // every source line break rendered as the two boxes' padding sitting
+          // side by side — a ~2-space-wide gap between words where the newline
+          // was ("land spoken of  in legends"), the excess-whitespace smear.
+          // Column + items-center stacks the boxes and keeps each one
+          // shrink-wrapped and centred, which the per-line mb-0.5 was
+          // already spacing for.
+          <div key={i} className="text-center max-w-full flex flex-col items-center">
             {lines.map((line, j) => (
               <span
                 key={j}
-                className={`inline-block bg-black/80 text-white font-medium leading-relaxed px-2 sm:px-3 py-0.5 mb-0.5 ${sizeClasses}`}
+                className={`inline-block max-w-full bg-black/80 text-white font-medium leading-relaxed px-2 sm:px-3 py-0.5 mb-0.5 ${sizeClasses}`}
                 style={{
                   textShadow:
                     "0 0 4px rgba(0,0,0,0.9), 0 0 2px rgba(0,229,255,0.3)",

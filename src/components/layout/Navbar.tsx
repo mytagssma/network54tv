@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import AccentColorSelector from "@/components/ui/AccentColorSelector";
+import { GlobeIcon, SearchIcon, XIcon } from "@/components/ui/icons";
 import { dispatchClearSearch } from "@/hooks/useClearSearch";
 
 export default function Navbar() {
@@ -147,12 +148,16 @@ export default function Navbar() {
  * toggle and no dock: the trailing button's only job is submitting (an empty
  * field still routes to /browse through the unchanged submit rule).
  *
- * Sync model — the URL is the source of truth: `?q=` is echoed back into the
- * field on back/forward, internal links and browse's Clear (via the effect
- * below), while keystrokes stay local until Enter / the magnifier pushes
- * `/browse?q=…`. That makes the field and the URL agree without coupling the
- * header to any page's state: browse reads `q` straight from the URL, and its
- * Clear only has to push `/browse` for the field to empty itself.
+ * Ownership model — the field owns its own text; the URL owns everything
+ * else. Keystrokes stay local (never pushed by the field itself) until Enter
+ * / the magnifier submit, or until /browse's as-you-type debounce pushes
+ * `/browse?q=…` for them. The URL flows back into the field only when the
+ * field is not focused (effect below), so back/forward, internal links and
+ * browse's Clear (which pushes `/browse`) still sync it — while typing, the
+ * user is the sole writer and no navigation can eat a keystroke. That keeps
+ * the field and the URL agreeing without coupling the header to any page's
+ * state: browse reads `q` straight from the URL, and its Clear only has to
+ * push `/browse` for the field to empty itself.
  *
  * Reads `useSearchParams`, so it must sit inside a `<Suspense>` boundary:
  * prerendered pages fall back to the placeholder box instead of failing the
@@ -165,9 +170,31 @@ function HeaderSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const q = draft.trim();
 
-  // URL → field. Deliberately one-directional: the effect only re-runs when
-  // the URL's q changes, so typing is never clobbered mid-edit.
+  // URL → field, but ONLY while the field is not being edited.
+  //
+  // `draft` must have exactly ONE writer while typing: the field's own
+  // onChange below. The old version of this effect ran `setDraft(urlQ)` on
+  // every URL change, which made the URL a SECOND writer — and /browse's
+  // as-you-type navigates with `router.replace`, so the URL always lags the
+  // keystrokes by a full round trip. Every time one of those navigations
+  // landed, the (older) `?q=` it carried overwrote the newer draft: typed
+  // characters vanished, the caret jumped back, and the next debounced fire
+  // then read the REVERTED value — which is exactly "typing doesn't register
+  // and undoes some characters". AniList 429 storms stretched that window
+  // from ~100ms to many seconds (see fetchWithRetry in /api/anilist), so the
+  // erasure grew precisely when the API was already unhappy, and the
+  // retype-after-revert cycles re-fired searches the 300ms debounce had
+  // already paid for.
+  //
+  // The URL is therefore adopted only when the field holds no focus — which
+  // is exactly "not typing". Back/forward, internal links and browse's Clear
+  // (it pushes /browse) all arrive unfocused and still sync the field as
+  // before; while the user IS typing, nothing but the user can move `draft`.
+  // Accepted trade-off: pressing the browser Back button while focused in the
+  // field leaves the field showing what was typed (the URL itself is still
+  // correct) — the safe direction, and the next navigation resyncs it.
   useEffect(() => {
+    if (document.activeElement === inputRef.current) return;
     setDraft(urlQ);
   }, [urlQ]);
 
@@ -236,43 +263,34 @@ function HeaderSearch() {
               aria-label="Clear search"
               className="flex h-full w-8 shrink-0 items-center justify-center text-[var(--accent)] opacity-0 transition-all group-hover:opacity-100 group-focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto hover:text-white"
             >
-              <svg
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                aria-hidden="true"
-                focusable="false"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <XIcon className="h-4 w-4" focusable="false" />
             </button>
           )}
-          {/* Trailing button: ALWAYS the magnifier — submitting a search is
-              its only purpose (empty still routes to /browse through the
-              unchanged submit rule). Bare-glyph treatment, divider and
+          {/* Trailing button: the icon only, swapped on the field's own
+              value — globe while empty (nothing to search for yet, so this
+              reads as "browse everything"), the magnifier once there's a
+              query. Same condition as the ✕ above, so the two never disagree
+              about whether something is typed. Submitting is its only purpose
+              in BOTH states (empty still routes to /browse through the
+              unchanged submit rule), so the button, its aria-label, its frame
+              integration and every hover/focus state are identical — only the
+              decorative glyph differs. Bare-glyph treatment, divider and
               background unchanged from the quiet-frame round. */}
           <button
             type="submit"
             aria-label="Search"
+            /* Keep mouse clicks from focusing the button — otherwise the
+               wrapper's focus-within frame lights up the whole bar on a
+               globe/magnifier click (user: don't highlight on click).
+               Keyboard Tab focus still works; Enter submit unaffected. */
+            onMouseDown={(e) => e.preventDefault()}
             className="flex h-full w-9 shrink-0 items-center justify-center border-l border-[var(--accent)]/50 text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10"
           >
-            <svg
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              strokeWidth={2}
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
+            {draft.length > 0 ? (
+              <SearchIcon className="h-4 w-4" focusable="false" />
+            ) : (
+              <GlobeIcon className="h-4 w-4" focusable="false" />
+            )}
           </button>
         </div>
       </form>

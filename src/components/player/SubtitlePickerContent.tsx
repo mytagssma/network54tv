@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { SearchIcon } from "@/components/ui/icons";
 
 interface SubtitlePickerContentProps {
   activeSubtitle: string | null;
@@ -68,7 +69,7 @@ export default function SubtitlePickerContent({
         className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
           !activeSubtitle
             ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-            : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+            : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
         }`}
       >
         Off
@@ -80,7 +81,7 @@ export default function SubtitlePickerContent({
           className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
             activeSubtitle === sub.url
               ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
-              : "text-[#9a9aa0] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
+              : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
           }`}
         >
           {sub.lang}
@@ -151,9 +152,7 @@ export default function SubtitlePickerContent({
           disabled={osLoading}
           className="w-full text-left px-2.5 py-1.5 text-xs text-[var(--accent)]/50 hover:text-[var(--accent)] hover:bg-[var(--accent)]/5 transition-colors disabled:opacity-50 flex items-center gap-1.5"
         >
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
+          <SearchIcon className="w-3 h-3" />
           {osLoading ? "Searching..." : "Search OpenSubtitles"}
         </button>
       )}

@@ -19,18 +19,6 @@ function Base({ children, ...props }: IconProps) {
   );
 }
 
-export function SearchIcon(props: IconProps) {
-  return (
-    <Base {...props}>
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-      />
-    </Base>
-  );
-}
-
 export function ListIcon(props: IconProps) {
   return (
     <Base {...props}>
@@ -63,18 +51,7 @@ export function ResetIcon(props: IconProps) {
   );
 }
 
-export function XIcon(props: IconProps) {
-  return (
-    <Base {...props}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-    </Base>
-  );
-}
-
-export function ChevronDownIcon(props: IconProps) {
-  return (
-    <Base {...props}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-    </Base>
-  );
-}
+/* The glyphs that used to be defined here (and the dropdown chevron, whose
+   path Player.tsx also carried inline) are single-sourced in the shared
+   library — re-exported so every existing `from "./icons"` keeps working. */
+export { ChevronDownIcon, SearchIcon, XIcon } from "@/components/ui/icons";

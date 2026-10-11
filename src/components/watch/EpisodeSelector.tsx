@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { Episode } from "@/types/anime";
 import { AvailabilityChip } from "@/components/anime/Availability";
+import Button from "@/components/ui/Button";
 
 /**
  * Paged episode selector (YouTube playlist-panel style).
@@ -100,36 +101,36 @@ export default function EpisodeSelector({
         <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider shrink-0">
           {heading}
         </h2>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-[#6b6b70] shrink-0 tabular-nums">
+        <span className="label-micro text-[var(--text-decorative)] shrink-0 tabular-nums">
           {episodes.length} EP
         </span>
 
         {pageCount > 1 && (
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
-            <span className="hidden sm:block font-mono text-[10px] uppercase tracking-wider text-[#6b6b70] tabular-nums">
+            <span className="hidden sm:block label-micro text-[var(--text-decorative)] tabular-nums">
               {firstEp && lastEp ? `${pad(firstEp.number)}–${pad(lastEp.number)}` : ""}
             </span>
-            <button
+            <Button
               type="button"
+              variant="pager"
               onClick={() => setPage(currentPage - 1)}
               disabled={currentPage === 0}
               aria-label="Previous page of episodes"
-              className="h-11 w-11 sm:h-7 sm:w-7 grid place-items-center rounded-none border border-[var(--accent)]/25 text-base leading-none text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:text-[var(--accent)] disabled:opacity-30 disabled:pointer-events-none"
             >
               <span aria-hidden="true">‹</span>
-            </button>
+            </Button>
             <span className="font-mono text-[11px] text-[var(--accent)]/70 tabular-nums min-w-[3.5rem] text-center">
               {currentPage + 1}/{pageCount}
             </span>
-            <button
+            <Button
               type="button"
+              variant="pager"
               onClick={() => setPage(currentPage + 1)}
               disabled={currentPage >= pageCount - 1}
               aria-label="Next page of episodes"
-              className="h-11 w-11 sm:h-7 sm:w-7 grid place-items-center rounded-none border border-[var(--accent)]/25 text-base leading-none text-[var(--accent)]/70 transition-colors hover:border-[var(--accent)]/60 hover:text-[var(--accent)] disabled:opacity-30 disabled:pointer-events-none"
             >
               <span aria-hidden="true">›</span>
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -151,14 +152,14 @@ export default function EpisodeSelector({
             const rowClass = isCurrent
               ? `${ROW_BASE} bg-[var(--accent)] border-[var(--accent)] text-black`
               : isAvailable
-                ? `${ROW_BASE} border-[var(--accent)]/10 bg-black/30 text-[#9a9aa0] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/10 hover:text-white group`
-                : `${ROW_BASE} border-[#6b6b70]/10 bg-black/20 text-[#6b6b70] opacity-60 cursor-not-allowed`;
+                ? `${ROW_BASE} border-[var(--accent)]/10 bg-black/30 text-[var(--text-secondary)] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/10 hover:text-white group`
+                : `${ROW_BASE} border-[var(--text-decorative)]/10 bg-black/20 text-[var(--text-decorative)] opacity-60 cursor-not-allowed`;
 
             const numberClass = isCurrent
               ? "text-black/70"
               : isAvailable
                 ? "text-[var(--accent)]/70"
-                : "text-[#6b6b70]";
+                : "text-[var(--text-decorative)]";
 
             const setRowRef = (el: HTMLElement | null) => {
               if (el) rowRefs.current.set(ep.number, el);
@@ -201,7 +202,7 @@ export default function EpisodeSelector({
             return (
               <Fragment key={ep.number}>
                 {showHeader && (
-                  <div className="col-span-full sticky top-0 z-10 border-b border-[var(--accent)]/25 bg-[#1a1a20] px-2 py-1.5 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]">
+                  <div className="col-span-full sticky top-0 z-10 border-b border-[var(--accent)]/25 bg-[var(--surface)] px-2 py-1.5 label-micro text-[var(--accent)]">
                     {label}
                   </div>
                 )}

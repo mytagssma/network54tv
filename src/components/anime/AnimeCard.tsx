@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import CardShell from "./CardShell";
 
 interface AnimeCardAnime {
   id: number;
@@ -33,106 +33,32 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
   const hasMeta = Boolean(ratingLabel || episodeLabel);
 
   return (
-    <Link
+    <CardShell
       href={baseHref}
-      onClick={() => onClick?.()}
-      className="flex flex-col bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
-                 transition-all duration-200 hover:border-[var(--accent)]/50 hover:-translate-y-0.5
-                 rounded-none accent-card-hover"
+      onClick={onClick}
+      loading={loading}
+      image={anime.image}
+      alt={anime.title}
+      title={anime.title}
+      genres={anime.genres}
     >
-      {/* Cover image */}
-      <div className="aspect-[3/4] shrink-0 relative overflow-hidden bg-[var(--background)] rounded-none">
-        {loading ? (
-          <>
-            {/* Diagonal 4-part pulse loading overlay */}
-            <div className="absolute inset-0 z-10 pointer-events-none">
-              {/* Top triangle */}
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(0 0, 100% 0, 50% 50%)" }}
-              />
-              {/* Right triangle */}
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(100% 0, 100% 100%, 50% 50%)" }}
-              />
-              {/* Bottom triangle */}
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(0 100%, 100% 100%, 50% 50%)" }}
-              />
-              {/* Left triangle */}
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(0 0, 0 100%, 50% 50%)" }}
-              />
-            </div>
-            {/* Dimmed placeholder behind the pulse */}
-            <div className="absolute inset-0 bg-[var(--panel)]" />
-          </>
-        ) : (
-          <img
-            src={anime.image}
-            alt={anime.title}
-            className="w-full h-full object-cover"
-            loading="lazy"
-          />
-        )}
-      </div>
-
-      {/* Info — flex column so the meta row can pin to the card bottom; every
-          card in a row then shares the same title / genres / meta baselines */}
-      <div className="flex flex-1 flex-col p-3">
-        {/* Fixed 2-line slot (line-clamp-2 + leading-tight = 17.5px/line) so
-            1-line and 2-line titles push the rows below them the same way */}
-        <h3 className="min-h-[2.5em] text-sm font-bold text-white line-clamp-2 leading-tight uppercase tracking-wider">
-          {loading ? "\u00A0" : anime.title}
-        </h3>
-
-        {!loading && anime.genres && anime.genres.length > 0 && (
-          <div className="mt-1.5 mb-1.5 flex flex-wrap gap-1">
-            {anime.genres.slice(0, 3).map((genre) => (
-              <span
-                key={genre}
-                className="text-[10px] px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20 rounded-none"
-              >
-                {genre}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Meta row: ★ score and episode count share one baseline; pinned to
-            the bottom of the card so rows line up across the grid */}
-        {!loading && hasMeta && (
-          <div className="mt-auto flex items-baseline justify-between gap-2 pt-1 text-[10px] leading-none tracking-wide">
-            <span className="inline-flex items-baseline gap-1 text-[var(--accent)] font-semibold">
-              {ratingLabel && (
-                <>
-                  <span aria-hidden="true">★</span>
-                  <span className="tabular-nums">{ratingLabel}</span>
-                </>
-              )}
-            </span>
-            <span className="text-white/50 font-medium tabular-nums whitespace-nowrap">
-              {episodeLabel}
-            </span>
-          </div>
-        )}
-
-        {loading && (
-          <div className="mt-auto flex flex-col gap-1 pt-1">
-            <div className="flex gap-1">
-              <div className="h-2.5 w-12 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-              <div className="h-2.5 w-8 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="h-2.5 w-7 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-              <div className="h-2.5 w-9 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-            </div>
-          </div>
-        )}
-      </div>
-    </Link>
+      {/* Meta row: ★ score and episode count share one baseline; pinned to
+          the bottom of the card so rows line up across the grid */}
+      {!loading && hasMeta && (
+        <div className="mt-auto flex items-baseline justify-between gap-2 pt-1 text-[10px] leading-none tracking-wide">
+          <span className="inline-flex items-baseline gap-1 text-[var(--accent)] font-semibold">
+            {ratingLabel && (
+              <>
+                <span aria-hidden="true">★</span>
+                <span className="tabular-nums">{ratingLabel}</span>
+              </>
+            )}
+          </span>
+          <span className="text-white/50 font-medium tabular-nums whitespace-nowrap">
+            {episodeLabel}
+          </span>
+        </div>
+      )}
+    </CardShell>
   );
 }

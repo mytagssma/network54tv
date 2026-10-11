@@ -49,13 +49,13 @@ const COPY: Record<
     // The gate saw a list and threw it away — say so instead of pretending
     // nothing came back, which is what used to happen.
     suspect: "A provider did answer, but the list it returned looked wrong for this title, so it was discarded.",
-    bodyClass: "mt-2 text-sm leading-relaxed text-[#6b6b70]",
+    bodyClass: "mt-2 text-sm leading-relaxed text-[var(--text-decorative)]",
   },
   NO_STREAM_FOUND: {
     heading: "// NO STREAM FOUND",
     body: "Every source failed or has no file for this episode — provider outage, or this title isn't carried.",
     // `mb-4` separates the copy from the Retry / Try Dub button row below it.
-    bodyClass: "mt-3 text-[#9a9aa0] text-sm mb-4 leading-relaxed",
+    bodyClass: "mt-3 text-[var(--text-secondary)] text-sm mb-4 leading-relaxed",
   },
 };
 
@@ -71,7 +71,7 @@ const UNKNOWN_COUNT = "\u2014"; // em dash
 
 const HEADING_CLASS = "font-mono text-xs uppercase tracking-[0.25em] text-[var(--accent)]";
 
-const CARD_CLASS = "border-l-2 border-[var(--accent)]/40 bg-[#131318] px-4 py-5 sm:px-6";
+const CARD_CLASS = "border-l-2 border-[var(--accent)]/40 bg-[var(--panel)] px-4 py-5 sm:px-6";
 
 /**
  * Per-kind chip styles, copied verbatim from the surfaces they replace so the
@@ -82,10 +82,10 @@ const CARD_CLASS = "border-l-2 border-[var(--accent)]/40 bg-[#131318] px-4 py-5 
  *  - `unknown`   → the bordered accent box EpisodeListFetcher used for counts
  */
 const CHIP_CLASS: Record<AvailabilityKind, string> = {
-  sub: "border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none",
-  dub: "border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none",
-  na: "font-mono text-[10px] text-[#6b6b70] uppercase tracking-wider",
-  unknown: "bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none",
+  sub: "border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 label-micro rounded-none",
+  dub: "border border-[var(--accent)]/20 text-[var(--accent)]/60 px-1 py-0.5 label-micro rounded-none",
+  na: "font-mono text-[10px] text-[var(--text-decorative)] uppercase tracking-wider",
+  unknown: "bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 label-micro rounded-none",
 };
 
 const CHIP_LABEL: Record<AvailabilityKind, string> = {
@@ -150,7 +150,7 @@ export function EmptyState({
  */
 export function LoadingNote({ state }: { state: LoadingState }) {
   if (state === "rows") {
-    return <p className="text-[#6b6b70] italic">{LOADING.rows}</p>;
+    return <p className="text-[var(--text-decorative)] italic">{LOADING.rows}</p>;
   }
   return (
     <span className="text-[10px] text-[var(--accent)]/40 font-mono animate-pulse">
@@ -165,7 +165,7 @@ export function LoadingNote({ state }: { state: LoadingState }) {
  */
 export function AudioCount({ label, value }: { label: "Sub" | "Dub"; value: number | null }) {
   return (
-    <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider rounded-none">
+    <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 label-micro rounded-none">
       {label} {value ?? UNKNOWN_COUNT}
     </span>
   );

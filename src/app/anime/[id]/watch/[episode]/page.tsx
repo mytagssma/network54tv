@@ -8,6 +8,11 @@ import FranchiseStrip from "@/components/watch/FranchiseStrip";
 import { buildFranchiseEntries } from "@/components/watch/franchiseEntries";
 import { getFranchiseItems } from "@/lib/franchise";
 import Link from "next/link";
+import {
+  ChevronLeftSolidIcon,
+  ChevronRightSolidIcon,
+  MenuIcon,
+} from "@/components/ui/icons";
 
 export const revalidate = 0;
 
@@ -77,7 +82,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-xs text-[#6b6b70] mb-4">
+      <div className="flex items-center gap-2 text-xs text-[var(--text-decorative)] mb-4">
         <Link
           href="/"
           className="text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors"
@@ -137,14 +142,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
               href={`/anime/${animeId}/watch/${prevEp.number}${providerQs}`}
               className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
             >
-              <svg
-                className="h-4 w-4 shrink-0"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
-              </svg>
+              <ChevronLeftSolidIcon className="h-4 w-4 shrink-0" />
               <span className="hidden whitespace-nowrap sm:inline">
                 EP {String(prevEp.number).padStart(2, "0")}
               </span>
@@ -155,14 +153,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
             href={`/anime/${animeId}${providerQs}`}
             className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
           >
-            <svg
-              className="h-4 w-4 shrink-0"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path d="M3 5h18v2H3zM3 11h18v2H3zM3 17h18v2H3z" />
-            </svg>
+            <MenuIcon className="h-4 w-4 shrink-0" />
             <span className="whitespace-nowrap">All Episodes</span>
           </Link>
         </div>
@@ -175,14 +166,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
               EP {String(nextEp.number).padStart(2, "0")}
             </span>
             <span className="whitespace-nowrap sm:hidden">Next</span>
-            <svg
-              className="h-4 w-4 shrink-0"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
-            </svg>
+            <ChevronRightSolidIcon className="h-4 w-4 shrink-0" />
           </Link>
         )}
       </div>

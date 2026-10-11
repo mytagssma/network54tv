@@ -616,7 +616,7 @@ async function latestAiredAt(
 
 // The optional `signal` is queue#11's stale-response guard: browse passes the
 // AbortSignal of its query effect, and only the PRIMARY search request in
-// executeSearch() forwards it — the widening/ranking lookups are refinements
+// executeSearch() forwards it — the ranking lookup below is a refinement
 // whose results the caller discards anyway (its own `cancelled` flag).
 type MediaFetcher = (
   query: string,
@@ -624,40 +624,320 @@ type MediaFetcher = (
   signal?: AbortSignal
 ) => Promise<any>;
 
-// When the server-side search comes back nearly empty (AniList's `search`
-// resolves server-side and a typo'd query can return nothing at all), retry
-// with the individual query words so the fuzzy re-rank has candidates to
-// surface. First page only, capped attempts, best effort — pagination stays
-// untouched because later pages are always plain server-side pages.
-const FUZZY_POOL_MIN = 6;
-const FUZZY_POOL_ATTEMPTS = 2;
+// ─── Relevance-gated typo tolerance (sparse-page retry) ─────────────────
+//
+// AniList's `search` resolves strictly server-side and will not correct a
+// misspelling itself: "lord of the mystries" → [] and even the lone word
+// "mystries" → [] (verified against the API). So the only way to surface the
+// intended title for a typo'd phrase is to re-query with parts of it and
+// judge the candidates locally.
+//
+// A first version of that retry (queue#5, "widenSearchPool") appended
+// whatever a per-word re-query returned, unranked and ungated: "mystries" →
+// [] then "lord" → Overlord rendered under the typed phrase, because
+// rankSearchResults() only REORDERS the page — it never filters — so every
+// injected title reached the grid. That failure defines the rules below:
+//
+//   (a) page 1 only, and only without an explicit sort, and only when the
+//       primary page came back sparse (< RETRY_POOL_MIN hits, 0 included);
+//   (b) retry queries are derived from the typed words — longest (most
+//       distinctive) first, at most RETRY_MAX_WORD_QUERIES extra requests,
+//       no dictionary, no new network service. A word whose OWN query comes
+//       back empty additionally gets trailing-truncation variants (see
+//       RETRY_TRUNCATE_* and retryTruncationVariants below). The retry runs
+//       in PARALLEL ROUNDS — words at once, then variants at once (see
+//       retrySparseSearch) — so a sparse search costs 3 round-trips instead
+//       of one per request;
+//   (c) the primary page is AniList's own answer for the phrase and is
+//       never dropped — the gate only filters RETRY-INJECTED candidates;
+//   (d) an injected candidate must pass passesQueryGate(): every significant
+//       query word (stop words and <3-char tokens excluded) has to
+//       fuzzy-match a DISTINCT word of ONE title string (romaji, english,
+//       native or a synonym). "Overlord" is rejected for "lord of the
+//       mystries" — it explains neither word ("lord" is only a suffix of
+//       "overlord", similarity 0.5) — while "Lord of Mysteries" passes:
+//       "lord" is verbatim, "mystries" ≈ "mysteries" at edit distance 1;
+//   (e) candidates failing the gate are discarded outright, and an empty
+//       page after gating is still a legitimate empty answer — the browse
+//       page renders its empty-results state for it;
+//   (f) the whole retry is hard-capped at RETRY_REQUEST_BUDGET upstream
+//       requests per sparse search (primary + word retries + variants), and
+//       a word query that already returned candidates is never re-tried in
+//       variant form. The budget is ALLOCATED before each parallel round is
+//       fired, so concurrency can never overshoot the cap;
+//   (g) single-token queries get NO retry and NO variants: a one-word query
+//       would re-query the identical string (self-query guard), and the old
+//       widenSearchPool bug — lone word "lord" injecting Overlord — was
+//       exactly single-token broadening.
+//
+// Why variants exist at all — probed AniList `search` behaviour (graphql
+// direct, sort SEARCH_MATCH, and re-probed through /api/anilist):
+//
+//   correct spelling ............ "apothecary"        → family ✓
+//   trailing deletion ........... "apothecar"         → family ✓
+//   TRAILING-TRUNCATED TYPO ..... "apothicar"         → family ✓  ← lever used
+//                                 "apothica" → ✓, "apothic" → ✓, "apothi" → ✗(0)
+//   equal-length substitution ... "apothicary"        → 0 ✗  (never self-corrects)
+//   vowel swaps of the typo ..... "epothicary"/"apethicary"/"apothacary" → 0 ✗
+//                                 (only the TRUE spelling "apothecary" hits,
+//                                 and left-to-right generation would need ~10
+//                                 queries to reach it — over budget)
+//
+// So AniList fuzzy-matches a query token only when it is SHORTER than the
+// indexed token (trailing deletion, tolerance ≈ the length difference) and
+// only down to ~7 characters; equal-length misspellings and short prefixes
+// get nothing. Chosen lever: chop the TYPO'd word from the right (longest
+// first, ≥ RETRY_TRUNCATE_MIN_LEN, ≤ RETRY_VARIANT_MAX per word, stop at the
+// first non-empty response). Vowel-swap generation was measured and rejected
+// (see above) — it costs more budget and retrieves nothing this matcher
+// would not already retrieve.
 
-async function widenSearchPool(
+const RETRY_POOL_MIN = 6;
+const RETRY_MAX_WORD_QUERIES = 2;
+// Primary + word retries + variants, hard cap per sparse search (rule f).
+const RETRY_REQUEST_BUDGET = 6;
+// Trailing-truncation variants per zero-return word (rule b).
+const RETRY_VARIANT_MAX = 3;
+// AniList stops matching below ~7 characters ("apothic" ✓ / "apothi" → 0).
+const RETRY_TRUNCATE_MIN_LEN = 7;
+
+// Words too generic to stand as evidence on their own ("lord OF THE
+// mysteries"); they stay in the phrase for whole-string ranking in
+// rankSearchResults() but are skipped by the per-word gate. Sub-3-char
+// tokens are dropped for the same reason.
+const RETRY_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into",
+  "is", "it", "no", "not", "of", "on", "or", "the", "to", "with",
+]);
+
+// Same per-word bar alignWords() already uses (1 edit on a 4-char word, 2 on
+// a 9-char one), plus a prefix allowance for truncated spellings ("myster" →
+// "mysteries"); the 4-char floor stops short tokens from prefix-matching
+// half of AniList.
+const RETRY_WORD_THRESHOLD = 0.72;
+const RETRY_PREFIX_MIN = 4;
+// Inflected titles: the ground truth for "apothicary diary" is titled "The
+// Apothecary Diaries" and none of its fields carries the singular "diary"
+// (probed: romaji is "Kusuriya no Hitorigoto", synonyms are all foreign
+// titles), while lev("diary","diaries") = 3 → similarity 0.571 < 0.72, so
+// the similarity/prefix rules alone REJECTED the correct answer. The gate
+// therefore also accepts a shared stem: ≥4 common leading chars and ≤3 chars
+// of length difference ("diary"/"diaries" share "diar"). This is a
+// false-negative fix, not a loosening of rule (d): every significant word
+// must still be explained by a distinct title word, and "overlord" still
+// cannot stand for "lord" (0 shared prefix chars, similarity 0.5, length
+// difference 4 > 3) — re-verified by the Overlord regression checks.
+const MORPH_COMMON_PREFIX_MIN = 4;
+const MORPH_LENGTH_DELTA_MAX = 3;
+
+function commonPrefixLength(a: string, b: string): number {
+  const max = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < max && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+  return i;
+}
+
+/** Significant query words, longest (most distinctive) first. */
+function retryQueryWords(query: string): string[] {
+  return normalizeTitle(query)
+    .split(" ")
+    .filter((word) => word.length >= 3 && !RETRY_STOPWORDS.has(word))
+    .sort((a, b) => b.length - a.length);
+}
+
+/**
+ * One query word standing in for one title word: exact, close, prefix of a
+ * longer word, or the same stem with an inflection ("diary" → "diaries").
+ */
+function retryWordMatches(queryWord: string, titleWord: string): boolean {
+  if (queryWord === titleWord) return true;
+  if (wordSimilarity(queryWord, titleWord) >= RETRY_WORD_THRESHOLD) return true;
+  const minLen = Math.min(queryWord.length, titleWord.length);
+  if (
+    minLen >= RETRY_PREFIX_MIN &&
+    (titleWord.startsWith(queryWord) || queryWord.startsWith(titleWord))
+  ) {
+    return true;
+  }
+  const delta = Math.abs(queryWord.length - titleWord.length);
+  return (
+    delta > 0 &&
+    delta <= MORPH_LENGTH_DELTA_MAX &&
+    commonPrefixLength(queryWord, titleWord) >= MORPH_COMMON_PREFIX_MIN
+  );
+}
+
+/**
+ * Gate rule (d): can the FULL typed phrase be explained by ONE title string?
+ * Every significant query word must match a distinct word of the same field,
+ * so a candidate that only accounts for one word of a longer phrase fails.
+ */
+function passesQueryGate(query: string, media: SearchableTitle): boolean {
+  const queryWords = retryQueryWords(query);
+  // A phrase of only stop/short words has nothing to prove — the gate stays
+  // open and AniList's primary answer is used untouched.
+  if (queryWords.length === 0) return true;
+  const fields = [
+    media.title?.romaji,
+    media.title?.english,
+    media.title?.native,
+    ...(media.synonyms || []),
+  ];
+  for (const field of fields) {
+    if (!field) continue;
+    const titleWords = normalizeTitle(field).split(" ").filter(Boolean);
+    if (titleWords.length < queryWords.length) continue;
+    const used = new Set<number>();
+    let covered = 0;
+    for (const queryWord of queryWords) {
+      const idx = titleWords.findIndex(
+        (titleWord, i) => !used.has(i) && retryWordMatches(queryWord, titleWord)
+      );
+      if (idx === -1) break;
+      used.add(idx);
+      covered++;
+    }
+    if (covered === queryWords.length) return true;
+  }
+  return false;
+}
+
+// GraphQL media rows arrive as untyped JSON; the retry only ever touches the
+// pieces the gate needs — the id (dedupe) and the title fields (see
+// SearchableTitle).
+type RawSearchMedia = SearchableTitle & { id: number };
+
+/**
+ * Trailing-truncation variants of a zero-return word, longest first — the
+ * lever the probed AniList behaviour actually rewards (a query token that is
+ * SHORTER than the indexed token still matches: "apothicar" → the
+ * Apothecary Diaries family, while the equal-length misspelling "apothicary"
+ * → 0). Cut from the right down to RETRY_TRUNCATE_MIN_LEN, at most
+ * RETRY_VARIANT_MAX of them.
+ */
+function retryTruncationVariants(word: string): string[] {
+  const variants: string[] = [];
+  for (
+    let length = word.length - 1;
+    length >= RETRY_TRUNCATE_MIN_LEN && variants.length < RETRY_VARIANT_MAX;
+    length--
+  ) {
+    variants.push(word.slice(0, length));
+  }
+  return variants;
+}
+
+/**
+ * Rules (b)/(f): fetch candidates from the typed words themselves (reusing
+ * the primary request's filters, so the retry obeys the same
+ * genre/status/region constraints), extend zero-return words with truncation
+ * variants, and keep only what clears the gate. Hard-capped at
+ * RETRY_REQUEST_BUDGET upstream requests including the primary.
+ *
+ * Latency shape — the retry runs in PARALLEL ROUNDS, so a sparse search
+ * costs three round-trips no matter how many upstream requests it spends
+ * (the sequential schedule before this pass cost one round-trip per request,
+ * up to six):
+ *
+ *   round 1   the primary phrase               (already spent by the caller)
+ *   round 2   every significant word at once   (Promise.allSettled)
+ *   round 3   truncation variants of the words that came back empty, at once
+ *
+ * The budget is allocated BEFORE each round is fired (rule f), so the
+ * concurrency can never overshoot it: variants are split across zero-return
+ * words longest-word-first (base share, then leftovers). Per word the
+ * LONGEST non-empty variant result wins — the same winner the sequential
+ * stop-at-first chain picked, just fetched concurrently. Injection stays in
+ * word order (longest first) and rankSearchResults() re-sorts afterwards,
+ * so the result list is identical to the sequential schedule's.
+ */
+async function retrySparseSearch(
   fetcher: MediaFetcher,
-  variables: Record<string, any>,
+  variables: Record<string, unknown>,
   query: string,
-  rawMedia: any[]
-): Promise<any[]> {
-  const words = normalizeTitle(query).split(" ").filter((w) => w.length >= 3);
-  if (words.length < 2) return rawMedia;
-  // Longest words first — they are the most distinctive part of a query.
-  words.sort((a, b) => b.length - a.length);
-  const seen = new Set(rawMedia.map((m: any) => m.id));
-  for (const word of words.slice(0, FUZZY_POOL_ATTEMPTS)) {
-    if (rawMedia.length >= FUZZY_POOL_MIN) break;
+  primaryMedia: RawSearchMedia[]
+): Promise<RawSearchMedia[]> {
+  const queryNorm = normalizeTitle(query).trim();
+  // Rule (g): a one-word query would re-query itself — skip it entirely, so
+  // single-token queries never retry and never generate variants.
+  const words = retryQueryWords(query)
+    .filter((word) => word !== queryNorm)
+    .slice(0, RETRY_MAX_WORD_QUERIES);
+  // The primary search already spent one request of the budget (rule f).
+  let remaining = RETRY_REQUEST_BUDGET - 1;
+  if (words.length === 0 || remaining <= 0) return primaryMedia;
+
+  const seen = new Set(primaryMedia.map((m) => m.id));
+  const injected: RawSearchMedia[] = [];
+  const poolSize = () => primaryMedia.length + injected.length;
+  /** One upstream page-1 search; a failed re-query degrades to no candidates. */
+  const fetchCandidates = async (search: string): Promise<RawSearchMedia[]> => {
     try {
-      const data = await fetcher(SEARCH_QUERY, { ...variables, search: word, page: 1 });
-      const extra: any[] = data?.Page?.media || [];
-      for (const media of extra) {
-        if (!media || media.id == null || seen.has(media.id)) continue;
-        seen.add(media.id);
-        rawMedia.push(media);
-      }
+      const data = await fetcher(SEARCH_QUERY, { ...variables, search, page: 1 });
+      return data?.Page?.media || [];
     } catch {
-      // Widening is a refinement — never fail the search over it.
+      // The retry is a refinement — a failed re-query never fails the search.
+      return [];
+    }
+  };
+  /** One round: settle every request at once, input order preserved. */
+  const runRound = async (searches: string[]): Promise<RawSearchMedia[][]> => {
+    const settled = await Promise.allSettled(searches.map(fetchCandidates));
+    return settled.map((result) => (result.status === "fulfilled" ? result.value : []));
+  };
+  const inject = (candidates: RawSearchMedia[]) => {
+    for (const media of candidates) {
+      if (!media || media.id == null || seen.has(media.id)) continue;
+      seen.add(media.id);
+      // Rules (d)/(e): gate every injected title against the FULL phrase.
+      if (passesQueryGate(query, media)) injected.push(media);
+    }
+  };
+
+  if (poolSize() >= RETRY_POOL_MIN) return [...primaryMedia, ...injected];
+
+  // Round 2 — every significant word at once (longest word first).
+  const activeWords = words.slice(0, Math.min(words.length, remaining));
+  remaining -= activeWords.length;
+  const wordResults = await runRound(activeWords);
+  const zeroWords: string[] = [];
+  wordResults.forEach((candidates, i) => {
+    if (candidates.length > 0) inject(candidates);
+    else zeroWords.push(activeWords[i]);
+  });
+
+  // Round 3 — truncation variants of the zero-return words, all at once
+  // (rule b, evidence in the note above). Budget split across those words,
+  // longest word first, so parallelism still cannot exceed rule (f).
+  const plans = zeroWords.map((word) => retryTruncationVariants(word));
+  let variantBudget = remaining;
+  const variantSearches: string[] = [];
+  const variantOwners: string[] = []; // parallel to variantSearches
+  for (let i = 0; i < plans.length && variantBudget > 0; i++) {
+    const share = Math.ceil(variantBudget / (plans.length - i));
+    const take = Math.min(plans[i].length, share);
+    for (const variant of plans[i].slice(0, take)) {
+      variantSearches.push(variant);
+      variantOwners.push(zeroWords[i]);
+    }
+    variantBudget -= take;
+  }
+  remaining -= variantSearches.length;
+
+  if (variantSearches.length > 0 && poolSize() < RETRY_POOL_MIN) {
+    const variantResults = await runRound(variantSearches);
+    // Plans are longest-first, so the first non-empty hit per word is the
+    // longest (most faithful) variant — inject that one only.
+    const pickedWords = new Set<string>();
+    for (let i = 0; i < variantSearches.length; i++) {
+      if (variantResults[i].length === 0) continue;
+      if (pickedWords.has(variantOwners[i])) continue;
+      pickedWords.add(variantOwners[i]);
+      inject(variantResults[i]);
     }
   }
-  return rawMedia;
+
+  return [...primaryMedia, ...injected];
 }
 
 async function executeSearch(
@@ -730,12 +1010,14 @@ async function executeSearch(
   // racing its replacement back to the component.
   const data = await fetcher(SEARCH_QUERY, variables, signal);
   const pageData = data.Page;
+  // The primary page is AniList's own answer for the typed phrase and is used
+  // exactly as returned. A sparse page 1 additionally triggers the
+  // relevance-gated typo retry below (rules a–g in the note above): only
+  // retry-injected candidates are gated, primary results never are, and an
+  // empty page stays empty all the way to the browse empty-results state.
   let rawMedia: any[] = pageData.media || [];
-
-  // Sparse first page + a real query → widen the pool so fuzzy matching has
-  // something to work with (queue#5).
-  if (page === 1 && !filters?.sort && query.trim() && rawMedia.length < FUZZY_POOL_MIN) {
-    rawMedia = await widenSearchPool(fetcher, variables, query, rawMedia);
+  if (page === 1 && !filters?.sort && query.trim() && rawMedia.length < RETRY_POOL_MIN) {
+    rawMedia = await retrySparseSearch(fetcher, variables, query, rawMedia);
   }
 
   // Client-side AND mode: keep only media matching ALL included genres
@@ -963,10 +1245,13 @@ async function anilistFetch(
   variables: Record<string, any>,
   signal?: AbortSignal
 ) {
-  const res = await fetch("/api/anilist", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, variables }),
+  // GET (not POST) so the response is a normal cacheable request: Vercel's
+  // edge honours the route's s-maxage and serves repeats without a
+  // serverless invocation — the whole point of the CDN layer (a cold
+  // lambda's in-memory Map starts empty). Aborted requests simply never
+  // read the response; they cannot poison the cache.
+  const payload = encodeURIComponent(JSON.stringify({ query, variables }));
+  const res = await fetch(`/api/anilist?payload=${payload}`, {
     // queue#11 — undefined for every caller that doesn't search as you type.
     signal,
   });

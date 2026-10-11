@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import CardShell from "./CardShell";
 import type { Anime } from "@/types/anime";
 
 interface UpcomingCardProps {
@@ -70,98 +70,29 @@ export default function UpcomingCard({ anime, loading, onClick }: UpcomingCardPr
   const airs = airsLabel(anime);
 
   return (
-    <Link
+    <CardShell
       href={`/anime/${anime.id}`}
-      onClick={() => onClick?.()}
-      className="flex flex-col bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
-                 transition-all duration-200 hover:border-[var(--accent)]/50 hover:-translate-y-0.5
-                 rounded-none accent-card-hover"
+      onClick={onClick}
+      loading={loading}
+      image={anime.coverImage}
+      alt={anime.title}
+      title={anime.title}
+      genres={anime.genres}
     >
-      {/* Cover image */}
-      <div className="aspect-[3/4] shrink-0 relative overflow-hidden bg-[var(--background)] rounded-none">
-        {loading ? (
-          <>
-            {/* Diagonal 4-part pulse loading overlay (same as AnimeCard) */}
-            <div className="absolute inset-0 z-10 pointer-events-none">
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(0 0, 100% 0, 50% 50%)" }}
-              />
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(100% 0, 100% 100%, 50% 50%)" }}
-              />
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(0 100%, 100% 100%, 50% 50%)" }}
-              />
-              <div
-                className="diagonal-pulse-section absolute inset-0"
-                style={{ clipPath: "polygon(0 0, 0 100%, 50% 50%)" }}
-              />
-            </div>
-            <div className="absolute inset-0 bg-[var(--panel)]" />
-          </>
-        ) : (
-          // Same loader as AnimeCard: AniList CDN covers are used as-is
-          // (next/image would need remotePatterns config + a loader change).
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={anime.coverImage}
-            alt={anime.title}
-            className="w-full h-full object-cover"
-            loading="lazy"
-          />
-        )}
-      </div>
-
-      {/* Info — flex column so the meta row can pin to the card bottom */}
-      <div className="flex flex-1 flex-col p-3">
-        <h3 className="min-h-[2.5em] text-sm font-bold text-white line-clamp-2 leading-tight uppercase tracking-wider">
-          {loading ? "\u00A0" : anime.title}
-        </h3>
-
-        {!loading && anime.genres && anime.genres.length > 0 && (
-          <div className="mt-1.5 mb-1.5 flex flex-wrap gap-1">
-            {anime.genres.slice(0, 3).map((genre) => (
-              <span
-                key={genre}
-                className="text-[10px] px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20 rounded-none"
-              >
-                {genre}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Meta row: format/status chip left, premiere line right — pinned to
-            the bottom so rows line up across the grid, like AnimeCard's ★/EP */}
-        {!loading && (
-          <div className="mt-auto flex items-baseline justify-between gap-2 pt-1 text-[10px] leading-none tracking-wide">
-            <span className="px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20 rounded-none font-medium whitespace-nowrap">
-              {formatLabel(anime.format)}
+      {/* Meta row: format/status chip left, premiere line right — pinned to
+          the bottom so rows line up across the grid, like AnimeCard's ★/EP */}
+      {!loading && (
+        <div className="mt-auto flex items-baseline justify-between gap-2 pt-1 text-[10px] leading-none tracking-wide">
+          <span className="px-1.5 py-0.5 bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20 rounded-none font-medium whitespace-nowrap">
+            {formatLabel(anime.format)}
+          </span>
+          {airs && (
+            <span className="text-white/50 font-medium tabular-nums whitespace-nowrap">
+              {airs}
             </span>
-            {airs && (
-              <span className="text-white/50 font-medium tabular-nums whitespace-nowrap">
-                {airs}
-              </span>
-            )}
-          </div>
-        )}
-
-        {loading && (
-          <div className="mt-auto flex flex-col gap-1 pt-1">
-            <div className="flex gap-1">
-              <div className="h-2.5 w-12 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-              <div className="h-2.5 w-8 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="h-2.5 w-7 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-              <div className="h-2.5 w-9 bg-[var(--accent)]/10 rounded-none animate-pulse" />
-            </div>
-          </div>
-        )}
-      </div>
-    </Link>
+          )}
+        </div>
+      )}
+    </CardShell>
   );
 }
