@@ -166,6 +166,16 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
   // keeps React StrictMode's remount from duplicating a completed load.
   // Set only on success, so a failed load still retries on the next run.
   const resultsKeyRef = useRef(seeded ? requestKey(query, filters) : "");
+  // Landing feeds already fetched this session (trending + popular + upcoming
+  // in state). Returning to the empty query — backspacing a live search down
+  // to "" or the header ✕ — must reuse them instead of refetching: the clear
+  // path fires the heaviest single transition in the flow (three feeds, each
+  // with its own ranking lookup ≈ 6 upstream calls) while the phone still
+  // holds the search result set in memory, which is what tips an
+  // already-loaded mobile renderer over (Aw Snap on backspace-to-clear).
+  // Set only alongside the "landing" key on success, so a failed load still
+  // retries; a ref, not state, so the fetch effect gains no new deps.
+  const landingLoadedRef = useRef(false);
 
   const toCard = (a: Anime) => ({
     id: a.id,
@@ -262,6 +272,16 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
         // request key at all (a cancelled run must not claim landing data).
         resultsKeyRef.current = "";
         setResults([]);
+        if (landingLoadedRef.current) {
+          // Feeds already in memory (see the ref) — the grids below read the
+          // same state a refetch would overwrite identically. Skip the triple
+          // fetch; mirror the key-match early return above so no loading box
+          // flashes and no stale run can claim this dataset.
+          resultsKeyRef.current = key;
+          setLoading(false);
+          setError("");
+          return;
+        }
         try {
           const [trendingData, popularData, upcomingData] = await Promise.all([
             getTrendingClient(1, LANDING_PER_PAGE),
@@ -282,6 +302,7 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
               upcomingBuffer.reset(upcomingData.hasNextPage);
             }
             resultsKeyRef.current = key;
+            landingLoadedRef.current = true;
           }
         } catch {
           if (!cancelled) setError("Failed to load.");

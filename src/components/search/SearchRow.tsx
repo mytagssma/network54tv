@@ -45,8 +45,14 @@ interface SearchRowProps {
 /** Quiet time after the last keystroke before the search fires. */
 export const LIVE_SEARCH_DEBOUNCE_MS = 300;
 
-/** Nothing shorter than this ever hits the API — search needs two characters. */
-export const LIVE_SEARCH_MIN_CHARS = 2;
+/** Live search fires only at this length or more — three characters. Shorter
+    prefixes ("lo") match a huge swath of AniList and each pause would spend a
+    full search chain (primary + airing lookup + possible retries) plus an RSC
+    navigation and a 12-image grid render; stacked mid-word on a low-memory
+    phone that is the Aw Snap recipe (mobile crash on ?q=lo). Typing stays
+    local until the 3rd character; Enter submits (and hard loads fetch) any
+    length, so short queries remain reachable — they just never fire live. */
+export const LIVE_SEARCH_MIN_CHARS = 3;
 
 /** What a debounced field value should do to the current URL query. */
 export type LiveQueryPlan =

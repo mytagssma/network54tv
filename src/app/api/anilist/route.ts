@@ -36,9 +36,14 @@ function getCacheKey(query: string, variables: Record<string, any>): string {
   return `${query}::${JSON.stringify(variables)}`;
 }
 
-async function fetchWithRetry(url: string, options: RequestInit, retries = 3): Promise<Response> {
+async function fetchWithRetry(url: string, options: RequestInit, retries = 3, signal?: AbortSignal): Promise<Response> {
   for (let i = 0; i <= retries; i++) {
-    const res = await fetch(url, options);
+    // A superseded search-as-you-type query aborts the client's request; the
+    // upstream POST must die with it instead of running (and retrying) to
+    // completion — otherwise every keystroke pause leaves an orphaned request
+    // piling up against AniList.
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const res = await fetch(url, { ...options, signal });
 
     if (res.status === 429) {
       const retryAfter = res.headers.get("Retry-After");
@@ -52,7 +57,7 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3): P
   }
 
   // If all retries exhausted, return the last response
-  return fetch(url, options);
+  return fetch(url, { ...options, signal });
 }
 
 /**
@@ -63,7 +68,8 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3): P
 async function runQuery(
   query: string,
   variables: Record<string, unknown>,
-  cdnCacheable: boolean
+  cdnCacheable: boolean,
+  signal?: AbortSignal
 ): Promise<NextResponse> {
   const cacheKey = getCacheKey(query, variables);
   const cached = cache.get(cacheKey);
@@ -85,7 +91,7 @@ async function runQuery(
       Referer: "https://anilist.co/",
     },
     body: JSON.stringify({ query, variables }),
-  });
+  }, 3, signal);
 
   if (!res.ok) {
     // Serve stale cache if available — briefly CDN-cacheable, never a day.
@@ -139,7 +145,7 @@ export async function POST(req: NextRequest) {
 
   // Unchanged behaviour: no cache headers — POST is kept for compatibility
   // only and is not a cacheable method.
-  return runQuery(query, variables, false);
+  return runQuery(query, variables, false, req.signal);
 }
 
 /**
@@ -172,5 +178,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Missing query" }, { status: 400, headers: { "Cache-Control": NO_STORE } });
   }
 
-  return runQuery(query, variables, true);
+  return runQuery(query, variables, true, req.signal);
 }
