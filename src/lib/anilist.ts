@@ -616,7 +616,7 @@ async function latestAiredAt(
 
 // ─── Search pipeline ─────────────────────────────────────────────────────
 
-// The optional `signal` is queue#11's stale-response guard: browse passes the
+// The optional `signal` is the stale-response guard: browse passes the
 // AbortSignal of its query effect, and only the PRIMARY search request in
 // executeSearch() forwards it — the ranking lookup below is a refinement
 // whose results the caller discards anyway (its own `cancelled` flag).
@@ -698,11 +698,13 @@ const RETRY_POOL_MIN = 6;
 const RETRY_MAX_WORD_QUERIES = 2;
 // Primary + word retries + variants, hard cap per sparse search (rule f).
 const RETRY_REQUEST_BUDGET = 6;
-// A 1–2 character query no longer fires live (LIVE_SEARCH_MIN_CHARS = 3 —
-// mid-word prefixes like "lo" matched a huge swath of AniList and crashed
-// low-memory phones), but it still arrives via Enter-submit and hard loads,
-// so the cap stays: the initial grid stays small, and Load More / pagination
-// keep the full result set reachable for anyone who actually wants it.
+// A 1–2 character query still arrives via Enter-submit and hard loads and
+// matches a huge swath of AniList — every title containing those letters.
+// Left at the full page size it is the cheapest way to hand the grid a large
+// page of weak matches (and a large franchise-grouping job) on
+// memory-constrained phones. Cap the page for them: the initial grid stays
+// small, and Load More / pagination keep the full result set reachable for
+// anyone who actually wants it.
 const SHORT_QUERY_MAX_PAGE = 12;
 // Trailing-truncation variants per zero-return word (rule b).
 const RETRY_VARIANT_MAX = 3;
@@ -882,7 +884,7 @@ async function retrySparseSearch(
   /** One upstream page-1 search; a failed re-query degrades to no candidates. */
   const fetchCandidates = async (search: string): Promise<RawSearchMedia[]> => {
     try {
-      // queue#11 — the signal travels into every retry round too, so a query
+      // The signal travels into every retry round too, so a query
       // that was superseded mid-retry dies at the network instead of leaving
       // the parallel rounds running behind it.
       const data = await fetcher(SEARCH_QUERY, { ...variables, search, page: 1 }, signal);
@@ -1024,9 +1026,9 @@ async function executeSearch(
     variables.startDate_greater = y * 10000 + m * 100 + d;
   }
 
-  // Primary search request — the only one carrying queue#11's signal, so an
-  // as-you-type query that gets superseded dies at the network instead of
-  // racing its replacement back to the component.
+  // Primary search request — the only one carrying the caller's signal, so a
+  // query that gets superseded (new submit, filter change, clear) dies at
+  // the network instead of racing its replacement back to the component.
   const data = await fetcher(SEARCH_QUERY, variables, signal);
   const pageData = data.Page;
   // The primary page is AniList's own answer for the typed phrase and is used
@@ -1271,7 +1273,8 @@ async function anilistFetch(
   // read the response; they cannot poison the cache.
   const payload = encodeURIComponent(JSON.stringify({ query, variables }));
   const res = await fetch(`/api/anilist?payload=${payload}`, {
-    // queue#11 — undefined for every caller that doesn't search as you type.
+    // AbortSignal — present on search calls so a superseded query dies at
+    // the network; undefined for callers that never pass one.
     signal,
   });
   if (!res.ok) throw new Error(`AniList API error: ${res.status}`);
@@ -1317,7 +1320,7 @@ export async function searchAnimeClient(
   page = 1,
   perPage = 20,
   filters?: SearchFilters,
-  /** queue#11 — aborts the primary request when a newer query takes over. */
+  /** Aborts the primary request when a newer query takes over. */
   signal?: AbortSignal
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
   return executeSearch(anilistFetch, query, page, perPage, filters, signal);

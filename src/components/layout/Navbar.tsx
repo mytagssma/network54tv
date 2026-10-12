@@ -150,14 +150,13 @@ export default function Navbar() {
  *
  * Ownership model — the field owns its own text; the URL owns everything
  * else. Keystrokes stay local (never pushed by the field itself) until Enter
- * / the magnifier submit, or until /browse's as-you-type debounce pushes
- * `/browse?q=…` for them. The URL flows back into the field only when the
- * field is not focused (effect below), so back/forward, internal links and
- * browse's Clear (which pushes `/browse`) still sync it — while typing, the
- * user is the sole writer and no navigation can eat a keystroke. That keeps
- * the field and the URL agreeing without coupling the header to any page's
- * state: browse reads `q` straight from the URL, and its Clear only has to
- * push `/browse` for the field to empty itself.
+ * / the magnifier submit pushes `/browse?q=…`. The URL flows back into the
+ * field only when the field is not focused (effect below), so back/forward,
+ * internal links and browse's Clear (which pushes `/browse`) still sync it —
+ * while typing, the user is the sole writer and no navigation can eat a
+ * keystroke. That keeps the field and the URL agreeing without coupling the
+ * header to any page's state: browse reads `q` straight from the URL, and
+ * its Clear only has to push `/browse` for the field to empty itself.
  *
  * Reads `useSearchParams`, so it must sit inside a `<Suspense>` boundary:
  * prerendered pages fall back to the placeholder box instead of failing the
@@ -173,23 +172,13 @@ function HeaderSearch() {
   // URL → field, but ONLY while the field is not being edited.
   //
   // `draft` must have exactly ONE writer while typing: the field's own
-  // onChange below. The old version of this effect ran `setDraft(urlQ)` on
-  // every URL change, which made the URL a SECOND writer — and /browse's
-  // as-you-type navigates with `router.replace`, so the URL always lags the
-  // keystrokes by a full round trip. Every time one of those navigations
-  // landed, the (older) `?q=` it carried overwrote the newer draft: typed
-  // characters vanished, the caret jumped back, and the next debounced fire
-  // then read the REVERTED value — which is exactly "typing doesn't register
-  // and undoes some characters". AniList 429 storms stretched that window
-  // from ~100ms to many seconds (see fetchWithRetry in /api/anilist), so the
-  // erasure grew precisely when the API was already unhappy, and the
-  // retype-after-revert cycles re-fired searches the 300ms debounce had
-  // already paid for.
-  //
-  // The URL is therefore adopted only when the field holds no focus — which
-  // is exactly "not typing". Back/forward, internal links and browse's Clear
-  // (it pushes /browse) all arrive unfocused and still sync the field as
-  // before; while the user IS typing, nothing but the user can move `draft`.
+  // onChange below. An older version of this effect ran `setDraft(urlQ)` on
+  // every URL change, which made the URL a SECOND writer — a submitted
+  // navigation landing mid-edit overwrote the newer draft. The URL is
+  // therefore adopted only when the field holds no focus — which is exactly
+  // "not typing". Back/forward, internal links and browse's Clear (it pushes
+  // /browse) all arrive unfocused and still sync the field as before; while
+  // the user IS typing, nothing but the user can move `draft`.
   // Accepted trade-off: pressing the browser Back button while focused in the
   // field leaves the field showing what was typed (the URL itself is still
   // correct) — the safe direction, and the next navigation resyncs it.

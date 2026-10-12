@@ -16,10 +16,10 @@ import BrowseContent from "@/components/browse/BrowseContent";
  *     empty array renders "No results for …" in the served body), and
  *   - the client does not repeat the request it was just given.
  *
- * Client-side navigations (search-as-you-type's `router.replace`) do NOT
- * fetch here: they pass `initialSearch={null}` and BrowseContent keeps
- * fetching client-side exactly as before — its AbortSignal (queue#11) is what
- * kills a superseded as-you-type request, and that only exists on the client.
+ * Client-side navigations (the header's submit `router.push`) do NOT
+ * fetch here: they pass `initialSearch={null}` and BrowseContent
+ * fetches client-side exactly as before — its AbortSignal is what
+ * kills a superseded request, and that only exists on the client.
  * Sniffing the request is what keeps the two paths apart:
  *
  *   - browser document load → `sec-fetch-dest: document` (or no Fetch

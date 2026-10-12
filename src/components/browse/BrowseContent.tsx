@@ -1,6 +1,6 @@
 "use client";
 
-// The whole /browse UI (search wiring, filters, grid, live search). It used
+// The whole /browse UI (search wiring, filters, grid). It used
 // to BE `app/browse/page.tsx`; the route entry is now a server component that
 // fetches page 1 for a hard `?q=` load and passes it in as `initialSearch`
 // (see that file), while everything below — including the query pipeline
@@ -167,9 +167,11 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
   // Set only on success, so a failed load still retries on the next run.
   const resultsKeyRef = useRef(seeded ? requestKey(query, filters) : "");
   // Landing feeds already fetched this session (trending + popular + upcoming
-  // in state). Returning to the empty query — backspacing a live search down
-  // to "" or the header ✕ — must reuse them instead of refetching: the clear
-  // path fires the heaviest single transition in the flow (three feeds, each
+  // in state). Returning to the empty query — clearing a submitted search —
+  // must reuse them instead of refetching: a clear used to fire the heaviest
+  // single transition in the flow (three feeds, each with its own ranking
+  // lookup ≈ 6 upstream calls) while the phone still held the search result
+  // set in memory.
   // with its own ranking lookup ≈ 6 upstream calls) while the phone still
   // holds the search result set in memory, which is what tips an
   // already-loaded mobile renderer over (Aw Snap on backspace-to-clear).
@@ -219,14 +221,14 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
   }
   useClearSearch(handleClear);
 
-  // Fetch initial data when the query or any filter changes
+  // Fetch initial data when the query or any filter changes. A slow
+  // response for an OLD query can easily land after a NEWER one (submit,
+  // filter change, clear), so cleanup runs `cancelled = true` first, then
+  // aborts: the pending request dies without a network wait, and even if
+  // it had already settled the flag keeps every setState below from ever
+  // touching stale data.
   useEffect(() => {
     let cancelled = false;
-    // Queue#11 — as-you-type fires a search per debounced pause, so a slow
-    // response for an OLD query can easily land after a NEWER one. Cleanup
-    // runs `cancelled = true` first, then aborts: the pending request dies
-    // without a network wait, and even if it had already settled the flag
-    // keeps every setState below from ever touching stale data.
     const controller = new AbortController();
     async function load() {
       const key = requestKey(query, filters);
@@ -435,12 +437,12 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
     </button>
   );
 
-  // Queue#11 — search-as-you-type: while a query change is fetching, keep
-  // the previous grid visible but dimmed (aria-busy, Load More withheld)
-  // instead of swapping in the "Loading..." box. No nodes are inserted or
-  // removed, so the page never collapses/reflows on every keystroke pause;
-  // `results` itself still holds only results for a search view (the effect
-  // above empties it on the way back to the landing view).
+  // While a query/filter change is fetching, keep the previous grid visible
+  // but dimmed (aria-busy, Load More withheld) instead of swapping in the
+  // "Loading..." box. No nodes are inserted or removed, so the page never
+  // collapses/reflows on a filter change; `results` itself still holds only
+  // results for a search view (the effect above empties it on the way back
+  // to the landing view).
   const refreshing = loading && Boolean(query) && results.length > 0;
 
   let resultsNode: React.ReactNode = null;
@@ -514,15 +516,10 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
             field and Clear ✕ live in the header (Navbar): the ✕ broadcasts
             and this page runs its full Clear — filters/chips reset plus the
             push to /browse that empties the header field via the URL.
-            The field's debounced keystrokes come back through onLiveQuery
-            (queue#11): `replace`, never `push`, so a burst of typing adds no
-            history entries; the effect above keyed on `query` does the one
-            search execution per quiet pause. */}
+            Search is submit-only — Enter / the magnifier pushes
+            `/browse?q=…` (a real navigation, so it lands in history); the
+            effect above keyed on `query` runs the one search execution. */}
         <SearchRow
-          query={query}
-          onLiveQuery={(value) =>
-            router.replace(value ? `/browse?q=${encodeURIComponent(value)}` : "/browse")
-          }
           heading={
             <SearchHeading
               title="Browse Anime"

@@ -38,10 +38,10 @@ function getCacheKey(query: string, variables: Record<string, any>): string {
 
 async function fetchWithRetry(url: string, options: RequestInit, retries = 3, signal?: AbortSignal): Promise<Response> {
   for (let i = 0; i <= retries; i++) {
-    // A superseded search-as-you-type query aborts the client's request; the
+    // A superseded query aborts the client's request; the
     // upstream POST must die with it instead of running (and retrying) to
-    // completion — otherwise every keystroke pause leaves an orphaned request
-    // piling up against AniList.
+    // completion — otherwise every submit in quick succession leaves an
+    // orphaned request piling up against AniList.
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const res = await fetch(url, { ...options, signal });
 
