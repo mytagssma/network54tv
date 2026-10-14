@@ -281,22 +281,263 @@ async function searchProvider(
 
 // ─── Episode Retrieval ────────────────────────────────────────────────
 
+// ─── Episode-number normalization (AniZip) ───────────────────────────
+//
+// Providers number the SAME episode differently: a season-2 entry is listed
+// 1..N on one site, 171.. (TVDB absolute) on another, and the numbering the
+// watch page serves is yet another one. An exact `ep.number === episodeNumber`
+// find therefore misses on a provider that carries the episode under a
+// sibling number, and the walk reports NO STREAM FOUND for an episode that
+// exists.
+//
+// The mapping reused here is AniZip's — the very document kaizoku-core already
+// fetches to BUILD megaplay's and allmanga's episode lists
+// (`https://api.ani.zip/mappings?anilist_id=`; see megaplay.js/allmanga.js in
+// node_modules/kaizoku-core). Per episode it states the key the list is built
+// from, the season-local number (`seasonNumber`/`episodeNumber`) and the
+// absolute number (`absoluteEpisodeNumber`), so a number can be translated
+// between schemes without inventing an offset.
+
+interface AniZipEpisode {
+  seasonNumber?: number;
+  episodeNumber?: number;
+  absoluteEpisodeNumber?: number;
+  airDate?: string;
+  airdate?: string;
+  title?: Record<string, string | undefined> | null;
+}
+
+interface AniZipMapping {
+  episodes: Record<string, AniZipEpisode | undefined>;
+}
+
+const anizipCache = new Map<number, { data: AniZipMapping | null; expiresAt: number }>();
+const ANIZIP_CACHE_MAX = 50;
+/** A found mapping is stable; a miss (new/unknown id, upstream blip) retries soon. */
+const ANIZIP_TTL_OK_MS = 10 * 60 * 1000;
+const ANIZIP_TTL_MISS_MS = 60 * 1000;
+
+async function getAniZipMapping(anilistId: number): Promise<AniZipMapping | null> {
+  const cached = anizipCache.get(anilistId);
+  if (cached && Date.now() < cached.expiresAt) return cached.data;
+  let data: AniZipMapping | null = null;
+  try {
+    const res = await fetch(`https://api.ani.zip/mappings?anilist_id=${anilistId}`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json && typeof json === "object" && json.episodes && typeof json.episodes === "object") {
+        data = json as AniZipMapping;
+      }
+    }
+  } catch {
+    data = null; // network/timeout — degrade to "no normalization", never throw
+  }
+  if (anizipCache.size >= ANIZIP_CACHE_MAX) {
+    const oldest = anizipCache.keys().next().value;
+    if (oldest !== undefined) anizipCache.delete(oldest);
+  }
+  anizipCache.set(anilistId, {
+    data,
+    expiresAt: Date.now() + (data ? ANIZIP_TTL_OK_MS : ANIZIP_TTL_MISS_MS),
+  });
+  return data;
+}
+
+/** Lowercased alphanumerics only, so "Action Kamen VS" ≡ "actionkamenvs". */
+function normalizeEpisodeTitle(s?: string | null): string {
+  return typeof s === "string" ? s.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+}
+
+/** Every language variant AniZip ships for an episode, normalized. */
+function anizipTitleVariants(ep: AniZipEpisode): string[] {
+  const title = ep.title;
+  if (!title || typeof title !== "object") return [];
+  return Object.values(title).map(normalizeEpisodeTitle).filter(Boolean);
+}
+
+/** `YYYY-MM-DD` of an AniZip episode, or null when it carries no date. */
+function anizipAirDate(ep: AniZipEpisode): string | null {
+  const raw =
+    typeof ep.airDate === "string" && ep.airDate
+      ? ep.airDate
+      : typeof ep.airdate === "string" && ep.airdate
+        ? ep.airdate
+        : null;
+  return raw ? raw.slice(0, 10) : null;
+}
+
+/**
+ * Loose shape of a raw provider episode — upstream payloads vary, so every
+ * field is optional; the normalizer only reads these.
+ */
+interface RawEpisode {
+  id?: string | number | null;
+  number?: number;
+  title?: string | null;
+  airDate?: string | null;
+  aired?: string | null;
+  airdate?: string | null;
+}
+
+/** `YYYY-MM-DD` of a provider episode (same shape AniZip uses), or null. */
+function episodeAirDate(ep: RawEpisode | undefined | null): string | null {
+  const raw = ep?.airDate ?? ep?.aired ?? ep?.airdate;
+  return typeof raw === "string" && raw ? raw.slice(0, 10) : null;
+}
+
+interface EpisodeNumberCandidate {
+  /** The number the provider lists this episode under. */
+  number: number;
+  /** The AniZip episode the REQUESTED number refers to (identity anchor). */
+  target: AniZipEpisode;
+  via: "absolute" | "season-local" | "key";
+}
+
+/**
+ * Numbers a provider might list the requested episode under, derived from the
+ * AniZip mapping of `anilistId` — never from an inferred offset:
+ *  - requested-as-key (the watch page numbering) → the episode's absolute
+ *    number and its season-local number;
+ *  - requested-as-absolute → the mapping key and the season-local number.
+ * The requested number itself is excluded (the caller already tried it).
+ */
+function anizipCandidateNumbers(requested: number, mapping: AniZipMapping): EpisodeNumberCandidate[] {
+  const candidates = new Map<number, { target: AniZipEpisode; via: EpisodeNumberCandidate["via"] }>();
+  const add = (
+    num: unknown,
+    target: AniZipEpisode,
+    via: EpisodeNumberCandidate["via"]
+  ): void => {
+    if (typeof num !== "number" || !Number.isInteger(num) || num <= 0 || num === requested) return;
+    if (!candidates.has(num)) candidates.set(num, { target, via });
+  };
+
+  const byKey = mapping.episodes[String(requested)];
+  if (byKey) {
+    add(byKey.absoluteEpisodeNumber, byKey, "absolute");
+    add(byKey.episodeNumber, byKey, "season-local");
+  }
+  for (const [key, ep] of Object.entries(mapping.episodes)) {
+    if (!ep || ep.absoluteEpisodeNumber !== requested) continue;
+    add(Number(key), ep, "key");
+    add(ep.episodeNumber, ep, "season-local");
+  }
+  return [...candidates.entries()].map(([number, c]) => ({ number, ...c }));
+}
+
+/**
+ * Identity proof that a provider episode IS a given AniZip episode: its title
+ * (any language AniZip ships) equals the provider's title, or its air date is
+ * the provider episode's ONLY matching air date in the whole listing. A
+ * translation whose candidate fails this is a number collision, not a match.
+ */
+function verifyAgainstAniZip(
+  ep: RawEpisode | undefined,
+  target: AniZipEpisode,
+  episodes: RawEpisode[]
+): "title" | "airdate" | null {
+  const providerTitle = normalizeEpisodeTitle(ep?.title);
+  if (providerTitle && anizipTitleVariants(target).includes(providerTitle)) return "title";
+
+  const targetDate = anizipAirDate(target);
+  const epDate = episodeAirDate(ep);
+  if (targetDate && epDate && targetDate === epDate) {
+    // Same air date alone is only decisive when the listing has a single
+    // episode that day — otherwise the candidate is one of several and the
+    // normalization is ambiguous.
+    const sameDay = episodes.filter((e) => episodeAirDate(e) === targetDate);
+    if (sameDay.length === 1) return "airdate";
+  }
+  return null;
+}
+
+/**
+ * Exact-match MISS → try a SAFE normalized match against the AniZip mapping.
+ *
+ * Returns the provider episode only when the match is CONFIDENT:
+ *  - the requested number translates to exactly ONE number the listing
+ *    carries (several candidates ⇒ ambiguous ⇒ null), AND
+ *  - that episode proves it is the same episode by title or unique air date.
+ * Anything else returns null — exactly like before — so a wrong episode is
+ * never played.
+ */
+async function normalizedEpisodeMatch(
+  episodes: RawEpisode[],
+  requested: number,
+  anilistId: number | undefined,
+  providerName: string,
+  opts: { logUse: boolean; logReject: boolean }
+): Promise<RawEpisode | null> {
+  if (!anilistId || !Number.isInteger(requested) || !Array.isArray(episodes) || episodes.length === 0) {
+    return null;
+  }
+  const mapping = await getAniZipMapping(anilistId);
+  if (!mapping) return null;
+
+  const candidates = anizipCandidateNumbers(requested, mapping).filter((c) =>
+    episodes.some((e) => e?.number === c.number && e?.id)
+  );
+  if (candidates.length === 0) return null;
+
+  if (candidates.length > 1) {
+    if (opts.logReject) {
+      console.warn(
+        `[providers] ${providerName}: ep${requested} normalization REJECTED as ambiguous ` +
+          `(anilistId=${anilistId} maps to listed episodes ${candidates.map((c) => c.number).join(", ")})`
+      );
+    }
+    return null;
+  }
+
+  const candidate = candidates[0];
+  const ep = episodes.find((e) => e?.number === candidate.number);
+  const verifiedBy = verifyAgainstAniZip(ep, candidate.target, episodes);
+  if (!verifiedBy) {
+    if (opts.logReject) {
+      console.warn(
+        `[providers] ${providerName}: ep${requested} → ep${candidate.number} normalization REJECTED ` +
+          `(anilistId=${anilistId}, via ${candidate.via}) — title/air date do not prove the same episode`
+      );
+    }
+    return null;
+  }
+
+  if (opts.logUse) {
+    console.warn(
+      `[providers] ${providerName}: normalized ep${requested} → ep${candidate.number} ` +
+        `(anilistId=${anilistId}, via ${candidate.via}, verified by ${verifiedBy})`
+    );
+  }
+  // The candidate filter above only keeps episodes with an `id`, so `ep` is
+  // defined here; `?? null` keeps the return type honest anyway.
+  return ep ?? null;
+}
+
 async function getSessionForProvider(
   providerName: string,
   title: string,
   doSearch: () => Promise<(string | number)[]>,
   doFetchInfo: (id: string) => Promise<any>,
-  episodeNumber?: number
+  episodeNumber?: number,
+  anilistId?: number
 ): Promise<ProviderSession | null> {
   const key = cacheKey(providerName, title);
   const cached = sessionCache.get(key);
   if (cached) {
     // Only trust the cache if it can serve the requested episode — a cached
     // "Part 1" session (e.g. 11 eps) must not poison an ep-12 request.
+    // "Serve" includes a verified normalized match (see `normalizedEpisodeMatch`),
+    // so a cached sibling-numbered listing is not re-searched for nothing.
     const cachedOk =
       episodeNumber === undefined ||
       (Array.isArray(cached.episodes) &&
-        cached.episodes.some((e: any) => e?.number === episodeNumber));
+        (cached.episodes.some((e: any) => e?.number === episodeNumber) ||
+          (await normalizedEpisodeMatch(cached.episodes, episodeNumber, anilistId, providerName, {
+            logUse: false,
+            logReject: false,
+          })) !== null));
     if (cachedOk) return cached;
     // else fall through to re-search
   }
@@ -309,11 +550,18 @@ async function getSessionForProvider(
       const info = await doFetchInfo(String(id));
       const episodes = info?.episodes ?? info?.data?.episodes ?? [];
       if (!Array.isArray(episodes) || episodes.length === 0) continue;
-      if (
-        episodeNumber !== undefined &&
-        !episodes.some((e: any) => e?.number === episodeNumber)
-      ) {
-        continue;
+      if (episodeNumber !== undefined) {
+        // Exact number first; a VERIFIED normalized match (same episode under a
+        // sibling numbering — see `normalizedEpisodeMatch`) also qualifies. A
+        // session that can serve neither keeps its old rejection here, so the
+        // "Part 1"-listing guard above is unchanged in strength.
+        const hasEpisode =
+          episodes.some((e: any) => e?.number === episodeNumber) ||
+          (await normalizedEpisodeMatch(episodes, episodeNumber, anilistId, providerName, {
+            logUse: false,
+            logReject: true,
+          })) !== null;
+        if (!hasEpisode) continue;
       }
 
       const session: ProviderSession = { providerId: providerName, animeId: String(id), episodes };
@@ -343,13 +591,14 @@ const PROVIDERS: ProviderDef[] = [
   // 1. kickassanime — primary high-quality provider with multi-subtitle support
   {
     name: "kickassanime",
-    getSession: (title, _anilistId, episodeNumber) =>
+    getSession: (title, anilistId, episodeNumber) =>
       getSessionForProvider(
         "kickassanime",
         title,
         () => searchProvider("kickassanime", (q) => kickassanime.search(q), title),
         (id) => kickassanime.fetchAnimeInfo(id),
-        episodeNumber
+        episodeNumber,
+        anilistId
       ),
     getSources: async (episodeId, type, _ep, _server) => {
       try {
@@ -365,13 +614,14 @@ const PROVIDERS: ProviderDef[] = [
   // 2. anikoto — fallback, has server selection
   {
     name: "anikoto",
-    getSession: (title, _anilistId, episodeNumber) =>
+    getSession: (title, anilistId, episodeNumber) =>
       getSessionForProvider(
         "anikoto",
         title,
         () => searchProvider("anikoto", (q) => anikoto.search(q), title),
         (id) => anikoto.fetchAnimeInfo(id),
-        episodeNumber
+        episodeNumber,
+        anilistId
       ),
     getSources: async (episodeId, type, _ep, server) => {
       // megaplay.buzz `getSources` (vidstream-2) now returns encrypted payload
@@ -398,13 +648,14 @@ const PROVIDERS: ProviderDef[] = [
   // 2. anizone
   {
     name: "anizone",
-    getSession: (title, _anilistId, episodeNumber) =>
+    getSession: (title, anilistId, episodeNumber) =>
       getSessionForProvider(
         "anizone",
         title,
         () => searchProvider("anizone", (q) => anizone.search(q), title),
         (id) => anizone.fetchAnimeInfo(id),
-        episodeNumber
+        episodeNumber,
+        anilistId
       ),
     getSources: async (episodeId, _type, episodeNumber, _server) => {
       const data = await anizone.fetchSources(episodeId, undefined, episodeNumber);
@@ -415,7 +666,7 @@ const PROVIDERS: ProviderDef[] = [
   // 3. allmanga
   {
     name: "allmanga",
-    getSession: (title, _anilistId, episodeNumber) =>
+    getSession: (title, anilistId, episodeNumber) =>
       getSessionForProvider(
         "allmanga",
         title,
@@ -435,7 +686,8 @@ const PROVIDERS: ProviderDef[] = [
                 : null
           ),
         (id) => allmanga.fetchAnimeInfo(id),
-        episodeNumber
+        episodeNumber,
+        anilistId
       ),
     getSources: async (episodeId, type, _ep, _server) => {
       const data = await allmanga.fetchSources(episodeId, type);
@@ -482,13 +734,14 @@ const PROVIDERS: ProviderDef[] = [
   // 6. animeunity
   {
     name: "animeunity",
-    getSession: (title, _anilistId, episodeNumber) =>
+    getSession: (title, anilistId, episodeNumber) =>
       getSessionForProvider(
         "animeunity",
         title,
         () => searchProvider("animeunity", (q) => animeunity.search(q), title),
         (id) => animeunity.fetchAnimeInfo(id),
-        episodeNumber
+        episodeNumber,
+        anilistId
       ),
     getSources: async (episodeId, _type, episodeNumber, _server) => {
       const data = await (animeunity as any).fetchEpisodeSources(episodeId, undefined, episodeNumber);
@@ -748,9 +1001,57 @@ function isEpisodeAvailable(ep: Episode): boolean {
  * so the cache could say `available: true` while the response handed to the
  * caller said `false`. One pure function, applied on every read and on the
  * probe path, removes that second definition.
+ *
+ * It runs in two passes:
+ *
+ *  1. The per-episode `isEpisodeAvailable(ep)` verdict, applied unchanged to
+ *     every episode (id present, flags not both known-absent, positive number,
+ *     no FUTURE airDate).
+ *  2. A LIST-LEVEL un-aired sweep, because the per-episode verdict is
+ *     necessarily optimistic: AniZip ships airDates only for the next couple
+ *     of episodes of an airing title and then stops, so episodes 5..12 of a
+ *     12-episode cour arrive with `airDate: null` plus a real id and sail
+ *     through pass 1 as `available: true`. The reliable signal is therefore
+ *     relative to the list itself: `maxAiredNumber` = the highest episode
+ *     number whose `airDate` parses to a valid date <= now. Any episode with
+ *     `number > maxAiredNumber` and a null/unparseable `airDate` cannot have
+ *     aired yet → force `available: false`. (Episodes with a FUTURE airDate
+ *     are already `false` via pass 1; episodes at or below `maxAiredNumber`
+ *     keep their per-episode result.)
+ *
+ * The guard that makes pass 2 safe by construction: it only runs when the
+ * list contains at least ONE past airDate (`maxAiredNumber` stays 0
+ * otherwise, and we return early). A provider that ships no airDates at all
+ * is untouched — with no evidence of what has aired, pass 2 has nothing to
+ * prove and asserts nothing. Only finite, positive episode numbers
+ * participate; missing/invalid numbers are ignored on both sides of the
+ * comparison.
  */
 function applyAvailability(episodes: Episode[]): Episode[] {
-  return episodes.map((ep) => ({ ...ep, available: isEpisodeAvailable(ep) }));
+  const perEpisode = episodes.map((ep) => ({ ...ep, available: isEpisodeAvailable(ep) }));
+
+  // Pass 2 — list-level un-aired sweep (rationale in the doc comment above).
+  const now = Date.now();
+  let maxAiredNumber = 0;
+  for (const ep of perEpisode) {
+    if (!Number.isFinite(ep.number) || ep.number <= 0) continue;
+    if (!ep.airDate) continue;
+    const airedAt = new Date(ep.airDate).getTime();
+    if (!Number.isFinite(airedAt)) continue;
+    if (airedAt <= now && ep.number > maxAiredNumber) maxAiredNumber = ep.number;
+  }
+  // No past airDate anywhere ⇒ the provider ships none (or only future ones);
+  // there is no evidence of what has aired, so leave pass 1's results alone.
+  if (maxAiredNumber <= 0) return perEpisode;
+
+  return perEpisode.map((ep) => {
+    if (!Number.isFinite(ep.number) || ep.number <= 0) return ep;
+    if (ep.number <= maxAiredNumber) return ep;
+    // A parseable airDate (necessarily in the future here) is pass 1's job.
+    if (ep.airDate && Number.isFinite(new Date(ep.airDate).getTime())) return ep;
+    // number > maxAiredNumber with no usable airDate ⇒ un-aired.
+    return { ...ep, available: false };
+  });
 }
 
 // ─── Sub/Dub Availability ────────────────────────────────────────────
@@ -1171,7 +1472,15 @@ export async function getEpisodes(
  * therefore given one hard budget. The underlying request is not cancelled —
  * kaizoku-core exposes no AbortSignal — but the walk stops waiting for it.
  */
-const PROVIDER_TIMEOUT_MS = 5_000;
+// 12s, up from 5s. The search-based providers (kickassanime/anikoto/anizone/
+// allmanga/anineko/animeunity) each need THREE sequential HTTP round trips —
+// search → info → sources — inside this one budget, and 5s killed them on any
+// slow or cold upstream: one dev session logged 46 timeouts (allmanga 23,
+// kickassanime 12, anizone 8), i.e. those providers had stopped contributing
+// entirely and every walk burned the clock before megaplay saved it. 12s
+// covers the three-trip path with headroom; the walk still bounded overall by
+// the phase-2 parallelism and by megaplay-first below.
+const PROVIDER_TIMEOUT_MS = 12_000;
 
 /**
  * Phase 2 used to run strictly serially, so its cost was the *sum* of every
@@ -1206,14 +1515,25 @@ async function attemptProvider(
   animeTitle: string,
   episodeNumber: number,
   type: "sub" | "dub",
-  server?: string
+  server?: string,
+  anilistId?: number
 ): Promise<StreamResult | null> {
   try {
-    const session = await provider.getSession(animeTitle, undefined, episodeNumber);
+    const session = await provider.getSession(animeTitle, anilistId, episodeNumber);
     if (!session) return null;
-    const targetEp = session.episodes.find((ep) => ep.number === episodeNumber);
+    // Exact match first; a verified AniZip-anchored number translation only
+    // when the exact one misses (see `normalizedEpisodeMatch`).
+    let targetEp = session.episodes.find((ep) => ep.number === episodeNumber);
+    if (!targetEp?.id) {
+      targetEp = await normalizedEpisodeMatch(session.episodes, episodeNumber, anilistId, provider.name, {
+        logUse: true,
+        logReject: true,
+      });
+    }
     if (!targetEp?.id) return null;
-    const result = await provider.getSources(targetEp.id, type, episodeNumber, server);
+    // Sources are requested under the PROVIDER'S number: anizone/animeunity
+    // pass it back upstream, and for exact matches it equals `episodeNumber`.
+    const result = await provider.getSources(targetEp.id, type, targetEp.number, server);
     return result ? { ...result, providerId: provider.name } : null;
   } catch (err) {
     console.warn(`[providers] ${provider.name} attempt failed:`, err instanceof Error ? err.message : err);
@@ -1231,9 +1551,18 @@ async function attemptMegaPlay(
   try {
     const session = await getMegaPlaySession(anilistId, animeTitle);
     if (!session) return null;
-    const targetEp = session.episodes.find((ep) => ep.number === episodeNumber);
+    // Exact match first; verified AniZip translation only on an exact miss.
+    let targetEp = session.episodes.find((ep) => ep.number === episodeNumber);
+    if (!targetEp?.id) {
+      targetEp = await normalizedEpisodeMatch(session.episodes, episodeNumber, anilistId, "megaplay", {
+        logUse: true,
+        logReject: true,
+      });
+    }
     if (!targetEp?.id) return null;
-    const result = await getMegaPlaySources(targetEp.id, type, episodeNumber);
+    // MegaPlay addresses its embed by ITS list number (`/stream/ani/{id}/{ep}`),
+    // so a normalized match must pass the matched number, not the requested one.
+    const result = await getMegaPlaySources(targetEp.id, type, targetEp.number);
     return result ? { ...result, providerId: "megaplay" } : null;
   } catch (err) {
     console.warn(`[providers] megaplay attempt failed:`, err instanceof Error ? err.message : err);
@@ -1360,7 +1689,7 @@ export async function getStreamingSources(
       tried.push(provider.name);
       try {
         const result = await withTimeout(
-          attemptProvider(provider, animeTitle, episodeNumber, type, server),
+          attemptProvider(provider, animeTitle, episodeNumber, type, server, anilistId),
           PROVIDER_TIMEOUT_MS,
           `${provider.name} phase1`
         );
@@ -1372,35 +1701,46 @@ export async function getStreamingSources(
     }
   }
 
-  // ── Phase 2: every remaining provider, overlapped, first success by priority ──
-  const phase2 = PROVIDERS.filter(
-    (provider) => !(preferredProvider && provider.name === preferredProvider)
-  );
-  if (phase2.length > 0) {
-    tried.push(...phase2.map((p) => p.name));
-    const winner = await walkProvidersByPriority(phase2, (provider) =>
-      withTimeout(
-        attemptProvider(provider, animeTitle, episodeNumber, type, server),
-        PROVIDER_TIMEOUT_MS,
-        `${provider.name} phase2`
-      )
-    );
-    if (winner) return winner;
-  }
-
-  // ── Phase 3: Try megaplay directly with AniList ID (if not already tried) ──
+  // ── Phase 2: megaplay, DIRECTLY by AniList ID (if we have one) ──
+  // Megaplay needs NO search — it takes the AniList ID straight to
+  // `fetchAnimeInfo`/`fetchSources`, so it is both the FASTEST and, empirically,
+  // the most reliable provider (getEpisodes already prefers it for the same
+  // reason — see the "Try megaplay first" comment there). It used to sit at
+  // index 5 of PROVIDERS and only run in a Phase 3 AFTER the search-based
+  // walk, so every lookup burned up to ~25s of provider timeouts before
+  // reaching the one provider most likely to answer. Moved ahead of the walk.
   if (anilistId && preferredProvider !== "megaplay") {
     tried.push("megaplay");
     try {
       const result = await withTimeout(
         attemptMegaPlay(anilistId, animeTitle, episodeNumber, type),
         PROVIDER_TIMEOUT_MS,
-        "megaplay phase3"
+        "megaplay phase2"
       );
       if (result) return result;
     } catch (err) {
-      console.warn(`[providers] megaplay phase3 failed:`, err instanceof Error ? err.message : err);
+      console.warn(`[providers] megaplay phase2 failed:`, err instanceof Error ? err.message : err);
     }
+  }
+
+  // ── Phase 3: every remaining search-based provider, overlapped, first success by priority ──
+  // megaplay is excluded: it has no search path (its PROVIDERS entry is a
+  // null stub) and was already tried above by AniList ID.
+  const phase3 = PROVIDERS.filter(
+    (provider) =>
+      provider.name !== "megaplay" &&
+      !(preferredProvider && provider.name === preferredProvider)
+  );
+  if (phase3.length > 0) {
+    tried.push(...phase3.map((p) => p.name));
+    const winner = await walkProvidersByPriority(phase3, (provider) =>
+      withTimeout(
+        attemptProvider(provider, animeTitle, episodeNumber, type, server, anilistId),
+        PROVIDER_TIMEOUT_MS,
+        `${provider.name} phase3`
+      )
+    );
+    if (winner) return winner;
   }
 
   console.warn(`[providers] getStreamingSources("${animeTitle}", ep${episodeNumber}, ${type}) — all providers failed. Tried:`, tried);

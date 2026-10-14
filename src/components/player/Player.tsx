@@ -7,13 +7,13 @@ import Hls from "hls.js";
 import SubtitleOverlay from "./SubtitleOverlay";
 import Button, { buttonClass } from "@/components/ui/Button";
 import {
-  BoltIcon,
   CaretDownIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Forward10Icon,
   FullscreenIcon,
+  MenuIcon,
   MoreIcon,
   NextTrackIcon,
   PauseIcon,
@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/icons";
 import PlayerMoreMenu, { type MoreSection } from "./PlayerMoreMenu";
 import { proxyUrl } from "@/lib/utils";
-import { EmptyState } from "@/components/anime/Availability";
+import { AvailabilityChip, EmptyState } from "@/components/anime/Availability";
 import type { StreamSource, Subtitle } from "@/types/anime";
 import { franchiseSortGroups, type FranchiseEntry } from "@/components/watch/franchiseEntries";
 import { useFranchiseSort } from "@/hooks/useFranchiseSort";
@@ -40,8 +40,19 @@ interface PlayerProps {
   providerId?: string;
   /** `?provider=` from the watch page — carried through episode navigation */
   providerQuery?: string;
-  /** Compact episode list for the drawer (passed down; never re-fetched here) */
-  episodes?: { number: number; title?: string }[];
+  /**
+   * Compact episode list for the drawer (passed down; never re-fetched here).
+   * Availability rides along OPTIONAL so the drawer can MARK a known-dead row
+   * (N/A + inert) instead of rendering it as playable — `undefined` stays
+   * "unknown" and renders exactly as it always did.
+   */
+  episodes?: {
+    number: number;
+    title?: string;
+    available?: boolean;
+    hasSub?: boolean | null;
+    hasDub?: boolean | null;
+  }[];
   /**
    * Franchise / season entries (same set the watch page's `// Franchise`
    * grid lists) — the dropdown docked at the top of the episode drawer.
@@ -70,6 +81,7 @@ const PROVIDER_OPTIONS = [
   { id: "anizone", label: "AniZone" },
   { id: "allmanga", label: "AllManga" },
   { id: "anineko", label: "AniNeko" },
+  { id: "megaplay", label: "MegaPlay" },
   { id: "animeunity", label: "AnimeUnity" },
 ];
 
@@ -209,6 +221,30 @@ const FILTER_MENU_OPTIONS: { id: string; label: string }[] = FILTER_PRESETS.map(
   (f) => ({ id: f.id, label: f.label })
 );
 
+/* ─── Audio filter presets (Web Audio API) ─────────────────────────────
+ * The video filter above is CSS; CSS can't touch audio, so these presets
+ * describe real Web Audio graphs built by `ensureAudioGraph` in the Player
+ * (mid-side cancellation, biquads, a compressor). `description` is the
+ * graph's documentation and the drill row's hover hint — the ⋯ menu itself
+ * only needs id/label, same as FILTER_MENU_OPTIONS.
+ */
+const AUDIO_FILTER_PRESETS = [
+  { id: "off", label: "Off", description: "No audio processing" },
+  { id: "vocal-remove", label: "Vocal Remove", description: "Karaoke: cancels the centre-panned vocal (L−R)" },
+  { id: "voice-boost", label: "Voice Boost", description: "+8 dB at 2.5 kHz — dialogue clarity" },
+  { id: "voice-only", label: "Voice Only", description: "Centre extraction + 200 Hz highpass + 3 kHz lift" },
+  { id: "bass-boost", label: "Bass Boost", description: "+8 dB low shelf at 120 Hz" },
+  { id: "treble-boost", label: "Treble Boost", description: "+6 dB high shelf at 4 kHz" },
+  { id: "night", label: "Night Mode", description: "Compressor + makeup: tames loud, lifts quiet" },
+] as const;
+
+type AudioFilterId = (typeof AUDIO_FILTER_PRESETS)[number]["id"];
+
+// The ⋯ menu's Audio drill list — same shape as FILTER_MENU_OPTIONS, plus
+// the hover hint.
+const AUDIO_FILTER_MENU_OPTIONS: { id: string; label: string; description: string }[] =
+  AUDIO_FILTER_PRESETS.map((f) => ({ id: f.id, label: f.label, description: f.description }));
+
 /* ─── Per-anime preference store ────────────────────────────────────────
  * The viewer settings (auto-play next, auto-skip, sub/dub, quality, the
  * subtitle track) used to live INSIDE the per-EPISODE progress blob —
@@ -236,6 +272,7 @@ interface AnimePrefs {
   subtitleOffset?: number;
   subtitleSize?: "small" | "medium" | "large";
   videoFilter?: FilterId;
+  audioFilter?: AudioFilterId;
   ts?: number;
 }
 
@@ -345,7 +382,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // still mounted when the click lands and the gesture can't fall through
   // to the video (which would toggle playback alongside the dismissal).
   const moreDismissRef = useRef<HTMLDivElement>(null);
-  const speedWrapRef = useRef<HTMLDivElement>(null);
+  const qualityWrapRef = useRef<HTMLDivElement>(null);
 
   // Stream state
   const [sources, setSources] = useState<StreamSource[]>([]);
@@ -483,7 +520,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [currentQuality, setCurrentQuality] = useState<string>("auto");
   const [hlsLevels, setHlsLevels] = useState<{ index: number; height: number; name: string }[]>([]);
   const [playbackRate, setPlaybackRate] = useState(1);
-  const [showSpeedPicker, setShowSpeedPicker] = useState(false);
+  const [showQualityPicker, setShowQualityPicker] = useState(false);
 
   // Subtitle state
   const [activeSubtitle, setActiveSubtitle] = useState<string | null>(null);
@@ -491,10 +528,282 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Video filter state
   const [videoFilter, setVideoFilter] = useState<FilterId>("off");
 
+  // Audio filter state (Web Audio, sibling to the video filter above)
+  const [audioFilter, setAudioFilter] = useState<AudioFilterId>("off");
+
+  // ─── Audio filter graph (Web Audio API) ────────────────────────────────
+  // These presets rewire a Web Audio graph tapped off the SAME <video>
+  // element (`crossOrigin="anonymous"` + the same-origin `/api/proxy` mean
+  // the media-element source node taps the audio WITHOUT muting it). Three
+  // facts drive the design:
+  //
+  //  1. LAZY BUILD. The AudioContext + graph are created on the FIRST
+  //     non-`off` selection, inside the click gesture that picks it (autoplay
+  //     policy), so a viewer who never touches a filter never pays for — or
+  //     risks — a context. A selection restored from prefs on
+  //     `loadedmetadata` may build outside a gesture, which is why the build
+  //     only takes over the element's audio AFTER the context reports
+  //     "running": a suspended context behind a MediaElementSource is
+  //     permanent silence, so we never route the element into one.
+  //  2. Creating the MediaElementAudioSourceNode is legal AT MOST ONCE per
+  //     element and permanently reroutes the element's audio, so the node is
+  //     created once, parked in a ref and never recreated. The graph is a
+  //     FIXED fan-out: the source feeds EVERY preset branch in parallel, and
+  //     each branch ends in a GainNode "gate" — switching presets only ramps
+  //     the gates (one open at a time; `off` opens a straight bypass).
+  //     No disconnect/reconnect of live audio, ever.
+  //  3. TEARDOWN. The graph belongs to the element, and the element belongs
+  //     to this Player instance (the player remounts per episode), so the
+  //     context is closed in the UNMOUNT-ONLY cleanup below — deliberately
+  //     NOT in the stream-load effect's cleanup (~line 1443), which also
+  //     re-runs on a provider change where the element SURVIVES: closing
+  //     there would strand the rerouted element on a dead context = silence.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  // Per-preset output gates — key === preset id, 1 = that branch is audible.
+  // Non-null ⇔ the graph is built; publishing it is the build's last step.
+  const audioGatesRef = useRef<Record<string, GainNode> | null>(null);
+  // Desired preset, readable from async paths without a stale closure.
+  const audioFilterRef = useRef<AudioFilterId>("off");
+  // Build-in-flight latch: two rapid selections must not create two contexts.
+  const audioBuildingRef = useRef(false);
+
+  /** Open exactly one branch's gate (20ms ramp, so switching never clicks). */
+  const routeAudioFilter = useCallback((id: string) => {
+    const gates = audioGatesRef.current;
+    const ctx = audioCtxRef.current;
+    if (!gates || !ctx) return; // graph not built — the `off` path needs none
+    for (const key of Object.keys(gates)) {
+      const gate = gates[key];
+      const target = key === id ? 1 : 0;
+      try {
+        const now = ctx.currentTime;
+        gate.gain.cancelScheduledValues(now);
+        gate.gain.setValueAtTime(gate.gain.value, now);
+        gate.gain.linearRampToValueAtTime(target, now + 0.02);
+      } catch {
+        gate.gain.value = target;
+      }
+    }
+  }, []);
+
+  /**
+   * Build the whole graph once: AudioContext → (one) MediaElementAudioSource
+   * → a fixed fan-out of per-preset branches → destination. True once the
+   * graph exists (already-built counts). Every failure path leaves the
+   * element playing UNMUTED: the source node is only created after the
+   * context is confirmed running, and if anything throws after that point a
+   * straight-through bypass wire is re-established so audio can never go
+   * silent. Wrapped so no exception can ever kill playback.
+   */
+  const ensureAudioGraph = useCallback(async (): Promise<boolean> => {
+    if (audioGatesRef.current) return true; // already built
+    if (audioBuildingRef.current) return false; // in flight — it routes for the latest ref
+    const video = videoRef.current;
+    if (!video) return false;
+    audioBuildingRef.current = true;
+    try {
+      const Ctor: typeof AudioContext | undefined =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctor) {
+        console.warn("[player] Web Audio unavailable — audio filter not applied");
+        return false;
+      }
+      const ctx = audioCtxRef.current ?? new Ctor();
+      audioCtxRef.current = ctx;
+      // Autoplay policy: the context must be RUNNING before we take the
+      // element's audio path. `resume()` is legal from the selecting click
+      // (and from the sticky activation a play button leaves behind).
+      if (ctx.state !== "running") {
+        try { await ctx.resume(); } catch { /* stay suspended */ }
+      }
+      if (ctx.state !== "running") {
+        // Filter simply won't apply — and because nothing is routed through
+        // the context yet, closing it keeps playback (and the browser's
+        // concurrent-context budget) exactly as it was.
+        console.warn(`[player] AudioContext stayed "${ctx.state}" — audio filter not applied`);
+        if (!audioSourceRef.current) {
+          try { await ctx.close(); } catch { /* already closed */ }
+          if (audioCtxRef.current === ctx) audioCtxRef.current = null;
+        }
+        return false;
+      }
+      // ── The source: once per element, EVER — guarded by the ref. ──
+      let source = audioSourceRef.current;
+      if (!source) {
+        source = ctx.createMediaElementSource(video);
+        audioSourceRef.current = source;
+      }
+      const gain = (value: number) => {
+        const g = ctx.createGain();
+        g.gain.value = value;
+        return g;
+      };
+      const gates: Record<string, GainNode> = {};
+      // Every branch is permanently wired source → … → destination; the GATE
+      // is the only thing that ever moves.
+      const wire = (node: AudioNode, id: string) => {
+        const gate = gain(id === audioFilterRef.current ? 1 : 0);
+        node.connect(gate);
+        gate.connect(ctx.destination);
+        gates[id] = gate;
+      };
+      // off — pure bypass: the source straight through, no processing
+      wire(source, "off");
+      // vocal-remove — mid-side cancellation: invert R, re-merge → L−R kills
+      // the centre-panned vocal (works on OP/ED music).
+      {
+        const split = ctx.createChannelSplitter(2);
+        const invert = gain(-1);
+        const merge = ctx.createChannelMerger(2);
+        source.connect(split);
+        split.connect(merge, 0, 0); // L straight through
+        split.connect(invert, 1);   // R inverted
+        invert.connect(merge, 0, 1);
+        wire(merge, "vocal-remove");
+      }
+      // voice-boost — one peaking band in the dialogue-clarity range
+      {
+        const bq = ctx.createBiquadFilter();
+        bq.type = "peaking";
+        bq.frequency.value = 2500;
+        bq.Q.value = 1;
+        bq.gain.value = 8;
+        source.connect(bq);
+        wire(bq, "voice-boost");
+      }
+      // voice-only — centre extraction (mid = (L+R)/2, duplicated to both
+      // speakers) + rumble/music-bass kill + speech emphasis
+      {
+        const split = ctx.createChannelSplitter(2);
+        const l = gain(0.5);
+        const r = gain(0.5);
+        const mid = gain(1); // summing bus — node inputs always sum
+        const merge = ctx.createChannelMerger(2);
+        source.connect(split);
+        split.connect(l, 0);
+        l.connect(mid); // (L+R)/2 …
+        split.connect(r, 1);
+        r.connect(mid);
+        mid.connect(merge, 0, 0); // … duplicated to both speakers
+        mid.connect(merge, 0, 1);
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = 200;
+        const pk = ctx.createBiquadFilter();
+        pk.type = "peaking";
+        pk.frequency.value = 3000;
+        pk.Q.value = 1;
+        pk.gain.value = 6;
+        merge.connect(hp);
+        hp.connect(pk);
+        wire(pk, "voice-only");
+      }
+      // bass-boost — low shelf
+      {
+        const bq = ctx.createBiquadFilter();
+        bq.type = "lowshelf";
+        bq.frequency.value = 120;
+        bq.gain.value = 8;
+        source.connect(bq);
+        wire(bq, "bass-boost");
+      }
+      // treble-boost — high shelf
+      {
+        const bq = ctx.createBiquadFilter();
+        bq.type = "highshelf";
+        bq.frequency.value = 4000;
+        bq.gain.value = 6;
+        source.connect(bq);
+        wire(bq, "treble-boost");
+      }
+      // night — tame the peaks, then hand the average back (+6 dB makeup)
+      {
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -24;
+        comp.knee.value = 30;
+        comp.ratio.value = 12;
+        comp.attack.value = 0.003;
+        comp.release.value = 0.25;
+        const makeup = gain(Math.pow(10, 6 / 20)); // +6 dB
+        source.connect(comp);
+        comp.connect(makeup);
+        wire(makeup, "night");
+      }
+      // Drop any emergency bypass wire a previous failed attempt may have
+      // laid, so the filtered and unfiltered signals can't sum (a no-op
+      // throw when there is none — the normal case).
+      try { source.disconnect(ctx.destination); } catch { /* no such wire */ }
+      // Publish the graph in one shot: `routeAudioFilter` no-ops until this
+      // lands, so a concurrent selection can never half-apply.
+      audioGatesRef.current = gates;
+      routeAudioFilter(audioFilterRef.current);
+      return true;
+    } catch (err) {
+      console.warn("[player] audio filter graph failed — keeping unfiltered playback", err);
+      if (!audioSourceRef.current) {
+        // Nothing was routed: close the orphan context so repeated failures
+        // can't exhaust the browser's concurrent-context budget.
+        const ctx = audioCtxRef.current;
+        audioCtxRef.current = null;
+        if (ctx) { try { await ctx.close(); } catch { /* already closed */ } }
+      } else if (!audioGatesRef.current && audioCtxRef.current) {
+        // SAFETY NET: the source exists, so the element's audio only flows
+        // through the graph — re-establish a straight path to the speakers
+        // so playback can never be silent. Removed by the wire above on the
+        // next successful build.
+        try { audioSourceRef.current.connect(audioCtxRef.current.destination); } catch { /* keep playing */ }
+      }
+      return false;
+    } finally {
+      audioBuildingRef.current = false;
+    }
+  }, [routeAudioFilter]);
+
+  /**
+   * Select/apply an audio preset. `off` just closes every gate (and needs no
+   * graph at all); the first non-`off` pick builds the graph — from the
+   * selecting click, which is exactly the gesture the autoplay policy wants.
+   */
+  const applyAudioFilter = useCallback((id: AudioFilterId) => {
+    audioFilterRef.current = id;
+    if (audioGatesRef.current) routeAudioFilter(id);
+    else if (id !== "off") void ensureAudioGraph();
+  }, [routeAudioFilter, ensureAudioGraph]);
+
+  // Applying is an effect of the STATE, not just of the click, so a value
+  // restored from prefs on `loadedmetadata` is honoured too. The build is
+  // safe off-gesture by construction (see ensureAudioGraph: it only takes
+  // the element's audio path once the context is running).
+  useEffect(() => {
+    applyAudioFilter(audioFilter);
+  }, [audioFilter, applyAudioFilter]);
+
+  // ─── Audio teardown — UNMOUNT ONLY ────────────────────────────────
+  // Browsers cap concurrent AudioContexts and the player remounts per
+  // episode, so leaking one per episode is a real bug. Deliberately its own
+  // []-deps effect: the stream-load cleanup at ~line 1443 also re-runs on a
+  // PROVIDER change, where the video element survives — closing the context
+  // there would strand the element's rerouted audio on a dead graph.
+  useEffect(() => {
+    return () => {
+      const ctx = audioCtxRef.current;
+      audioCtxRef.current = null;
+      audioSourceRef.current = null;
+      audioGatesRef.current = null;
+      audioFilterRef.current = "off";
+      if (ctx) {
+        try { void ctx.close(); } catch { /* already closed */ }
+      }
+    };
+  }, []);
+
+
   // "More" (⋯) overflow menu — holds every control the row hides at this
   // width, plus the always-low-priority toggles (auto-play, auto-skip, FX).
   // One open flag + one section flag: `null` = root list, otherwise the
-  // sub-page (provider / quality / …) inside the same popup.
+  // sub-page (provider / speed / …) inside the same popup.
   const [showMore, setShowMore] = useState(false);
   const [moreSection, setMoreSection] = useState<MoreSection | null>(null);
   // SHAPE modifier for the ⋯ menu, not a different shape: the popup is
@@ -1187,8 +1496,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   );
 
   // ─── Probe a specific server for a given type ──────────
+  // `fresh` bypasses /api/stream's failure cache — only ever set for an
+  // explicit user retry (see loadByType), never for routine loads.
   const probeServer = useCallback(
-    async (server: string, type: "sub" | "dub"): Promise<{
+    async (server: string, type: "sub" | "dub", fresh = false): Promise<{
       sources: StreamSource[];
       subtitles: Subtitle[];
       headers: Record<string, string>;
@@ -1203,6 +1514,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         });
         if (anilistId) params.set("anilistId", String(anilistId));
         if (activeProvider) params.set("providerId", activeProvider);
+        if (fresh) params.set("fresh", "1");
         const res = await fetch(`/api/stream?${params}`);
         if (!res.ok) return null;
         const data = await res.json();
@@ -1224,10 +1536,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   // ─── Auto-detect all working servers ──────────────────
   const discoverServers = useCallback(
-    async (type: "sub" | "dub"): Promise<{ server: string; data: NonNullable<Awaited<ReturnType<typeof probeServer>>> }[]> => {
+    async (type: "sub" | "dub", fresh = false): Promise<{ server: string; data: NonNullable<Awaited<ReturnType<typeof probeServer>>> }[]> => {
       const results = await Promise.all(
         SERVERS.map(async (s) => {
-          const data = await probeServer(s, type);
+          const data = await probeServer(s, type, fresh);
           return data ? { server: s, data } : null;
         })
       );
@@ -1237,8 +1549,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   );
 
   // ─── Load stream by type ────────────────────────────────
+  // `opts.fresh` is set ONLY by explicit user retries (Retry / Try Dub / the
+  // same-provider retry in the error overlay): it bypasses the route's 90s
+  // failure cache so the retry actually re-walks providers instead of being
+  // answered the same cached miss that caused the error in the first place.
   const loadByType = useCallback(
-    async (type: "sub" | "dub", serverOverride?: string) => {
+    async (type: "sub" | "dub", serverOverride?: string, opts?: { fresh?: boolean }) => {
       setAudioType(type);
       setLoading(true);
       setSlowLoad(false);
@@ -1247,7 +1563,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       lastApiErrorRef.current = null;
 
       // Get all working servers for this type
-      const working = await discoverServers(type);
+      const working = await discoverServers(type, opts?.fresh);
       if (working.length > 0) {
         setAvailableServers(working.map((w) => w.server));
         // Use provided server, or prefer current active, or first working
@@ -1572,6 +1888,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       subtitleOffset,
       subtitleSize,
       videoFilter,
+      audioFilter,
     });
   }, [
     autoPlayNext,
@@ -1583,6 +1900,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     subtitleOffset,
     subtitleSize,
     videoFilter,
+    audioFilter,
   ]);
 
   // ─── Auto-load AI English subs for dub episodes ─────────
@@ -1754,7 +2072,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           !moreDismissRef.current?.contains(t)) {
         closeMore();
       }
-      if (showSpeedPicker && speedWrapRef.current && !speedWrapRef.current.contains(t)) setShowSpeedPicker(false);
+      if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
       // Drawer's franchise dropdown: the trigger's wrapper counts as inside
       // (the trigger toggles it itself — exposing it would close-then-reopen
       // on the same tap). The drawer's own backdrop click closes the drawer,
@@ -1765,7 +2083,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showMore, showSpeedPicker, franchiseOpen, closeMore]);
+  }, [showMore, showQualityPicker, franchiseOpen, closeMore]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -1878,6 +2196,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (size === "small" || size === "medium" || size === "large") setSubtitleSize(size);
         const filter = pick(prefs?.videoFilter, saved?.videoFilter);
         if (filter && FILTER_PRESETS.some((f) => f.id === filter)) setVideoFilter(filter);
+        // Audio filter is new, so only the per-anime bucket can carry it —
+        // and like the video filter, only a known id is ever adopted.
+        const audio = prefs?.audioFilter;
+        if (audio && AUDIO_FILTER_PRESETS.some((f) => f.id === audio)) setAudioFilter(audio);
         // Quality can only be applied once the real HLS levels are known —
         // MANIFEST_PARSED does that. Remember the wanted name for it.
         if (prefs?.quality) pendingQualityRef.current = prefs.quality;
@@ -1991,7 +2313,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // when it opens: a control-bar picker left open underneath would reappear
     // the moment the drawer closes, and the drawer is the modal now. No-ops
     // (false → false) in the normal flow, so the usual path stays put.
-    setShowSpeedPicker(false);
+    setShowQualityPicker(false);
     setDrawerOpen(true);
     // The panel is already in the DOM (closed, off-screen); slide it in on
     // the next frame so the browser has a style to transition from. Each
@@ -2153,6 +2475,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, []);
 
   const changeQuality = (q: string) => {
+    // Dismiss the row dropdown on any pick (same-value clicks too) — the
+    // menu drill used to close itself via closeMore(); this is its twin.
+    setShowQualityPicker(false);
     // No change needed if already at this quality
     if (q === currentQuality) return;
 
@@ -2181,7 +2506,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
   const changeSpeed = (rate: number) => {
     setPlaybackRate(rate);
-    setShowSpeedPicker(false);
     if (videoRef.current) {
       videoRef.current.playbackRate = rate;
     }
@@ -2204,10 +2528,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const selectProvider = (id: string) => {
     const current = providerOverride ?? providerId ?? "";
     if (id === current) {
-      // Already the active provider — on a failed stream, retry it
+      // Already the active provider — on a failed stream, retry it (fresh:
+      // bypasses the failure cache so the retry actually re-walks)
       if (streamError) {
         destroyHls();
-        loadByType(audioType);
+        loadByType(audioType, undefined, { fresh: true });
       }
       return;
     }
@@ -2534,7 +2859,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           }
           setCountdown(null);
           closeMore();
-          setShowSpeedPicker(false);
+          setShowQualityPicker(false);
           closeDrawer();
           break;
         // speed steps are handled above via e.code (shift + ,/.)
@@ -2597,13 +2922,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       }
       availableServers={availableServers}
       activeServer={activeServer}
-      availableQualities={availableQualities}
-      currentQuality={currentQuality}
       speedOptions={speedOptions}
       playbackRate={playbackRate}
       activeSubtitle={activeSubtitle}
       filterOptions={FILTER_MENU_OPTIONS}
       videoFilter={videoFilter}
+      audioFilterOptions={AUDIO_FILTER_MENU_OPTIONS}
+      audioFilter={audioFilter}
       autoPlayNext={autoPlayNext}
       onToggleAutoPlayNext={() => setAutoPlayNext(!autoPlayNext)}
       autoSkipEnabled={autoSkipEnabled}
@@ -2615,9 +2940,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         closeMore();
         loadByType(audioType, srv);
       }}
-      onSelectQuality={(q) => { changeQuality(q); closeMore(); }}
       onSelectSpeed={(r) => { changeSpeed(r); closeMore(); }}
       onSelectFilter={(id) => { setVideoFilter(id as FilterId); closeMore(); }}
+      onSelectAudioFilter={(id) => {
+        // Apply inside the click gesture (that's the user activation the
+        // AudioContext resume wants), then mirror it into state — the
+        // `[audioFilter]` effect re-applies idempotently for hydration.
+        applyAudioFilter(id as AudioFilterId);
+        setAudioFilter(id as AudioFilterId);
+        closeMore();
+      }}
       subtitle={{
         activeSubtitle,
         subtitles,
@@ -2686,7 +3018,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
         if (next && containerRef.current && !containerRef.current.contains(next)) {
-          setShowSpeedPicker(false);
+          setShowQualityPicker(false);
         }
       }}
     >
@@ -2927,7 +3259,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 to the generic line. */}
             <EmptyState code="NO_STREAM_FOUND" note={streamErrorDetail} className="" />
             <div className="flex flex-wrap gap-2 justify-center">
-              <Button variant="accent" onClick={() => { destroyHls(); loadByType(audioType); }}>
+              <Button variant="accent" onClick={() => { destroyHls(); loadByType(audioType, undefined, { fresh: true }); }}>
                 Retry
               </Button>
               {/* The dub escape hatch is gated by the same data as the SUB/DUB
@@ -2937,7 +3269,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               {(audioType !== "sub" || dubEnabled) && (
                 <Button
                   variant="quiet"
-                  onClick={() => { destroyHls(); loadByType(audioType === "sub" ? "dub" : "sub"); }}
+                  onClick={() => { destroyHls(); loadByType(audioType === "sub" ? "dub" : "sub", undefined, { fresh: true }); }}
                 >
                   {audioType === "sub" ? "Try Dub" : "Try Sub"}
                 </Button>
@@ -2967,9 +3299,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                       active={isActive}
                       onClick={() => {
                         if (p.id === current) {
-                          // Same provider — force a retry
+                          // Same provider — force a retry (fresh: bypasses the
+                          // failure cache so it actually re-walks providers)
                           destroyHls();
-                          loadByType(audioType);
+                          loadByType(audioType, undefined, { fresh: true });
                         } else {
                           // Different provider — override triggers the load effect
                           setProviderOverride(p.id);
@@ -2995,12 +3328,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           auto-dismisses the instant the window closes (armed auto-skip still
           jumps at that same end), and the 240ms entrance gives the moment
           the window opens a beat of its own. z-30 keeps it over the HUD
-          while stepping to z-[19] when the speed picker is open, so the
+          while stepping to z-[19] when the quality picker is open, so the
           picker — which lives inside the HUD's z-20 stacking context —
           always paints over it; the ⋯ panel and drawer are top-level z-50
           and need no such help. */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
-        <div className={`absolute bottom-20 right-3 flex justify-end gap-2 sm:gap-3 ${showSpeedPicker ? "z-[19]" : "z-30"}`}>
+        <div className={`absolute bottom-20 right-3 flex justify-end gap-2 sm:gap-3 ${showQualityPicker ? "z-[19]" : "z-30"}`}>
           {inIntro && introSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
@@ -3219,7 +3552,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </span>
           </div>
 
-          {/* Right group: second-tier pickers (lg+), ⋯ menu, fullscreen.
+          {/* Right group: quality picker (every width), second-tier pickers
+              (lg+), ⋯ menu, fullscreen.
               (The episode drawer is NOT here — it is an edge handle, see below) */}
           <div className="flex items-center gap-1.5 justify-end shrink-0">
             {/* Second tier — lg+ only inline; below lg the same controls
@@ -3259,44 +3593,45 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 </button>
               </div>
             )}
+            </div>
 
-            {/* Speed selector */}
-            <div ref={speedWrapRef} className="relative h-full flex items-center">
+            {/* Quality selector — always on the row (the second tier stays
+                lg+-only, but quality must remain reachable at every width now
+                that its ⋯ drill is gone; ⋯ carries Speed instead). */}
+            <div ref={qualityWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowSpeedPicker(!showSpeedPicker); closeMore(); }}
+                onClick={() => { setShowQualityPicker(!showQualityPicker); closeMore(); }}
                 className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
               >
-                <BoltIcon className="w-3 h-3 opacity-60" />
-                {playbackRate}x
+                <MenuIcon className="w-3 h-3 opacity-60" />
+                {currentQuality === "auto" ? "Auto" : currentQuality}
                 <CaretDownIcon className="w-3 h-3 opacity-50" />
               </button>
-              {showSpeedPicker && (
+              {showQualityPicker && (
                 <div className="absolute right-0 bottom-full mb-1.5 w-28 bg-[var(--panel)] border border-[var(--accent)]/20 shadow-xl max-h-[min(14rem,45vh)] overflow-y-auto overflow-x-hidden z-50 backdrop-blur-sm rounded-none">
                   <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
-                    Speed
+                    Quality
                   </div>
-                  {speedOptions.map((r) => (
+                  {availableQualities.map((q) => (
                     <button
-                      key={r}
-                      onClick={() => changeSpeed(r)}
+                      key={q}
+                      onClick={() => changeQuality(q)}
                       className={`w-full text-left px-2.5 py-1.5 text-xs transition-colors rounded-none ${
-                        playbackRate === r
+                        currentQuality === q
                           ? "bg-[var(--accent)]/20 text-[var(--accent)] border-l-2 border-[var(--accent)]"
                           : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
                       }`}
                     >
-                      {r}x
+                      {q === "auto" ? "Auto" : q}
                     </button>
                   ))}
                 </div>
               )}
             </div>
 
-            </div>
-
             {/* More (⋯) — always present, never scrolls away. It carries the
-                settings that used to be inline pickers (provider, server,
-                quality, subtitles) plus the toggles at their peak (auto-play,
+                settings that aren't inline (provider, server, speed,
+                subtitles) plus the toggles at their peak (auto-play,
                 auto-skip, FX filter). */}
             <button
               ref={moreBtnRef}
@@ -3308,7 +3643,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   setMoreSection(null);
                   setShowControls(true);
                 }
-                setShowSpeedPicker(false);
+                setShowQualityPicker(false);
               }}
               aria-label="More controls"
               aria-haspopup="menu"
@@ -3358,18 +3693,21 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       {/* Episode drawer handle — docked at the MIDDLE of the right edge, the
           only trigger there is (fullscreen-only; windowed mode has no drawer).
           Fades with the control HUD so it never sits on a clean frame.
-          Item 2a: the box chrome is gone — a bare left-chevron glyph in the same
-          borderless/backdropless style as the control-row transport glyphs
-          (text colour + hover only). It slides in from the right (the side the
-          drawer arrives from) via n54-chevron-in-right; the drawer's close
-          right-chevron mirrors it. */}
+          Item 2a: filled accent chip, black-on-accent with sharp corners —
+          the same visual language as the SUB/DUB control's active side, so the
+          fullscreen edge trigger reads as a real control rather than a stray
+          glyph floating on the frame (a bare accent chevron looked like an
+          overlay artifact). Slight accent fade on hover for the affordance a
+          solid chip needs (hover:text can't show on a fill). It slides in from
+          the right (the side the drawer arrives from) via
+          n54-chevron-in-right; the drawer's close right-chevron mirrors it. */}
       {isFullscreen && !drawerOpen && hasDrawer && (
         <button
           onClick={openDrawer}
           aria-label="Episodes"
           aria-expanded={false}
           title="Episodes"
-          className={`group/handle absolute right-0 top-1/2 z-40 flex h-16 w-7 -translate-y-1/2 items-center justify-center text-[var(--accent)]/60 transition-colors duration-300 hover:text-[var(--accent)] ${
+          className={`group/handle absolute right-0 top-1/2 z-40 flex h-7 w-7 -translate-y-1/2 items-center justify-center bg-[var(--accent)] text-black transition-colors duration-300 hover:bg-[var(--accent)]/80 ${
             showControls ? "opacity-100" : "opacity-0 pointer-events-none"
           }`}
         >
@@ -3677,6 +4015,30 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             <div ref={drawerListRef} className="flex-1 overflow-y-auto overscroll-contain py-1">
               {episodes?.map((ep) => {
                 const isCurrent = ep.number === episodeNumber;
+                // The row on screen is playing, so it is available by
+                // definition — never render the CURRENT episode as dead, even
+                // if the list's flag says otherwise.
+                const isAvailable = isCurrent || ep.available !== false;
+                if (!isAvailable) {
+                  // Mirrors EpisodeList's unavailable branch (dim, inert, N/A)
+                  // while keeping the drawer's own row geometry: a non-
+                  // interactive div — no goToEpisode, nothing to click.
+                  return (
+                    <div
+                      key={ep.number}
+                      aria-disabled="true"
+                      className="flex w-full items-center gap-3 border-l-2 border-[var(--text-decorative)]/30 px-4 py-3 text-left rounded-none opacity-50 cursor-not-allowed"
+                    >
+                      <span className="w-8 shrink-0 font-mono text-xs tabular-nums text-[var(--text-decorative)]">
+                        {String(ep.number).padStart(2, "0")}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-decorative)]">
+                        {ep.title || `Episode ${ep.number}`}
+                      </span>
+                      <AvailabilityChip kind="na" className="shrink-0" />
+                    </div>
+                  );
+                }
                 return (
                   <button
                     key={ep.number}

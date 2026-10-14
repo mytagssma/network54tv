@@ -14,10 +14,11 @@ import SubtitlePickerContent from "./SubtitlePickerContent";
 /**
  * The ⋯ (More) overflow menu — one panel, one popup language.
  *
- * Everything the player's control row hides at the current width lands here:
- * the SUB/DUB segmented control (below lg), the settings rows that drill one
- * level (provider / server / quality / speed / subtitles / filter) and the
- * always-on toggles (auto-play next, auto-skip intro).
+ * Everything the player's control row doesn't carry lands here: the SUB/DUB
+ * segmented control (below lg), the settings rows that drill one level
+ * (provider / server / speed / subtitles / filter / audio) and the always-on toggles
+ * (auto-play next, auto-skip intro). Quality is the one settings row that
+ * lives inline on the control row instead (speed took its old menu slot).
  *
  * The MENU is a pure view. Every value it shows and every action it fires is
  * a prop, so `Player.tsx` keeps the state, the refs and the effects and this
@@ -25,7 +26,7 @@ import SubtitlePickerContent from "./SubtitlePickerContent";
  */
 
 // Sub-pages inside the ⋯ overflow menu
-export type MoreSection = "provider" | "server" | "quality" | "speed" | "filter" | "subs";
+export type MoreSection = "provider" | "server" | "speed" | "filter" | "audio" | "subs";
 
 // ─── ⋯ "More" menu — one panel, one popup language ───────────────
 // The panel never picks its own spot: `moreMenuAnchor` below does, and
@@ -115,13 +116,15 @@ export interface PlayerMoreMenuProps {
 
   availableServers: string[];
   activeServer: string | null;
-  availableQualities: string[];
-  currentQuality: string;
   speedOptions: number[];
   playbackRate: number;
   activeSubtitle: string | null;
   filterOptions: readonly { id: string; label: string }[];
   videoFilter: string;
+  /** `{ id, label, description? }` — the audio-filter drill list (Web Audio). */
+  audioFilterOptions: readonly { id: string; label: string; description?: string }[];
+  /** The active audio-filter preset's id ("off" = unprocessed). */
+  audioFilter: string;
 
   autoPlayNext: boolean;
   onToggleAutoPlayNext: () => void;
@@ -131,9 +134,9 @@ export interface PlayerMoreMenuProps {
   /* ── drill-down: pickers (each one closes the menu) ────────────────── */
   onSelectProvider: (id: string) => void;
   onSelectServer: (server: string) => void;
-  onSelectQuality: (quality: string) => void;
   onSelectSpeed: (rate: number) => void;
   onSelectFilter: (id: string) => void;
+  onSelectAudioFilter: (id: string) => void;
 
   /* ── drill-down: the subtitles sub-page ────────────────────────────── */
   /** Passed straight through to `SubtitlePickerContent`. */
@@ -155,22 +158,22 @@ export default function PlayerMoreMenu({
   providerValue,
   availableServers,
   activeServer,
-  availableQualities,
-  currentQuality,
   speedOptions,
   playbackRate,
   activeSubtitle,
   filterOptions,
   videoFilter,
+  audioFilterOptions,
+  audioFilter,
   autoPlayNext,
   onToggleAutoPlayNext,
   autoSkipEnabled,
   onToggleAutoSkip,
   onSelectProvider,
   onSelectServer,
-  onSelectQuality,
   onSelectSpeed,
   onSelectFilter,
+  onSelectAudioFilter,
   subtitle,
 }: PlayerMoreMenuProps) {
   // ─── root ⇄ submenu drill transition ─────────────────────────────────────
@@ -238,7 +241,7 @@ export default function PlayerMoreMenu({
         /* SUBTITLES drill: hide SubtitlePickerContent's redundant first-child
            "Subtitles" label (it duplicates the back-header title and leaves a
            ~21px dead band the other submenus don't have), so options start
-           flush under the header like Provider / Server / Quality / Filter. */
+           flush under the header like Provider / Server / Speed / Filter. */
         .n54-subs-body > div:first-child { display: none; }
       `}</style>
 
@@ -320,10 +323,10 @@ export default function PlayerMoreMenu({
             </>
           )}
 
-          {/* Settings rows — provider / server / quality / subtitles no
+          {/* Settings rows — provider / server / speed / subtitles no
               longer sit inline anywhere, so they show at EVERY width. Only
-              Speed (and the SUB/DUB copy above) still hide at lg, where the
-              row itself carries them — a control is never offered twice. */}
+              the SUB/DUB copy above still hides at lg, where the row itself
+              carries it — a control is never offered twice. */}
           <MoreRow
             label="Provider"
             value={providerOptions.find((p) => p.id === providerValue)?.label ?? "Auto"}
@@ -336,15 +339,7 @@ export default function PlayerMoreMenu({
               onClick={() => onSectionChange("server")}
             />
           )}
-          {availableQualities.length > 0 && (
-            <MoreRow
-              label="Quality"
-              value={currentQuality === "auto" ? "Auto" : currentQuality}
-              onClick={() => onSectionChange("quality")}
-            />
-          )}
           <MoreRow
-            className="lg:hidden"
             label="Speed"
             value={`${playbackRate}x`}
             onClick={() => onSectionChange("speed")}
@@ -360,6 +355,13 @@ export default function PlayerMoreMenu({
             label="Filter"
             value={filterOptions.find((f) => f.id === videoFilter)?.label ?? "Off"}
             onClick={() => onSectionChange("filter")}
+          />
+          {/* Audio filter — the Web Audio sibling of Filter, same drill shape.
+              Its value is the active preset's label ("Off" = unprocessed). */}
+          <MoreRow
+            label="Audio"
+            value={audioFilterOptions.find((f) => f.id === audioFilter)?.label ?? "Off"}
+            onClick={() => onSectionChange("audio")}
           />
           <button
             type="button"
@@ -422,12 +424,12 @@ export default function PlayerMoreMenu({
                 ? "Provider"
                 : section === "server"
                 ? "Server"
-                : section === "quality"
-                ? "Quality"
                 : section === "speed"
                 ? "Speed"
                 : section === "filter"
                 ? "Filter"
+                : section === "audio"
+                ? "Audio"
                 : "Subtitles"}
             </span>
           </div>
@@ -458,19 +460,6 @@ export default function PlayerMoreMenu({
               </Button>
             ))}
 
-          {section === "quality" &&
-            availableQualities.map((q) => (
-              <Button
-                key={q}
-                type="button"
-                variant="menuRow"
-                active={q === currentQuality}
-                onClick={() => onSelectQuality(q)}
-              >
-                {q === "auto" ? "Auto" : q}
-              </Button>
-            ))}
-
           {section === "speed" &&
             speedOptions.map((r) => (
               <Button
@@ -497,12 +486,30 @@ export default function PlayerMoreMenu({
               </Button>
             ))}
 
+          {/* Audio filter — byte-identical row shape to the Filter drill
+              above; only the option source and the selected-state id differ.
+              `description` rides on the native `title` tooltip (no second
+              line / no new row styling). */}
+          {section === "audio" &&
+            audioFilterOptions.map((f) => (
+              <Button
+                key={f.id}
+                type="button"
+                variant="menuRow"
+                active={audioFilter === f.id}
+                title={f.description}
+                onClick={() => onSelectAudioFilter(f.id)}
+              >
+                {f.label}
+              </Button>
+            ))}
+
           {section === "subs" && (
             /* `SubtitlePickerContent` renders its own "Subtitles" section
                label as its first child — which duplicates the back-header
                title above it and leaves a ~21px dead band before the first
                option ("Off"). Every other drill submenu (Provider / Server /
-               Quality / Speed / Filter) starts its options flush under the
+               Speed / Filter) starts its options flush under the
                header, so this is the odd one out. The `n54-subs-body` hook
                lets the scoped style block below hide just that redundant
                first-child label (the OpenSubtitles divider is a later

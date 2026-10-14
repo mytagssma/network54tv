@@ -82,6 +82,14 @@ export async function GET(req: NextRequest) {
 
   const anilistId = anilistIdParam ? parseInt(anilistIdParam, 10) : undefined;
   const strict = searchParams.get("strict") === "true";
+  // Retry bypass: the player's Retry button sends `fresh=1` so a manual retry
+  // is NOT served the cached failure. Without this, a failed walk is cached
+  // for 90s (STREAM_FAIL_TTL) and shared across all `server` values — so for
+  // 90 seconds after any failure, Retry re-ran the lookup but the route
+  // answered from the same cached miss, making Retry look broken. `fresh`
+  // skips the READS only; a fresh walk still writes its outcome to the cache,
+  // so the next ordinary request benefits from the re-walk either way.
+  const fresh = searchParams.get("fresh") === "1";
 
   // ── Key canonicalisation ─────────────────────────────────────────────
   // `server` only ever reaches anikoto: every other provider's `getSources`
@@ -94,9 +102,9 @@ export async function GET(req: NextRequest) {
   const exactKey = `${baseKey}::${server || "any"}`;
   const canonicalKey = `${baseKey}::any`;
 
-  const exactHit = readCache(exactKey);
+  const exactHit = fresh ? null : readCache(exactKey);
   if (exactHit) return NextResponse.json(exactHit.data);
-  if (server) {
+  if (server && !fresh) {
     const sharedHit = readCache(canonicalKey);
     // Reuse the shared entry only when the provider that produced it ignores
     // `server`; an anikoto result is server-specific. A recorded miss has

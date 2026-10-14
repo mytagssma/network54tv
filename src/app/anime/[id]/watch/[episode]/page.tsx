@@ -120,7 +120,18 @@ export default async function WatchPage({ params, searchParams }: Props) {
         nextEpisodeNumber={nextEp?.number}
         providerId={episodeProviderId}
         providerQuery={provider}
-        episodes={availableEpisodes.map((ep) => ({ number: ep.number, title: ep.title }))}
+        // FULL run WITH availability — the drawer marks `available: false`
+        // rows N/A + inert (EpisodeList's treatment) instead of dropping
+        // them: a hidden row breaks the numbering, a marked one explains it.
+        // Prev/next above still walks the filtered `availableEpisodes`, so
+        // navigation steps over dead rows while the drawer shows them.
+        episodes={episodes.map((ep) => ({
+          number: ep.number,
+          title: ep.title,
+          available: ep.available,
+          hasSub: ep.hasSub,
+          hasDub: ep.hasDub,
+        }))}
         // Same entries as the `// Franchise` grid below — the fullscreen
         // drawer's series dropdown is fed from this one list.
         franchise={franchise}
