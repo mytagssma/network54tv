@@ -1,15 +1,73 @@
+import { Suspense } from "react";
 import { getAnimeById, getAnimeFull } from "@/lib/anilist";
 import { notFound } from "next/navigation";
 import ExpandableDescription from "@/components/ui/ExpandableDescription";
 import EpisodeListFetcher from "@/components/anime/EpisodeListFetcher";
 import FranchiseRow from "@/components/anime/FranchiseRow";
 import { getFranchiseItems } from "@/lib/franchise";
+import { getAudioFlags, getEpisodes } from "@/lib/providers";
+import { LoadingNote } from "@/components/anime/Availability";
 
 export const revalidate = 300;
 
 interface Props {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ provider?: string }>;
+}
+
+/**
+ * The episode list, server-fetched and streamed. It consumes `getEpisodes`
+ * DIRECTLY — same process as `/api/episodes`, so the in-process availability
+ * cache is shared (a page hit and an API hit are one cache) and the client
+ * roundtrip is gone entirely: before, the page painted with an empty SSR
+ * payload and the browser stared at "Fetching episodes…" for the hydration
+ * gap PLUS the full cold provider walk. The audio=1 probe stays a CLIENT
+ * second pass inside EpisodeListFetcher: it costs a megaplay round trip
+ * (~1–3s) and must not delay the rows, exactly as before.
+ */
+async function EpisodeSection({ animeTitle, animeId }: { animeTitle: string; animeId: number }) {
+  // Data first, JSX outside the try/catch (react-hooks/error-boundaries).
+  let data: {
+    episodes: Awaited<ReturnType<typeof getAudioFlags>>["episodes"];
+    audio: Awaited<ReturnType<typeof getAudioFlags>>["audio"] | null;
+    listStatus: Awaited<ReturnType<typeof getEpisodes>>["listStatus"] | null;
+  } | null = null;
+  try {
+    // The same two calls /api/episodes makes, minus the `?audio=1` probe.
+    // `getEpisodes` resolves the AniList expected-count itself when omitted
+    // (fetch-cached) so the plausibility gate behaves identically.
+    const { episodes, listStatus } = await getEpisodes(animeTitle, animeId);
+    const { episodes: withFlags, audio } = await getAudioFlags(episodes, animeId, false);
+    data = { episodes: withFlags, audio, listStatus };
+  } catch {
+    // Mirrors the route's error path: an empty answer keeps the same
+    // empty-state language instead of failing the whole page.
+    data = { episodes: [], audio: null, listStatus: null };
+  }
+  return (
+    <EpisodeListFetcher
+      animeTitle={animeTitle}
+      animeId={animeId}
+      episodes={data.episodes}
+      audio={data.audio}
+      listStatus={data.listStatus}
+    />
+  );
+}
+
+/** Suspense fallback: the same `// EPISODES` header + "Fetching episodes…"
+ *  line the client used to show, so the streamed swap is visually seamless. */
+function EpisodeListSkeleton() {
+  return (
+    <div>
+      <div className="flex items-center gap-4 mb-5">
+        <h2 className="text-xl font-bold text-[var(--accent)] uppercase tracking-wider">
+          {"// Episodes"}
+        </h2>
+      </div>
+      <LoadingNote state="rows" />
+    </div>
+  );
 }
 
 export default async function AnimeDetailPage({ params, searchParams }: Props) {
@@ -143,8 +201,12 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
         {/* ── Same franchise — compact row of related entries (hidden when none) ── */}
         <FranchiseRow items={franchiseItems} currentId={animeId} />
 
-        {/* ── Episode List (client-fetched, responds to provider changes) ── */}
-        <EpisodeListFetcher animeTitle={anime.title} animeId={animeId} initialEpisodes={[]} />
+        {/* ── Episode List — server-fetched, streamed behind a Suspense
+            boundary: the shell above paints immediately and this section
+            swaps in when the provider walk resolves. ── */}
+        <Suspense fallback={<EpisodeListSkeleton />}>
+          <EpisodeSection animeTitle={anime.title} animeId={animeId} />
+        </Suspense>
       </div>
     </div>
   );

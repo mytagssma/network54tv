@@ -22,19 +22,30 @@ type ListStatus = "ok" | "none" | "suspect";
 interface EpisodeListFetcherProps {
   animeTitle: string;
   animeId: number;
-  initialEpisodes: Episode[];
+  /**
+   * The SERVER's resolved answer (getEpisodes + getAudioFlags without the
+   * probe), streamed in behind the page's Suspense boundary. The list itself
+   * is no longer fetched here — that roundtrip (plus the full cold provider
+   * walk behind it) is exactly what used to hold "Fetching episodes…" on
+   * screen after hydration. This component keeps the ONE thing that genuinely
+   * needs a route handler: the `?audio=1` second pass, which costs a megaplay
+   * probe (~1–3s) and must not delay the rows.
+   */
+  episodes: Episode[];
+  audio: AudioSummary | null;
+  listStatus: ListStatus | null;
 }
 
-export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisodes }: EpisodeListFetcherProps) {
+export default function EpisodeListFetcher({
+  animeTitle,
+  animeId,
+  episodes: initialEpisodes,
+  audio: initialAudio,
+  listStatus: initialListStatus,
+}: EpisodeListFetcherProps) {
   const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes);
-  const [audio, setAudio] = useState<AudioSummary | null>(null);
-  // Why the list can be empty. `null` until an answer arrives, so an empty SSR
-  // payload never claims a reason it hasn't been given.
-  const [listStatus, setListStatus] = useState<ListStatus | null>(null);
-  // Start in the loading state whenever there's nothing to show yet: an empty
-  // SSR payload must read "Fetching...", never "no data" — the empty card is
-  // only honest *after* a fetch has actually resolved to zero episodes.
-  const [loading, setLoading] = useState(initialEpisodes.length === 0);
+  const [audio, setAudio] = useState<AudioSummary | null>(initialAudio);
+  const [listStatus, setListStatus] = useState<ListStatus | null>(initialListStatus);
   const [checkingAudio, setCheckingAudio] = useState(false);
   const audioRequested = useRef(false);
 
@@ -49,8 +60,9 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
   );
 
   // Second pass: resolve unknown sub/dub flags with the provider-side probe.
-  // Runs only when the fast response says flags are unknown AND probeable, and
-  // only after the episode rows are already on screen.
+  // Runs only when the server answer says flags are unknown AND probeable, and
+  // only after the episode rows are already on screen — same predicate and
+  // same fetch the old first-pass-then-probe flow used.
   const fetchAudioFlags = useCallback(
     async (params: URLSearchParams) => {
       if (audioRequested.current) return;
@@ -72,33 +84,26 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
     [applyResponse]
   );
 
-  const fetchEpisodes = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ title: animeTitle, id: String(animeId) });
-      const res = await fetch(`/api/episodes?${params}`);
-      if (res.ok) {
-        const summary = applyResponse(await res.json());
-        const needsProbe =
-          !!summary &&
-          (summary.subCount === null || summary.dubCount === null) &&
-          summary.canProbe &&
-          !summary.probed;
-        if (needsProbe) void fetchAudioFlags(params);
-      }
-    } catch {
-      // keep current episodes on error
-    } finally {
-      setLoading(false);
-    }
-  }, [animeTitle, animeId, applyResponse, fetchAudioFlags]);
-
-  // Fetch episodes on mount (auto provider — selector was removed)
   useEffect(() => {
     // Clear any stale stored provider from the removed header selector
     try { localStorage.removeItem("n54tv-provider"); } catch {}
-    fetchEpisodes();
-  }, [fetchEpisodes]);
+    const needsProbe =
+      !!audio &&
+      (audio.subCount === null || audio.dubCount === null) &&
+      audio.canProbe &&
+      !audio.probed;
+    if (needsProbe) {
+      // Deferred a tick: the probe's leading `setCheckingAudio(true)` is a
+      // synchronous setState, and calling the probe straight from this
+      // effect would be a cascading render (the old first-pass mount fetch
+      // was flagged the same way). Behaviour is unchanged — the probe was
+      // always async work.
+      const params = new URLSearchParams({ title: animeTitle, id: String(animeId) });
+      queueMicrotask(() => { void fetchAudioFlags(params); });
+    }
+    // Re-runs harmlessly when the probe's own response lands (`probed: true`
+    // flips the predicate off; `audioRequested` guards double-fires).
+  }, [audio, animeTitle, animeId, fetchAudioFlags]);
 
   // Sub/Dub counts — only real numbers; "—" when availability is unknown.
   const subCount = audio?.subCount ?? null;
@@ -116,18 +121,13 @@ export default function EpisodeListFetcher({ animeTitle, animeId, initialEpisode
             <AudioCount label="Dub" value={dubCount} />
           </div>
         )}
-        {loading && <LoadingNote state="list" />}
-        {!loading && checkingAudio && <LoadingNote state="audio" />}
+        {checkingAudio && <LoadingNote state="audio" />}
       </div>
 
       {episodes.length > 0 ? (
         <EpisodeList episodes={episodes} animeId={animeId} />
-      ) : loading ? (
-        // Real fetch in flight — the pulse above is driven by this same flag,
-        // so it stops the moment the request settles.
-        <LoadingNote state="rows" />
       ) : (
-        // Resolved and still empty: say WHICH kind of empty it was.
+        // Resolved and empty: say WHICH kind of empty it was.
         <EmptyState
           code="NO_EPISODE_DATA"
           detail={listStatus === "suspect" ? "suspect" : undefined}

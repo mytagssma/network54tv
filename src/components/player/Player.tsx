@@ -447,6 +447,31 @@ function formatTime(t: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// ── Touch swipe-to-seek (video surface) ─────────────────────────────────
+// Constants for the horizontal scrub gesture — see the "Touch
+// swipe-to-seek" block on the handlers for the full contract:
+//   SWIPE_ACTIVATE_PX    |dx| that arms the gesture (must also dominate dy)
+//   SWIPE_AXIS_RATIO     horizontal-dominance test — verticals pass through
+//   SWIPE_RATE_S_PER_PX  scrub rate: 1px ≈ 100ms of time
+//   SWIPE_MAX_DELTA_S    hard cap on the delta one gesture may produce
+//   SWIPE_EPSILON_PX     released this close to the origin → no-op seek
+//   SWIPE_FLASH_MS       post-release hold of the chip's final value
+//   SWIPE_FADE_MS        chip fade-out once the hold expires
+//   SWIPE_TAP_BLOCK_MS   how long a completed swipe swallows the tap-toggle
+const SWIPE_ACTIVATE_PX = 44;
+const SWIPE_AXIS_RATIO = 2.5;
+const SWIPE_RATE_S_PER_PX = 0.1;
+const SWIPE_MAX_DELTA_S = 60;
+const SWIPE_EPSILON_PX = 12;
+const SWIPE_FLASH_MS = 600;
+const SWIPE_FADE_MS = 300;
+const SWIPE_TAP_BLOCK_MS = 400;
+
+/** Seek chip copy — ▸ forward / ◂ back, signed to one decimal, tabular. */
+function formatSeekDelta(delta: number): string {
+  return `${delta < 0 ? "◂" : "▸"} ${delta < 0 ? "-" : "+"}${Math.abs(delta).toFixed(1)}s`;
+}
+
 // Pathname (lowercased, query/hash ignored) for extension checks
 function getUrlPathname(url: string): string {
   try {
@@ -3029,6 +3054,178 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   }, []);
 
+  // ─── Touch swipe-to-seek (video surface, touch only) ─────────────
+  // ONE horizontal finger on the bare video scrubs time: swipe RIGHT =
+  // forward, swipe LEFT = back, distance-proportional (1px ≈ 100ms,
+  // ±60s cap per gesture), committed as a SINGLE seek on release — never
+  // per-frame. The live chip is written straight to the DOM (textContent)
+  // so a 60–120Hz gesture never re-renders this component; state flips only
+  // at the phase boundaries: "live" (finger down, armed) → "flash" (final
+  // value held ~600ms after release) → "fade" (~300ms) → null.
+  //
+  // Recognition: |dx| ≥ 44px AND |dx| ≥ 2.5×|dy|. Vertical-dominant
+  // movement never arms, and `touch-action: pan-y pinch-zoom` on the
+  // <video> lets the BROWSER own those natively — it scrolls the page
+  // (phase 1) or the pinned sections (phase 2) and fires pointercancel,
+  // which aborts the gesture. Nothing here ever calls preventDefault; all
+  // listeners are the passive-by-nature pointer events on the element
+  // itself, not blocking window listeners.
+  //
+  // Exclusions come from event TARGETING: the controls overlay (its whole
+  // gradient box, progress strip included), the drawer handle, the countdown
+  // scrim, the skip chips and every popover are SIBLINGS above the video, so
+  // a touch that starts on any of them never reaches these handlers; the
+  // overlay is pointer-events-none while the HUD is hidden — exactly when
+  // that strip should be free surface. A pointerdown while the ⋯ menu or a
+  // picker is open also opts out (that tap is for dismissing them), as do
+  // the loading/error states (nothing seekable yet).
+  //
+  // The long-press 2× hold is retired the moment a swipe arms, so a slow
+  // scrub can't trigger (or keep) fast-forward underneath it; the release
+  // path restores the rate via handlePointerUp either way. Desktop mouse
+  // drags never arm (pointerType gate) — they're untouched.
+  const swipeRef = useRef<{
+    id: number;
+    x0: number;
+    y0: number;
+    base: number; // currentTime at touchstart — the scrub's origin
+    delta: number; // clamped live delta; release seeks base + delta once
+    armed: boolean;
+  } | null>(null);
+  const swipeChipRef = useRef<HTMLDivElement>(null); // textContent-written each move
+  const swipeFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const swipeFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const swipeTapBlockRef = useRef(0); // performance.now() stamp of the last armed release
+  const [seekChip, setSeekChip] = useState<"live" | "flash" | "fade" | null>(null);
+
+  const clearSeekChipTimers = () => {
+    if (swipeFlashTimerRef.current) {
+      clearTimeout(swipeFlashTimerRef.current);
+      swipeFlashTimerRef.current = null;
+    }
+    if (swipeFadeTimerRef.current) {
+      clearTimeout(swipeFadeTimerRef.current);
+      swipeFadeTimerRef.current = null;
+    }
+  };
+
+  // Release path shared by commit and cancel: hold the chip for holdMs
+  // (0 → straight into the fade for a no-op/cancel), then fade and drop it.
+  // The setState calls live in the timeout CALLBACKS — never in an effect
+  // body — so this stays clear of the setState-in-effect rule.
+  const releaseSeekChip = (holdMs: number) => {
+    clearSeekChipTimers();
+    swipeFlashTimerRef.current = setTimeout(() => {
+      setSeekChip("fade");
+      swipeFadeTimerRef.current = setTimeout(() => setSeekChip(null), SWIPE_FADE_MS);
+    }, holdMs);
+  };
+
+  const swipePointerDown = (e: React.PointerEvent<HTMLVideoElement>) => {
+    if (e.pointerType !== "touch") return; // mouse drag stays untouched
+    if (loading || streamError) return; // nothing seekable yet
+    if (showMore || openPicker !== null) return; // that tap dismisses a menu
+    if (drawerOpen) return; // the drawer's scrim owns the surface
+    if (swipeRef.current) return; // a second finger never retargets the gesture
+    swipeRef.current = {
+      id: e.pointerId,
+      x0: e.clientX,
+      y0: e.clientY,
+      base: videoRef.current?.currentTime ?? 0,
+      delta: 0,
+      armed: false,
+    };
+  };
+
+  const swipePointerMove = (e: React.PointerEvent<HTMLVideoElement>) => {
+    const sw = swipeRef.current;
+    if (!sw || sw.id !== e.pointerId) return;
+    const dx = e.clientX - sw.x0;
+    const dy = e.clientY - sw.y0;
+    if (!sw.armed) {
+      // Horizontal-dominant AND far enough to be deliberate. Anything else
+      // (vertical scrolls, tiny jitters) stays unarmed and the event stream
+      // untouched — the browser may claim verticals freely.
+      if (Math.abs(dx) < SWIPE_ACTIVATE_PX || Math.abs(dx) < SWIPE_AXIS_RATIO * Math.abs(dy)) return;
+      sw.armed = true;
+      // The finger is scrubbing now — retire the long-press 2× hold so a
+      // slow swipe can't arm (or keep) fast-forward underneath it.
+      if (holdTimerRef.current) {
+        clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
+      if (longPressRef.current && videoRef.current) {
+        videoRef.current.playbackRate = playbackRateRef.current;
+        longPressRef.current = false;
+      }
+      clearSeekChipTimers(); // a fresh gesture owns the chip again
+      setSeekChip("live"); // the ONE render this gesture causes
+    }
+    // Live scrub from the ORIGIN: distance-proportional, ±60s capped, then
+    // clamped to the media's own ends — so the chip always shows exactly
+    // the delta release will apply ("back" at t=2s honestly reads ◂ -2.0s).
+    let delta = dx * SWIPE_RATE_S_PER_PX;
+    delta = Math.max(-SWIPE_MAX_DELTA_S, Math.min(SWIPE_MAX_DELTA_S, delta));
+    const video = videoRef.current;
+    if (video && isFinite(video.duration) && video.duration > 0) {
+      delta = Math.max(-sw.base, Math.min(video.duration - sw.base, delta));
+    }
+    sw.delta = delta;
+    const chip = swipeChipRef.current;
+    if (chip) chip.textContent = formatSeekDelta(delta); // DOM write — no re-render
+  };
+
+  const swipePointerUp = (e: React.PointerEvent<HTMLVideoElement>) => {
+    const sw = swipeRef.current;
+    if (!sw || sw.id !== e.pointerId) return;
+    swipeRef.current = null;
+    if (!sw.armed) return;
+    // A completed swipe is a swipe: swallow the tap-to-toggle click some
+    // browsers still emit after a touch move.
+    swipeTapBlockRef.current = performance.now();
+    // Released this close to where it started → the gesture returned to
+    // origin: NO seek at all; the chip just retires.
+    if (Math.abs(e.clientX - sw.x0) < SWIPE_EPSILON_PX) {
+      releaseSeekChip(0);
+      return;
+    }
+    // Commit: ONE seek to the final target — never per-frame — mirroring
+    // seekBy's clamps; then the chip flashes that final value before fading.
+    const video = videoRef.current;
+    if (video) {
+      const max = isFinite(video.duration) && video.duration > 0 ? video.duration : Number.MAX_SAFE_INTEGER;
+      video.currentTime = Math.max(0, Math.min(max, sw.base + sw.delta));
+      setCurrentTime(video.currentTime);
+      // Seeking around means the viewer is engaged with THIS episode — drop
+      // a pending "up next" card, exactly like the skip buttons do.
+      setCountdown(null);
+    }
+    const chip = swipeChipRef.current;
+    if (chip) chip.textContent = formatSeekDelta(sw.delta);
+    releaseSeekChip(SWIPE_FLASH_MS);
+  };
+
+  const swipePointerCancel = (e: React.PointerEvent<HTMLVideoElement>) => {
+    const sw = swipeRef.current;
+    if (!sw || sw.id !== e.pointerId) return;
+    swipeRef.current = null;
+    if (!sw.armed) return;
+    // The browser claimed the gesture (native vertical scroll / a second
+    // finger / pinch): abort — no seek — and retire the chip into the fade.
+    swipeTapBlockRef.current = performance.now();
+    releaseSeekChip(0);
+  };
+
+  // Chip timers must not outlive the component — a fade scheduled right as
+  // the route changes would otherwise setState on a dead tree. Cleanup only
+  // clears timers (no setState here).
+  useEffect(() => {
+    return () => {
+      if (swipeFlashTimerRef.current) clearTimeout(swipeFlashTimerRef.current);
+      if (swipeFadeTimerRef.current) clearTimeout(swipeFadeTimerRef.current);
+    };
+  }, []);
+
   // ─── Auto-failover: try next server when stream errors ─────
   useEffect(() => {
     if (streamError && failoverQueueRef.current.length > 0 && !loading) {
@@ -3646,11 +3843,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }
       `}</style>
 
-      {/* Video element */}
+      {/* Video element — also the swipe-to-seek surface (see the "Touch
+          swipe-to-seek" block on swipePointerDown). `touch-action:
+          pan-y pinch-zoom` is what makes the pass-through real: vertical pans
+          and pinch zoom stay the BROWSER's to claim (page scroll in phase 1,
+          the pinned sections in phase 2), which cancels the gesture via
+          pointercancel; horizontal movement is never claimable, so the scrub
+          always keeps its events. No preventDefault anywhere. */}
       <video
         ref={videoRef}
         className="w-full h-full object-contain"
-        style={{ filter: videoFilter === "off" ? undefined : getFilterCSS(videoFilter) }}
+        style={{
+          filter: videoFilter === "off" ? undefined : getFilterCSS(videoFilter),
+          touchAction: "pan-y pinch-zoom",
+        }}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onError={handleVideoError}
@@ -3696,12 +3902,48 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         }}
         playsInline
         crossOrigin="anonymous"
-        onClick={() => togglePlay()}
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
+        onClick={() => {
+          // A completed (or cancelled) swipe owns this tap — some browsers
+          // still emit a click after a touch move, and it must not toggle
+          // playback the gesture never asked for.
+          if (performance.now() - swipeTapBlockRef.current < SWIPE_TAP_BLOCK_MS) return;
+          togglePlay();
+        }}
+        onPointerDown={(e) => {
+          handlePointerDown();
+          swipePointerDown(e);
+        }}
+        onPointerMove={swipePointerMove}
+        onPointerUp={(e) => {
+          swipePointerUp(e);
+          handlePointerUp();
+        }}
+        onPointerCancel={(e) => {
+          swipePointerCancel(e);
+          handlePointerUp();
+        }}
         onContextMenu={(e) => e.preventDefault()}
       />
+
+      {/* Swipe-to-seek chip — centered on the frame, pure feedback
+          (pointer-events-none, aria-hidden): the live scrub delta while the
+          finger is down — "▸ +12.4s" swiped right (forward), "◂ -8.1s"
+          swiped left (back) — then the final value flashed on release
+          (~600ms) and a ~300ms fade. It stays MOUNTED at opacity-0 so the
+          per-frame textContent writes (swipePointerMove) always have a
+          target — the move that arms the gesture lands its first value in
+          the same frame, no empty flash, no re-render. z-30: over the HUD
+          (z-20), under the drawer handle / countdown / drawer (z-40+). */}
+      <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center" aria-hidden="true">
+        <div
+          ref={swipeChipRef}
+          className={`rounded-none border border-[var(--accent)]/40 bg-black/70 px-3 py-1.5 font-mono text-xs leading-none tabular-nums tracking-wide text-[var(--accent)] shadow-lg transition-opacity motion-reduce:transition-none ${
+            seekChip === "live" || seekChip === "flash"
+              ? "opacity-100 duration-150"
+              : "opacity-0 duration-300"
+          }`}
+        />
+      </div>
 
 {/* Loading overlay — simple terminal progress bar.
           Item 3 / Rule 1: suppressed while the LOADING-EPISODE switch card is
@@ -4109,10 +4351,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               </div>
             </div>
 
-            {/* Time — full readout from sm up; below sm only the elapsed
-                clock fits, and the seekbar carries the rest */}
-            <span className="text-[10px] sm:text-sm text-[var(--accent)]/50 tabular-nums font-mono select-none leading-none shrink-0">
-              {formatTime(currentTime)}
+            {/* Time — ONE spec at every width and control state (was
+                text-[10px] sm:text-sm, which jumped sizes between a portrait
+                phone and landscape/fullscreen — the "it shrinks" read):
+                text-xs mono, tabular-nums (no digit-width jitter), nowrap,
+                and the current-time box min-width pinned to its worst-case
+                digit count so the 9:59 → 10:00 flip can't reflow the row (the
+                fit observer sees a stable box instead). The full "cur / dur"
+                readout stays sm+ — below sm only the elapsed clock fits in
+                the 360px row budget; that's CONTENT gating, not a size
+                switch: the glyphs are text-xs in both states. */}
+            <span className="shrink-0 select-none whitespace-nowrap font-mono text-xs leading-none tabular-nums text-[var(--accent)]/50">
+              <span className="inline-block min-w-[5ch]">{formatTime(currentTime)}</span>
               <span className="hidden sm:inline"> / {formatTime(duration)}</span>
             </span>
           </div>

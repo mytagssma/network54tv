@@ -1416,32 +1416,56 @@ export async function getEpisodes(
       }
     };
 
-    // Try megaplay first if we have an AniList ID (it's most reliable)
+    // Fire every probe CONCURRENTLY, then WALK THE RESULTS IN THE ORIGINAL
+    // SERIAL ORDER, awaiting one slot at a time and stopping at the first
+    // `best.score >= 0` — the serial walk's early-break, now without paying
+    // for the probes that come after it: they were already started, but
+    // nobody waits for them (their results and warnings land whenever they
+    // settle; each probe carries its own rejection→warn→null conversion, so
+    // a straggler can never surface as an unhandled rejection). That makes
+    // cold latency ≈ max(the probes up to the winner) instead of sum(all
+    // probes up to the winner): ~max(probe) when the walk used to run deep
+    // through misses, and ≈ the old serial cost when an early provider
+    // (megaplay) wins outright. Awaiting slots in plan order is what keeps
+    // the winner IDENTICAL to the serial walk: strict `>` tie-breaking
+    // (first in preference order wins a tie, and `0` is the maximum score,
+    // so the first exact/non-suspect list still beats everything after it),
+    // the same `sawRejected` accounting, and the same plausibility gate.
+    // Trade-off ("upstream blast", deliberate): every provider is hit on
+    // every cold walk even when an early winner makes their answers
+    // irrelevant — that's the price of never summing misses again.
+    const plan: { name: string; probe: Promise<ProviderSession | null> }[] = [];
     if (anilistId) {
-      try {
-        consider(await getMegaPlaySession(anilistId, animeTitle), "megaplay");
-      } catch (err) {
-        console.warn(`[providers] getEpisodes megaplay failed:`, err instanceof Error ? err.message : err);
-        // fall through
-      }
+      plan.push({
+        name: "megaplay",
+        probe: getMegaPlaySession(anilistId, animeTitle).catch((err) => {
+          console.warn(`[providers] getEpisodes(megaplay) failed:`, err instanceof Error ? err.message : err);
+          return null;
+        }),
+      });
     }
-
-    // Walk the remaining providers and keep the BEST list — stopping at the
-    // first non-empty one is what let anikoto's single "Full" episode win
-    // whenever megaplay/kickassanime hiccups.
-    if (best.score < 0) {
-      for (const provider of PROVIDERS) {
-        try {
-          const session = await provider.getSession(animeTitle, anilistId);
-          consider(session, provider.name);
-          // `0` == exact expected count (or, with no count, any non-suspect
-          // list): nothing later can beat it, so stop early.
-          if (best.score >= 0) break;
-        } catch (err) {
+    for (const provider of PROVIDERS) {
+      if (anilistId && provider.name === "megaplay") continue; // already in the plan
+      plan.push({
+        name: provider.name,
+        probe: provider.getSession(animeTitle, anilistId).catch((err) => {
           console.warn(`[providers] getEpisodes(${provider.name}) failed:`, err instanceof Error ? err.message : err);
-          continue;
-        }
+          return null;
+        }),
+      });
+    }
+    for (let i = 0; i < plan.length; i++) {
+      const session = await plan[i].probe; // never rejects (see above)
+      try {
+        consider(session, plan[i].name);
+      } catch (err) {
+        console.warn(`[providers] getEpisodes(${plan[i].name}) failed:`, err instanceof Error ? err.message : err);
+        continue;
       }
+      // `0` == exact expected count (or, with no count, any non-suspect
+      // list): nothing later can beat it — stop WITHOUT waiting for the
+      // stragglers still in flight (the serial walk's early break).
+      if (best.score >= 0) break;
     }
 
     candidateEpisodes = best.episodes ?? [];

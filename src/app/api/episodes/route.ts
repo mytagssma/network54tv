@@ -46,7 +46,20 @@ export async function GET(req: NextRequest) {
     const { episodes: withFlags, audio } = await getAudioFlags(episodes, animeId, probeAudio);
     // `{ episodes }` is the stable shape (watch page / availability consumers);
     // `audio` and `listStatus` are additive.
-    return NextResponse.json({ episodes: withFlags, audio, listStatus });
+    //
+    // Cache-Control: any fronting cache (CDN/edge) may serve this for 10
+    // minutes and revalidate in the background for up to a day. 600s matches
+    // the in-process availability cache's TTL exactly (providers.ts), so an
+    // edge hit costs zero provider probes and the first revalidation after
+    // expiry re-walks providers once (now in parallel, ~1–1.5s) while stale
+    // copies keep serving. 86400s stale-while-revalidate: an episode list a
+    // few minutes stale is far better than a spinner, and a newly aired
+    // episode picks up on the next revalidation. `max-age=0` keeps BROWSERS
+    // out of the way — they must always hit the server (so its in-process
+    // cache stays warm) rather than serving their own stale copy.
+    const res = NextResponse.json({ episodes: withFlags, audio, listStatus });
+    res.headers.set("Cache-Control", "public, max-age=0, s-maxage=600, stale-while-revalidate=86400");
+    return res;
   } catch (e) {
     return NextResponse.json({ error: "Failed to fetch episodes" }, { status: 500 });
   }
