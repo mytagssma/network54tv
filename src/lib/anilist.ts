@@ -57,6 +57,7 @@ query ($search: String, $page: Int, $perPage: Int, $format: MediaFormat, $season
       trending
       popularity
       studios { nodes { name } }
+      nextAiringEpisode { airingAt episode }
       startDate { year month day }
       relations {
         edges {
@@ -167,6 +168,7 @@ query ($airingAt_greater: Int, $airingAt_lesser: Int, $page: Int, $perPage: Int)
         trending
         popularity
         studios { nodes { name } }
+        nextAiringEpisode { airingAt episode }
       }
     }
   }
@@ -259,6 +261,9 @@ function anilistMediaToAnime(media: any): Anime {
     episodes: media.episodes,
     duration: media.duration,
     status: media.status,
+    // Carried through so the card badge can compute released/total (the home
+    // and browse card feeds both derive from this mapper).
+    nextAiringEpisode: media.nextAiringEpisode ?? undefined,
     season: media.season,
     seasonYear: media.seasonYear,
     format: media.format,

@@ -142,6 +142,11 @@ export interface Anime {
   startDate?: number;
   /** MediaRelation edges — used to cluster search results into franchises. */
   relations?: AnimeRelation[];
+  /** AniList next schedule entry — the next NOT-yet-aired episode. */
+  nextAiringEpisode?: {
+    airingAt: number;
+    episode: number;
+  };
 }
 
 export interface Episode {

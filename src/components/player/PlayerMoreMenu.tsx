@@ -1,7 +1,6 @@
 "use client";
 
 import type { ComponentProps, ReactNode, RefObject } from "react";
-import Button from "@/components/ui/Button";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -9,6 +8,11 @@ import {
   PlayIcon,
   XIcon,
 } from "@/components/ui/icons";
+import PickerContent, {
+  PICKER_ICON,
+  PICKER_LABEL,
+  type PickerId,
+} from "./PickerContent";
 import SubtitlePickerContent from "./SubtitlePickerContent";
 
 /**
@@ -16,17 +20,27 @@ import SubtitlePickerContent from "./SubtitlePickerContent";
  *
  * Everything the player's control row doesn't carry lands here: the SUB/DUB
  * segmented control (below lg), the settings rows that drill one level
- * (provider / server / speed / subtitles / filter / audio) and the always-on toggles
- * (auto-play next, auto-skip intro). Quality is the one settings row that
- * lives inline on the control row instead (speed took its old menu slot).
+ * (provider / server / speed / subtitles / filter / audio) and the two always-
+ * on toggles (auto play, auto skip). Quality is the one settings row that
+ * lives inline on the control row instead (speed took its old menu slot) — it
+ * is never re-added here.
+ *
+ * The row's icon-only toolbar shares this menu's LISTS, not its panel: each
+ * picker icon on the row opens its own anchored popover next to the icon
+ * (see `togglePicker` in Player.tsx), and both surfaces render the exported
+ * `PickerContent` — so every picker's list UI still exists exactly once, no
+ * matter which surface you reach it from. Rows carry icon + label + value —
+ * both visible — so the same glyph the row shows greets you inside the menu.
  *
  * The MENU is a pure view. Every value it shows and every action it fires is
  * a prop, so `Player.tsx` keeps the state, the refs and the effects and this
  * file keeps only the markup — which is why the two can't drift.
  */
 
-// Sub-pages inside the ⋯ overflow menu
-export type MoreSection = "provider" | "server" | "speed" | "filter" | "audio" | "subs";
+// Sub-pages inside the ⋯ overflow menu — the SAME ids the row popovers use
+// (`PickerContent`'s enum aliased here, so the menu and the toolbar can't
+// disagree about what a section is).
+export type MoreSection = PickerId;
 
 // ─── ⋯ "More" menu — one panel, one popup language ───────────────
 // The panel never picks its own spot: `moreMenuAnchor` below does, and
@@ -50,17 +64,26 @@ export type MoreSection = "provider" | "server" | "speed" | "filter" | "audio" |
 //   panel carries NO floor — submenu options render at their natural
 //   28px like desktop. ≥640px is floor-free everywhere (natural ~28px).
 
-// One row of the ⋯ menu's root list: label + current value + chevron.
+// The glyph each drill-down section is filed under lives in `PickerContent`
+// (PICKER_ICON) — shared with the row popovers' headers and the root rows
+// below, so one map feeds every surface.
+
+// One row of the ⋯ menu's root list: icon + label + current value + chevron.
 // Kept at module scope so rows keep their identity across re-renders.
+// `icon` is the SAME glyph the control row's icon-only trigger for that
+// option uses (imported once from ui/icons), so row and menu stay one
+// visual language.
 function MoreRow({
   label,
   value,
+  icon,
   onClick,
   className = "",
   active = false,
 }: {
   label: string;
   value?: ReactNode;
+  icon?: ReactNode;
   onClick: () => void;
   className?: string;
   active?: boolean;
@@ -76,7 +99,10 @@ function MoreRow({
           : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/5"
       } ${className}`}
     >
-      <span className="truncate">{label}</span>
+      <span className="flex min-w-0 items-center gap-2">
+        {icon}
+        <span className="truncate">{label}</span>
+      </span>
       {/* The value may be a long provider/server name — it truncates at the
           band edge (min-w-0 lets the flex child shrink) instead of forcing a
           horizontal overflow inside the menu panel. Only the chevron stays rigid. */}
@@ -238,11 +264,6 @@ export default function PlayerMoreMenu({
           .n54-more-in-right,
           .n54-more-in-left { animation: none; }
         }
-        /* SUBTITLES drill: hide SubtitlePickerContent's redundant first-child
-           "Subtitles" label (it duplicates the back-header title and leaves a
-           ~21px dead band the other submenus don't have), so options start
-           flush under the header like Provider / Server / Speed / Filter. */
-        .n54-subs-body > div:first-child { display: none; }
       `}</style>
 
       {section === null ? (
@@ -323,44 +344,53 @@ export default function PlayerMoreMenu({
             </>
           )}
 
-          {/* Settings rows — provider / server / speed / subtitles no
-              longer sit inline anywhere, so they show at EVERY width. Only
-              the SUB/DUB copy above still hides at lg, where the row itself
+          {/* Settings rows — every row carries the SAME glyph its icon-only
+              trigger on the control row uses (the row shows a trigger only
+              while it fits; the menu always shows the full list). Only the
+              SUB/DUB copy above still hides at lg, where the row itself
               carries it — a control is never offered twice. */}
           <MoreRow
-            label="Provider"
-            value={providerOptions.find((p) => p.id === providerValue)?.label ?? "Auto"}
+            label={PICKER_LABEL.provider}
+            value={providerValue}
+            icon={PICKER_ICON.provider}
             onClick={() => onSectionChange("provider")}
           />
           {availableServers.length > 0 && (
             <MoreRow
-              label="Server"
+              label={PICKER_LABEL.server}
               value={activeServer || "Auto"}
+              icon={PICKER_ICON.server}
               onClick={() => onSectionChange("server")}
             />
           )}
           <MoreRow
-            label="Speed"
+            label={PICKER_LABEL.speed}
             value={`${playbackRate}x`}
+            icon={PICKER_ICON.speed}
             onClick={() => onSectionChange("speed")}
           />
           <MoreRow
-            label="Subtitles"
+            label={PICKER_LABEL.subs}
             value={activeSubtitle ? "On" : "Off"}
+            icon={PICKER_ICON.subs}
             onClick={() => onSectionChange("subs")}
           />
 
-          {/* Always here — lowest priority, never on the row */}
+          {/* Same drill shape as above — lowest on the row's priority order
+              (rarely touched mid-watch), so these are the first to drop out
+              of the icon toolbar and land ONLY here. */}
           <MoreRow
-            label="Filter"
+            label={PICKER_LABEL.filter}
             value={filterOptions.find((f) => f.id === videoFilter)?.label ?? "Off"}
+            icon={PICKER_ICON.filter}
             onClick={() => onSectionChange("filter")}
           />
           {/* Audio filter — the Web Audio sibling of Filter, same drill shape.
               Its value is the active preset's label ("Off" = unprocessed). */}
           <MoreRow
-            label="Audio"
+            label={PICKER_LABEL.audio}
             value={audioFilterOptions.find((f) => f.id === audioFilter)?.label ?? "Off"}
+            icon={PICKER_ICON.audio}
             onClick={() => onSectionChange("audio")}
           />
           <button
@@ -376,7 +406,7 @@ export default function PlayerMoreMenu({
           >
             <span className="flex items-center gap-2">
               <PlayIcon className="h-3.5 w-3.5 shrink-0" />
-              Auto-Play Next
+              Auto Play
             </span>
             <span className={`label-micro ${autoPlayNext ? "text-[var(--accent)]" : "text-[var(--accent)]/30"}`}>
               {autoPlayNext ? "On" : "Off"}
@@ -395,7 +425,7 @@ export default function PlayerMoreMenu({
           >
             <span className="flex items-center gap-2">
               <Forward10Icon className="h-3.5 w-3.5 shrink-0" />
-              Auto-Skip Intro
+              Auto Skip
             </span>
             <span className={`label-micro ${autoSkipEnabled ? "text-[var(--accent)]" : "text-[var(--accent)]/30"}`}>
               {autoSkipEnabled ? "On" : "Off"}
@@ -419,106 +449,36 @@ export default function PlayerMoreMenu({
             >
               <ChevronLeftIcon className="h-3.5 w-3.5" />
             </button>
-            <span className="truncate label-micro text-[var(--accent)]/40">
-              {section === "provider"
-                ? "Provider"
-                : section === "server"
-                ? "Server"
-                : section === "speed"
-                ? "Speed"
-                : section === "filter"
-                ? "Filter"
-                : section === "audio"
-                ? "Audio"
-                : "Subtitles"}
+            <span className="flex min-w-0 items-center gap-1.5 truncate label-micro text-[var(--accent)]/40">
+              {PICKER_ICON[section]}
+              {PICKER_LABEL[section]}
             </span>
           </div>
 
-          {section === "provider" &&
-            providerOptions.map((p) => (
-              <Button
-                key={p.id}
-                type="button"
-                variant="menuRow"
-                active={providerCurrent === p.id}
-                onClick={() => onSelectProvider(p.id)}
-              >
-                {p.label}
-              </Button>
-            ))}
-
-          {section === "server" &&
-            availableServers.map((srv) => (
-              <Button
-                key={srv}
-                type="button"
-                variant="menuRow"
-                active={activeServer === srv}
-                onClick={() => onSelectServer(srv)}
-              >
-                {srv}
-              </Button>
-            ))}
-
-          {section === "speed" &&
-            speedOptions.map((r) => (
-              <Button
-                key={r}
-                type="button"
-                variant="menuRow"
-                active={playbackRate === r}
-                onClick={() => onSelectSpeed(r)}
-              >
-                {r}x
-              </Button>
-            ))}
-
-          {section === "filter" &&
-            filterOptions.map((f) => (
-              <Button
-                key={f.id}
-                type="button"
-                variant="menuRow"
-                active={videoFilter === f.id}
-                onClick={() => onSelectFilter(f.id)}
-              >
-                {f.label}
-              </Button>
-            ))}
-
-          {/* Audio filter — byte-identical row shape to the Filter drill
-              above; only the option source and the selected-state id differ.
-              `description` rides on the native `title` tooltip (no second
-              line / no new row styling). */}
-          {section === "audio" &&
-            audioFilterOptions.map((f) => (
-              <Button
-                key={f.id}
-                type="button"
-                variant="menuRow"
-                active={audioFilter === f.id}
-                title={f.description}
-                onClick={() => onSelectAudioFilter(f.id)}
-              >
-                {f.label}
-              </Button>
-            ))}
-
-          {section === "subs" && (
-            /* `SubtitlePickerContent` renders its own "Subtitles" section
-               label as its first child — which duplicates the back-header
-               title above it and leaves a ~21px dead band before the first
-               option ("Off"). Every other drill submenu (Provider / Server /
-               Speed / Filter) starts its options flush under the
-               header, so this is the odd one out. The `n54-subs-body` hook
-               lets the scoped style block below hide just that redundant
-               first-child label (the OpenSubtitles divider is a later
-               sibling and stays), and dropping `py-0.5` removes the wrapper's
-               own 2px so the options sit flush like the majority pattern. */
-            <div className="n54-subs-body px-1">
-              <SubtitlePickerContent {...subtitle} />
-            </div>
-          )}
+          {/* The list itself is `PickerContent` — the exact component the
+              control row's anchored popovers render (Player.tsx), so the two
+              surfaces can never show different options or selection states.
+              Handlers are the props the player wired into this menu; each one
+              dismisses the menu (its popover twin dismisses the popover). */}
+          <PickerContent
+            section={section}
+            providerOptions={providerOptions}
+            providerCurrent={providerCurrent}
+            availableServers={availableServers}
+            activeServer={activeServer}
+            speedOptions={speedOptions}
+            playbackRate={playbackRate}
+            filterOptions={filterOptions}
+            videoFilter={videoFilter}
+            audioFilterOptions={audioFilterOptions}
+            audioFilter={audioFilter}
+            onSelectProvider={onSelectProvider}
+            onSelectServer={onSelectServer}
+            onSelectSpeed={onSelectSpeed}
+            onSelectFilter={onSelectFilter}
+            onSelectAudioFilter={onSelectAudioFilter}
+            subtitle={subtitle}
+          />
         </div>
       )}
     </div>

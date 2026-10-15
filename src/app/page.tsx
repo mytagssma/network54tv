@@ -98,6 +98,8 @@ export default function Home() {
                   genres: anime.genres,
                   rating: anime.score,
                   episodes: anime.episodes,
+                  status: anime.status,
+                  nextAiringEpisode: anime.nextAiringEpisode,
                 }}
                 loading={anime.id === navigatingId}
                 onClick={() => setNavigatingId(anime.id)}

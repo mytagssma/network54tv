@@ -1,18 +1,12 @@
 import { getAnimeById, getAnimeFull } from "@/lib/anilist";
 import { getAudioFlags, getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
-import Player from "@/components/player/Player";
-import EpisodeBrowser from "@/components/watch/EpisodeBrowser";
+import WatchDock from "@/components/watch/WatchDock";
 import { EmptyState } from "@/components/anime/Availability";
 import FranchiseStrip from "@/components/watch/FranchiseStrip";
 import { buildFranchiseEntries } from "@/components/watch/franchiseEntries";
 import { getFranchiseItems } from "@/lib/franchise";
 import Link from "next/link";
-import {
-  ChevronLeftSolidIcon,
-  ChevronRightSolidIcon,
-  MenuIcon,
-} from "@/components/ui/icons";
 
 export const revalidate = 0;
 
@@ -58,21 +52,22 @@ export default async function WatchPage({ params, searchParams }: Props) {
   const currentEp = episodes.find((ep) => ep.number === episodeNumber);
   const episodeProviderId = currentEp?.providerId;
 
-  // Navigation runs over the SAME `available` the lists below render — one
+  // Navigation runs over the SAME `available` the episode list renders — one
   // definition, applied by `applyAvailability` in providers.ts.
   //
-  // Decision: prev/next TRUNCATES the run (it steps over a dimmed row) while
-  // the episode list KEEPS that row visible with an `N/A` reason label. They
-  // are two views of one field, and both are deliberate: hiding the row would
-  // make the numbering look broken, while routing through it would let the
-  // countdown and the next button hand the viewer a row the list itself marks
-  // dead — a dead end with no way back. The gap is therefore visible where you
-  // scan (the list) and invisible where you navigate (the buttons).
+  // Decision: the player's next-episode handoff TRUNCATES the run (it steps
+  // over a dimmed row) while the episode list KEEPS that row visible with an
+  // `N/A` reason label. They are two views of one field, and both are
+  // deliberate: hiding the row would make the numbering look broken, while
+  // routing through it would hand the viewer a row the list itself marks
+  // dead — a dead end with no way back. The gap is therefore visible where
+  // you scan (the list) and invisible where you navigate (auto-next). (The
+  // old episode-nav bar under the player is gone — the player's transport
+  // covers prev/next — so only the NEXT handoff is computed here.)
   const availableEpisodes = episodes.filter((ep) => ep.available !== false);
   const currentEpIndex = availableEpisodes.findIndex(
     (ep) => ep.number === episodeNumber
   );
-  const prevEp = currentEpIndex > 0 ? availableEpisodes[currentEpIndex - 1] : null;
   const nextEp =
     currentEpIndex < availableEpisodes.length - 1
       ? availableEpisodes[currentEpIndex + 1]
@@ -102,17 +97,21 @@ export default async function WatchPage({ params, searchParams }: Props) {
         </span>
       </div>
 
-      <h1 className="text-xl font-bold text-[var(--accent)] mb-4 uppercase tracking-wider">
-        {anime.title}{" "}
-        <span className="text-[var(--accent)]/50 font-mono text-base">
-          &mdash; Episode {episodeNumber}
-        </span>
-      </h1>
-
-      {/* Player — bleeds the container's 16px padding on both sides
-          (`-mx-4`) so the frame runs edge-to-edge with the page column */}
-      <div className="-mx-4">
-      <Player
+      {/* Player + episode panel — WatchDock owns the dock toggle and the
+          title band: the h1 renders above the player in both modes, and the
+          docked panel header joins it on the right (lg+, preference
+          persisted in localStorage) while the panel docks beside the
+          player. FranchiseStrip passes through as children so it stays
+          server-rendered here, full width, below the docked row. */}
+      <WatchDock
+        title={
+          <h1 className="text-xl font-bold text-[var(--accent)] mb-4 uppercase tracking-wider">
+            {anime.title}{" "}
+            <span className="text-[var(--accent)]/50 font-mono text-base">
+              &mdash; Episode {episodeNumber}
+            </span>
+          </h1>
+        }
         animeTitle={anime.title}
         episodeNumber={episodeNumber}
         anilistId={animeId}
@@ -120,12 +119,14 @@ export default async function WatchPage({ params, searchParams }: Props) {
         nextEpisodeNumber={nextEp?.number}
         providerId={episodeProviderId}
         providerQuery={provider}
+        episodes={episodes}
         // FULL run WITH availability — the drawer marks `available: false`
         // rows N/A + inert (EpisodeList's treatment) instead of dropping
         // them: a hidden row breaks the numbering, a marked one explains it.
-        // Prev/next above still walks the filtered `availableEpisodes`, so
-        // navigation steps over dead rows while the drawer shows them.
-        episodes={episodes.map((ep) => ({
+        // The player's next-episode handoff still walks the filtered
+        // `availableEpisodes`, so navigation steps over dead rows while the
+        // drawer shows them.
+        drawerEpisodes={episodes.map((ep) => ({
           number: ep.number,
           title: ep.title,
           available: ep.available,
@@ -138,66 +139,16 @@ export default async function WatchPage({ params, searchParams }: Props) {
         // This episode's own dub flag (true / false / null = provider didn't
         // say). The player gates the DUB button on it instead of guessing.
         episodeHasDub={currentEp?.hasDub ?? null}
-      />
-      </div>
+      >
+        {/* Franchise / season switcher (hidden when there are no relations) */}
+        <FranchiseStrip entries={franchise} provider={provider} />
+      </WatchDock>
 
-      {/* Episode navigation — ONE aligned row: prev + the episode-list
-          action sit left, next sits right. All three share the same quiet
-          text+chevron treatment and a 44px touch height (the ⋯ sheet's row
-          language), so "All Episodes" no longer floats center as a bare
-          link between two boxed buttons at mobile. */}
-      <div className="mt-4 flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center">
-          {prevEp && (
-            <Link
-              href={`/anime/${animeId}/watch/${prevEp.number}${providerQs}`}
-              className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
-            >
-              <ChevronLeftSolidIcon className="h-4 w-4 shrink-0" />
-              <span className="hidden whitespace-nowrap sm:inline">
-                EP {String(prevEp.number).padStart(2, "0")}
-              </span>
-              <span className="whitespace-nowrap sm:hidden">Prev</span>
-            </Link>
-          )}
-          <Link
-            href={`/anime/${animeId}${providerQs}`}
-            className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
-          >
-            <MenuIcon className="h-4 w-4 shrink-0" />
-            <span className="whitespace-nowrap">All Episodes</span>
-          </Link>
-        </div>
-        {nextEp && (
-          <Link
-            href={`/anime/${animeId}/watch/${nextEp.number}${providerQs}`}
-            className="group flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-none px-2 text-xs uppercase tracking-wider text-[var(--accent)]/50 transition-colors hover:text-[var(--accent)]"
-          >
-            <span className="hidden whitespace-nowrap sm:inline">
-              EP {String(nextEp.number).padStart(2, "0")}
-            </span>
-            <span className="whitespace-nowrap sm:hidden">Next</span>
-            <ChevronRightSolidIcon className="h-4 w-4 shrink-0" />
-          </Link>
-        )}
-      </div>
-
-      {/* Franchise / season switcher (hidden when there are no relations) */}
-      <FranchiseStrip entries={franchise} provider={provider} />
-
-      {/* Paged episode selector — the full run, natural height.
-          Zero episodes is a real provider answer, not a loading gap, so it
-          says so instead of rendering nothing under the player. */}
-      {episodes.length > 0 ? (
-        <div className="mt-8">
-          <EpisodeBrowser
-            episodes={episodes}
-            animeId={animeId}
-            provider={provider}
-            currentEpisode={episodeNumber}
-          />
-        </div>
-      ) : (
+      {/* Zero episodes is a real provider answer, not a loading gap, so it
+          says so instead of rendering nothing under the player. (The
+          non-empty case renders inside WatchDock, which owns the panel's
+          docked-rail vs below-the-band positions.) */}
+      {episodes.length === 0 && (
         <div className="mt-8">
           <EmptyState
             code="NO_EPISODE_DATA"

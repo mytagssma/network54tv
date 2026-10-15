@@ -1,24 +1,41 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { Episode } from "@/types/anime";
 import { AvailabilityChip } from "@/components/anime/Availability";
 import Button from "@/components/ui/Button";
+import { cn } from "@/lib/utils";
 
 /**
  * Paged episode selector (YouTube playlist-panel style).
  *
+ * - ONE level of boxing: the outer panel owns the frame; the rows inside are
+ *   FLAT — no per-row chips — separated by collapsed hairline grid lines
+ *   (top+left at a low accent tint, tucked under the panel border), with
+ *   every state carried by background + text colour alone. The panel is the
+ *   only box; if borders ever return to the rows, the panel border goes.
  * - Dense rows: episode number + short (truncated) name.
  * - Chunk navigation: `‹ 1/5 ›` — never renders the whole run at once.
  * - Natural height: each page is bounded by its own item count, so the grid
  *   flows at full height and the *page* scrolls (no inner scroll box).
+ * - `docked` variant (watch page, lg+): the panel becomes the playlist RAIL
+ *   beside the player — one column, its height pinned to the player's
+ *   measured height by WatchDock (the panel just fills it, `lg:h-full`) with
+ *   its own inner scroll (`lg:`-gated, so below lg the stacked natural-height
+ *   layout is unaffected no matter what the dock preference says). The
+ *   natural-height doc above describes the below-the-player layout; this rail
+ *   is the scroll-contained exception.
  * - The row for the episode being watched is highlighted, and is revealed
  *   with a minimal page-level scroll when the panel is already on screen —
- *   the window is never yanked toward the list.
+ *   the window is never yanked toward the list. Docked, `scrollIntoView`'s
+ *   "nearest" resolves against the rail's own scrollport, so the same code
+ *   reveals inside the rail instead.
  */
 
 const DEFAULT_PAGE_SIZE = 24;
+/** Exported: WatchDock's shared pager math (band header + both panel positions). */
+export { DEFAULT_PAGE_SIZE };
 
 interface EpisodeSelectorProps {
   /** Full episode run to page through (sorted by number by the caller). */
@@ -35,12 +52,107 @@ interface EpisodeSelectorProps {
    * consecutive rows — and again at the start of every page.
    */
   getSectionLabel?: (episode: Episode) => string | null;
+  /**
+   * Watch-page dock: render as the scroll-contained rail beside the player
+   * (one column, `lg:`-gated: full-height panel + inner scroll). Off = the
+   * natural-height below-the-player panel.
+   */
+  docked?: boolean;
+  /** Extra header-row controls, rendered right of the pager (dock toggle). */
+  headerExtra?: ReactNode;
+  /**
+   * Controlled pager: when provided (with `onPageChange`), the page lives in
+   * the caller — WatchDock shares ONE pager between the docked band header
+   * and both panel positions. Omitted = self-managed (the /design specimen
+   * renders the bare component and keeps the internal follow-sync below).
+   */
+  page?: number;
+  onPageChange?: (page: number) => void;
+  /** Docked: don't render the header here — the caller renders it in the
+   *  page-title band instead (EpisodePanelHeader). */
+  hideHeader?: boolean;
+}
+
+/**
+ * The panel header row (title · EP count · range · pager · extras). Rendered
+ * INSIDE the panel by default; in the docked watch layout WatchDock renders
+ * it in the page-title band instead, via `hideHeader` on the panel.
+ */
+export function EpisodePanelHeader({
+  heading,
+  episodes,
+  pageSize,
+  pageCount,
+  currentPage,
+  onPageChange,
+  headerExtra,
+}: {
+  heading: string;
+  /** The SORTED run — the range readout slices it by the current page. */
+  episodes: Episode[];
+  pageSize: number;
+  pageCount: number;
+  currentPage: number;
+  onPageChange: (page: number) => void;
+  headerExtra?: ReactNode;
+}) {
+  const start = currentPage * pageSize;
+  const firstEp = episodes[start];
+  const lastEp = episodes[Math.min(start + pageSize - 1, episodes.length - 1)];
+  return (
+    <div className="flex items-center gap-3 mb-2">
+      <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider shrink-0">
+        {heading}
+      </h2>
+      <span className="label-micro text-[var(--text-decorative)] shrink-0 tabular-nums">
+        {episodes.length} EP
+      </span>
+
+      {(pageCount > 1 || headerExtra) && (
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          {pageCount > 1 && (
+            <>
+              <span className="hidden sm:block label-micro text-[var(--text-decorative)] tabular-nums">
+                {firstEp && lastEp ? `${pad(firstEp.number)}–${pad(lastEp.number)}` : ""}
+              </span>
+              <Button
+                type="button"
+                variant="pager"
+                onClick={() => onPageChange(currentPage - 1)}
+                disabled={currentPage === 0}
+                aria-label="Previous page of episodes"
+              >
+                <span aria-hidden="true">‹</span>
+              </Button>
+              <span className="font-mono text-[11px] text-[var(--accent)]/70 tabular-nums min-w-[3.5rem] text-center">
+                {currentPage + 1}/{pageCount}
+              </span>
+              <Button
+                type="button"
+                variant="pager"
+                onClick={() => onPageChange(currentPage + 1)}
+                disabled={currentPage >= pageCount - 1}
+                aria-label="Next page of episodes"
+              >
+                <span aria-hidden="true">›</span>
+              </Button>
+            </>
+          )}
+          {headerExtra}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
+// Flat row: NO box of its own. The only borders are the collapsed-grid
+// hairlines (top+left) that separate neighbours; the -mt-px/-ml-px on the
+// grid tucks the outer pair under the panel's own border, so the panel
+// stays the single frame. States are background + text colour only.
 const ROW_BASE =
-  "flex min-h-[40px] items-center gap-2 rounded-none border px-2.5 transition-colors";
+  "flex min-h-[40px] items-center gap-2 rounded-none border-t border-l border-[var(--accent)]/10 px-2.5 transition-colors";
 
 export default function EpisodeSelector({
   episodes,
@@ -50,6 +162,11 @@ export default function EpisodeSelector({
   pageSize = DEFAULT_PAGE_SIZE,
   heading = "// Episodes",
   getSectionLabel,
+  docked = false,
+  headerExtra,
+  page: pageProp,
+  onPageChange: onPageChangeProp,
+  hideHeader = false,
 }: EpisodeSelectorProps) {
   const providerQs = provider ? `?provider=${provider}` : "";
 
@@ -61,25 +178,38 @@ export default function EpisodeSelector({
     return out;
   }, [episodes, pageSize]);
 
-  const [page, setPage] = useState(() => {
+  // Self-managed page (default). With `page` + `onPageChange` from WatchDock
+  // this state is ignored — the shared dock pager wins.
+  const [internalPage, setInternalPage] = useState(() => {
     const idx = episodes.findIndex((ep) => ep.number === currentEpisode);
     return idx >= 0 ? Math.floor(idx / pageSize) : 0;
   });
 
   const pageCount = pages.length;
-  const currentPage = pageCount === 0 ? 0 : Math.min(Math.max(page, 0), pageCount - 1);
+  const currentPage =
+    pageCount === 0 ? 0 : Math.min(Math.max(pageProp ?? internalPage, 0), pageCount - 1);
+  const onPageChange = onPageChangeProp ?? setInternalPage;
   const items = pages[currentPage] ?? [];
-  const firstEp = items[0];
-  const lastEp = items[items.length - 1];
 
   const panelRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<number, HTMLElement>());
 
-  // Follow the watched episode across client-side navigations
-  useEffect(() => {
+  // Follow the watched episode across client-side navigations (self-managed
+  // mode only — the dock's controlled pager does this in WatchDock).
+  // Adjusted during render (React's "adjust state when props change"
+  // pattern) rather than in an effect: the page flips in the same render
+  // pass, so the reveal effect below already runs against the correct page.
+  const [syncKey, setSyncKey] = useState({ currentEpisode, episodes, pageSize });
+  if (
+    pageProp === undefined &&
+    (syncKey.currentEpisode !== currentEpisode ||
+      syncKey.episodes !== episodes ||
+      syncKey.pageSize !== pageSize)
+  ) {
+    setSyncKey({ currentEpisode, episodes, pageSize });
     const idx = episodes.findIndex((ep) => ep.number === currentEpisode);
-    if (idx >= 0) setPage(Math.floor(idx / pageSize));
-  }, [currentEpisode, episodes, pageSize]);
+    if (idx >= 0) setInternalPage(Math.floor(idx / pageSize));
+  }
 
   // Reveal the watched row when the panel is already on screen — a minimal
   // page-level scroll, never a jump that would pull the player out of view.
@@ -95,52 +225,43 @@ export default function EpisodeSelector({
   if (pageCount === 0) return null;
 
   return (
-    <div>
-      {/* Panel header — title, range, chunk navigation */}
-      <div className="flex items-center gap-3 mb-2">
-        <h2 className="text-sm font-semibold text-[var(--accent)] uppercase tracking-wider shrink-0">
-          {heading}
-        </h2>
-        <span className="label-micro text-[var(--text-decorative)] shrink-0 tabular-nums">
-          {episodes.length} EP
-        </span>
+    // Docked: this wrapper must also fill the rail — WatchDock pins the
+    // ASIDE to the player's measured height, and the panel's `lg:h-full`
+    // resolves against THIS div. Without a definite height here, `h-full`
+    // degrades to content height: the panel stops being a scroll container,
+    // long lists spill past the rail, and the reveal scroll yanks the page.
+    <div className={cn(docked && "lg:h-full")}>
+      {/* Panel header — title, range, chunk navigation. Skipped when docked:
+          WatchDock renders this same row in the page-title band instead. */}
+      {!hideHeader && (
+        <EpisodePanelHeader
+          heading={heading}
+          episodes={episodes}
+          pageSize={pageSize}
+          pageCount={pageCount}
+          currentPage={currentPage}
+          onPageChange={onPageChange}
+          headerExtra={headerExtra}
+        />
+      )}
 
-        {pageCount > 1 && (
-          <div className="ml-auto flex items-center gap-1.5 shrink-0">
-            <span className="hidden sm:block label-micro text-[var(--text-decorative)] tabular-nums">
-              {firstEp && lastEp ? `${pad(firstEp.number)}–${pad(lastEp.number)}` : ""}
-            </span>
-            <Button
-              type="button"
-              variant="pager"
-              onClick={() => setPage(currentPage - 1)}
-              disabled={currentPage === 0}
-              aria-label="Previous page of episodes"
-            >
-              <span aria-hidden="true">‹</span>
-            </Button>
-            <span className="font-mono text-[11px] text-[var(--accent)]/70 tabular-nums min-w-[3.5rem] text-center">
-              {currentPage + 1}/{pageCount}
-            </span>
-            <Button
-              type="button"
-              variant="pager"
-              onClick={() => setPage(currentPage + 1)}
-              disabled={currentPage >= pageCount - 1}
-              aria-label="Next page of episodes"
-            >
-              <span aria-hidden="true">›</span>
-            </Button>
-          </div>
-        )}
-      </div>
-
-      {/* Episode grid — natural height, the page scrolls around it */}
+      {/* Episode grid — natural height, the page scrolls around it. Docked
+          (lg+): `h-full` fills the rail, whose height WatchDock pins to the
+          player's measured height — the playlist-rail treatment, scrolling
+          internally when the run is longer. */}
       <div
         ref={panelRef}
-        className="relative border border-[var(--accent)]/15 bg-[var(--panel)]"
+        className={cn(
+          "relative border border-[var(--accent)]/15 bg-[var(--panel)]",
+          docked && "lg:h-full lg:overflow-y-auto overscroll-contain"
+        )}
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 p-1.5">
+        <div
+          className={cn(
+            "-mt-px -ml-px grid",
+            docked ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+          )}
+        >
           {items.map((ep, i) => {
             const isCurrent = ep.number === currentEpisode;
             const isAvailable = ep.available !== false;
@@ -150,10 +271,10 @@ export default function EpisodeSelector({
             const showHeader = Boolean(label) && label !== prevLabel;
 
             const rowClass = isCurrent
-              ? `${ROW_BASE} bg-[var(--accent)] border-[var(--accent)] text-black`
+              ? `${ROW_BASE} bg-[var(--accent)] text-black`
               : isAvailable
-                ? `${ROW_BASE} border-[var(--accent)]/10 bg-black/30 text-[var(--text-secondary)] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/10 hover:text-white group`
-                : `${ROW_BASE} border-[var(--text-decorative)]/10 bg-black/20 text-[var(--text-decorative)] opacity-60 cursor-not-allowed`;
+                ? `${ROW_BASE} text-[var(--text-secondary)] hover:bg-[var(--accent)]/10 hover:text-white group`
+                : `${ROW_BASE} text-[var(--text-decorative)] opacity-60 cursor-not-allowed`;
 
             const numberClass = isCurrent
               ? "text-black/70"
@@ -202,7 +323,7 @@ export default function EpisodeSelector({
             return (
               <Fragment key={ep.number}>
                 {showHeader && (
-                  <div className="col-span-full sticky top-0 z-10 border-b border-[var(--accent)]/25 bg-[var(--surface)] px-2 py-1.5 label-micro text-[var(--accent)]">
+                  <div className="col-span-full sticky top-0 z-10 border-y border-[var(--accent)]/25 bg-[var(--surface)] px-2 py-1.5 label-micro text-[var(--accent)]">
                     {label}
                   </div>
                 )}

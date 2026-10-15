@@ -1,31 +1,43 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Hls from "hls.js";
 import SubtitleOverlay from "./SubtitleOverlay";
 import Button, { buttonClass } from "@/components/ui/Button";
 import {
-  CaretDownIcon,
+  AudioFilterIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Forward10Icon,
   FullscreenIcon,
-  MenuIcon,
+  GlobeIcon,
   MoreIcon,
   NextTrackIcon,
   PauseIcon,
   PlayIcon,
   PrevTrackIcon,
+  QualityIcon,
   Rewind10Icon,
+  ServerIcon,
   SkipChevronIcon,
+  SpeedIcon,
+  SubtitleIcon,
+  VideoFilterIcon,
   VolumeIcon,
   VolumeMutedIcon,
 } from "@/components/ui/icons";
 import PlayerMoreMenu, { type MoreSection } from "./PlayerMoreMenu";
+import PickerContent, { PICKER_ICON, PICKER_LABEL } from "./PickerContent";
 import { proxyUrl } from "@/lib/utils";
+import {
+  migrateIntoGlobal,
+  readSettings,
+  writeSettings,
+  type GlobalSettings,
+} from "@/lib/settings";
 import { AvailabilityChip, EmptyState } from "@/components/anime/Availability";
 import type { StreamSource, Subtitle } from "@/types/anime";
 import { franchiseSortGroups, type FranchiseEntry } from "@/components/watch/franchiseEntries";
@@ -86,6 +98,87 @@ const PROVIDER_OPTIONS = [
 ];
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+
+/**
+ * Priority order of the control row's icon-only toolbar — HIGHEST FIRST.
+ * The row surfaces the ⋯ menu's options as icons, but only while they fit
+ * beside the left group (transport, volume, time); whatever falls off the
+ * end stays in the ⋯ menu, which is always present. The order is ranked
+ * STRICTLY by how often the control changes DURING watching (frequency of
+ * use), not by how important it is:
+ *   1. Subtitles  — flips constantly: signs on/off, sub vs dub viewing
+ *   2. Speed      — changes often: recaps, slow dialogue
+ *   3. Server     — the first response to a failing stream (and streams fail)
+ *   4. Auto Skip  — a per-taste switch, flipped occasionally …
+ *   5. Auto Play  — … and auto-skip is flipped more often than auto-play
+ *   6. Provider   — only follows REPEATED server failure
+ *   7. Filter     — a set-once picture-taste option
+ *   8. Audio      — a set-once sound-taste option
+ * Quality is NOT in the list: its trigger is fixed on the row at every width
+ * (it only lost its text label), and ⋯ / fullscreen are fixed too.
+ */
+const ROW_ICON_PRIORITY = [
+  "subs",
+  "speed",
+  "server",
+  "autoSkip",
+  "autoPlay",
+  "provider",
+  "filter",
+  "audio",
+] as const;
+type RowIconId = (typeof ROW_ICON_PRIORITY)[number];
+
+/**
+ * Where a row popover sits — measured against the PLAYER container the moment
+ * it opens (and re-measured by the fit effect's ResizeObserver, so a live
+ * panel re-clamps instead of going stale on a fullscreen toggle or resize):
+ * `side` picks which edge of its trigger the panel hangs from (the side with
+ * more room, so a popover on a left-side icon grows rightward and can never
+ * cross the player's left edge), and the two caps are hard pixel ceilings the
+ * panel's inline styles enforce — width for the horizontal frame margins,
+ * height for the room actually above the trigger. The container's
+ * `overflow-hidden` is the backstop that clips anything pathological.
+ */
+type PickerAnchor = { side: "left" | "right"; maxW: number; maxH: number };
+/** The two popover widths — quality's compact list, the pickers' column. */
+const QUALITY_POPOVER_W = 112; // w-28 — what the quality list has always been
+const PICKER_POPOVER_W = 176; // w-44 — room for "Anime Vivid" / "Voice Boost"
+
+/** Pure geometry for a row popover: which side to hang from and how big it
+ *  may grow, given the trigger element and the player container it lives in
+ *  (see `PickerAnchor`). Kept at module scope so both the open path and the
+ *  live re-measure call the identical math. */
+function computePickerAnchor(
+  container: HTMLElement | null,
+  el: HTMLElement,
+  desiredW: number
+): PickerAnchor {
+  const b = el.getBoundingClientRect();
+  if (!container) return { side: "right", maxW: desiredW, maxH: 224 };
+  const c = container.getBoundingClientRect();
+  const EDGE = 12; // minimum frame kept between panel edge and player edge
+  // Room for a panel hanging LEFT of the trigger (right-anchored, `right-0`,
+  // growing leftward) vs RIGHT of it (left-anchored, growing rightward) —
+  // each measured from the trigger's own edge, so the cap is exactly the
+  // space that exists whatever the row's layout is.
+  const roomRight = b.right - c.left - EDGE;
+  const roomLeft = c.right - b.left - EDGE;
+  const side = roomRight >= roomLeft ? "right" : "left";
+  const room = side === "right" ? roomRight : roomLeft;
+  // Up is always the roomier direction (the row sits ~40px above the
+  // player's bottom edge), but a short windowed player can still hold less
+  // than the panel wants — cap to the real gap and let the panel scroll.
+  // The 48px floors only ever bind on a pathologically small player, where
+  // a sliver of scrollable panel beats a 10px one (and the container clips
+  // the rest either way).
+  const roomUp = b.top - c.top - EDGE;
+  return {
+    side,
+    maxW: Math.max(48, Math.min(desiredW, room)),
+    maxH: Math.max(48, Math.min(288, roomUp)),
+  };
+}
 
 /* ─── Quality labels ─────────────────────────────────────────────────────
  * The picker must name levels the way people ask for them — "1080p",
@@ -245,35 +338,71 @@ type AudioFilterId = (typeof AUDIO_FILTER_PRESETS)[number]["id"];
 const AUDIO_FILTER_MENU_OPTIONS: { id: string; label: string; description: string }[] =
   AUDIO_FILTER_PRESETS.map((f) => ({ id: f.id, label: f.label, description: f.description }));
 
-/* ─── Per-anime preference store ────────────────────────────────────────
- * The viewer settings (auto-play next, auto-skip, sub/dub, quality, the
- * subtitle track) used to live INSIDE the per-EPISODE progress blob —
- * `n54tv-progress-{anime}-{episode}` — so they were only ever restored on the
- * exact episode they happened to be set on, and `saveProgress` deletes that
- * whole key the moment the episode finishes (it drops the key within 5s of
- * the end). Flipping a toggle in ep3 therefore came back as a reset by ep1,
- * and finished an episode entirely. They now have their own key scoped to the
- * ANIME, written on every change, so episode-to-episode hops inside one show
- * keep them and a different show starts from its own copy (or defaults).
+/* ─── Preference stores (two tiers) ─────────────────────────────────────
+ * Viewer settings live in TWO localStorage buckets, split by scope:
  *
- * Nothing here runs during render: reads happen in effects / event handlers,
- * so SSR never touches localStorage and hydration can't mismatch.
+ *   • GLOBAL — `n54tv-settings` (src/lib/settings.ts). Device & behaviour
+ *     settings that should follow the viewer across every show: quality,
+ *     auto-play-next, auto-skip, video/audio filters, the subtitle
+ *     on/off + lang/offset/size defaults, and speed/volume/mute — the
+ *     last three used to live only in the per-EPISODE progress blob
+ *     (`n54tv-progress-{anime}-{episode}`), where `saveProgress` deletes
+ *     the whole key within 5s of an episode finishing, so they reset
+ *     every time an episode completed.
+ *   • PER-ANIME — `n54tv-prefs:{id}` (this file), shrunk to what
+ *     genuinely belongs to one show:
+ *       - audioType (sub/dub),
+ *       - providerId (the control-bar provider override — the page's
+ *         `providerId` prop is the default; a stored value wins),
+ *       - the four subtitle fields as an OVERRIDE layer: a show can pin
+ *         its own lang/on-off/offset/size on top of the global default.
+ *         Changing any subtitle control dual-writes BOTH buckets (global
+ *         = the new default for future shows, per-anime = this show's
+ *         pin); these fields are never stripped.
+ *     The old per-anime copies of quality/toggles/filters migrate into
+ *     the global bucket on first hydration (migrateIntoGlobal) and are
+ *     stripped from this bucket after that.
+ *
+ * Nothing here runs during render: reads happen in effects / event
+ * handlers, so SSR never touches localStorage and hydration can't mismatch.
+ *
+ * BEHAVIOUR MATRIX (what the split must deliver):
+ *   • First visit, no buckets → defaults (quality auto, speed 1, volume 1,
+ *     toggles per the defaults hydration applies).
+ *   • Legacy per-anime prefs + legacy progress blob, no global → migration
+ *     seeds the global bucket; nothing the viewer picked is lost, and the
+ *     show's subtitle fields keep overriding.
+ *   • Change speed on Show A → the speed survives finishing the episode
+ *     (the blob is deleted on completion, the global bucket is not),
+ *     switching shows, and a reload.
+ *   • Set subs to lang X on Show A → Show A keeps X after you set lang Y
+ *     on Show B; Show C (no pin) defaults to Y.
+ *   • Flip the provider on Show A → persists for Show A across reload;
+ *     Show B starts from the page's default `providerId` prop.
+ *   • sub/dub stays purely per-anime; the server choice stays unpersisted.
  */
 interface AnimePrefs {
-  autoPlayNext?: boolean;
-  autoSkip?: boolean;
   audioType?: "sub" | "dub";
-  /** A `qualityLabel` name: "auto" | "1080p" | "720p" | … */
-  quality?: string;
-  /** Subtitle visibility. The chosen track is remembered by its LANG label,
-   *  never by URL — the URL is per-stream and differs every episode. */
+  /** The control-bar provider override; absent = use the page default. */
+  providerId?: string;
+  /** Subtitle OVERRIDE layer over the global defaults. The chosen track is
+   *  remembered by its LANG label, never by URL — the URL is per-stream and
+   *  differs every episode. */
   subtitles?: boolean;
   subtitleLang?: string;
   subtitleOffset?: number;
   subtitleSize?: "small" | "medium" | "large";
-  videoFilter?: FilterId;
-  audioFilter?: AudioFilterId;
   ts?: number;
+}
+
+/** Loose view of a per-anime bucket that may still carry the pure-global
+ *  fields migration is about to strip — legacy fallbacks only (quality at
+ *  MANIFEST_PARSED can beat loadedmetadata, so they must be readable before
+ *  migration has run). */
+type LegacyAnimePrefs = AnimePrefs & Partial<GlobalSettings>;
+
+function readLegacyPrefs(key: string): LegacyAnimePrefs | null {
+  return readPrefsByKey(key) as LegacyAnimePrefs | null;
 }
 
 /** Same `anilistId || title` shape the progress key already uses. */
@@ -383,6 +512,19 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // to the video (which would toggle playback alongside the dismissal).
   const moreDismissRef = useRef<HTMLDivElement>(null);
   const qualityWrapRef = useRef<HTMLDivElement>(null);
+  // One wrapper per row-picker popover (its trigger + panel inside), keyed by
+  // picker id — the click-outside test treats each trigger+panel pair as one
+  // unit, exactly like `qualityWrapRef` does for quality.
+  const pickerWrapRefs = useRef<Partial<Record<MoreSection, HTMLDivElement | null>>>({});
+  // ─── Control-row icon toolbar — fit measurement ───────────────────────
+  // The four things that eat row width, watched by ONE ResizeObserver (see
+  // the `rowIconCount` effect below): the row itself, the left group, the
+  // fixed chunk of the right group (SUB/DUB + quality), and the two buttons
+  // that always cap its right end (⋯ + fullscreen).
+  const rowRef = useRef<HTMLDivElement>(null);
+  const leftGroupRef = useRef<HTMLDivElement>(null);
+  const fixedRightRef = useRef<HTMLDivElement>(null);
+  const fullscreenBtnRef = useRef<HTMLButtonElement>(null);
 
   // Stream state
   const [sources, setSources] = useState<StreamSource[]>([]);
@@ -520,7 +662,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const [currentQuality, setCurrentQuality] = useState<string>("auto");
   const [hlsLevels, setHlsLevels] = useState<{ index: number; height: number; name: string }[]>([]);
   const [playbackRate, setPlaybackRate] = useState(1);
-  const [showQualityPicker, setShowQualityPicker] = useState(false);
+  // ─── Row popovers — ONE slot for all seven (quality + the six pickers) ──
+  // `null` = nothing open. A single slot is what makes mutual exclusion free:
+  // opening one popover closes whatever was open, the ⋯ menu and this slot
+  // clear each other (see the ⋯ trigger and `togglePicker`), and Escape /
+  // click-outside only ever have one thing to test.
+  const [openPicker, setOpenPicker] = useState<MoreSection | "quality" | null>(null);
+  // Geometry for the open popover — measured against the player container the
+  // moment it opens (`togglePicker`) and refreshed by the fit effect's
+  // ResizeObserver, so the panel is always clamped to the room that actually
+  // exists on THIS player: portrait fullscreen phone or short windowed box.
+  const [pickerAnchor, setPickerAnchor] = useState<PickerAnchor | null>(null);
+  // Derived read of the slot for the quality trigger + its popover — the
+  // quality list keeps its identity, it just lives in the shared slot now.
+  const showQualityPicker = openPicker === "quality";
 
   // Subtitle state
   const [activeSubtitle, setActiveSubtitle] = useState<string | null>(null);
@@ -800,10 +955,14 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   }, []);
 
 
-  // "More" (⋯) overflow menu — holds every control the row hides at this
-  // width, plus the always-low-priority toggles (auto-play, auto-skip, FX).
+  // "More" (⋯) overflow menu — the always-present home for every control the
+  // row can't carry at this width: whatever the icon toolbar's fit dropped,
+  // the SUB/DUB copy below lg, and the toggles (auto play, auto skip, FX).
   // One open flag + one section flag: `null` = root list, otherwise the
-  // sub-page (provider / speed / …) inside the same popup.
+  // sub-page (provider / speed / …) inside the same popup. The row's picker
+  // icons do NOT come here — each opens its own anchored popover on the row
+  // over the SAME list component (`togglePicker` below); this menu stays the
+  // overflow home, and the two surfaces exclude each other.
   const [showMore, setShowMore] = useState(false);
   const [moreSection, setMoreSection] = useState<MoreSection | null>(null);
   // SHAPE modifier for the ⋯ menu, not a different shape: the popup is
@@ -815,9 +974,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // Read post-mount so the first render still matches the SSR output (the
   // menu starts closed, so there is nothing to flash).
   const [isCompact, setIsCompact] = useState(false);
-  // Mirror for the controls auto-hide timer (a []-deps effect reads this)
-  const moreOpenRef = useRef(showMore);
-  moreOpenRef.current = showMore;
+  // Mirror for the controls auto-hide timer ([]-deps effects read this):
+  // while EITHER overlay surface is open — the ⋯ menu or a row popover —
+  // the bar must not fade out from under it. The picker id rides along so
+  // the fit effect's re-measure knows which popover to re-clamp.
+  const surfaceOpenRef = useRef<{ more: boolean; picker: MoreSection | "quality" | null }>({
+    more: false,
+    picker: null,
+  });
+  surfaceOpenRef.current = { more: showMore, picker: openPicker };
   // Single way to dismiss the ⋯ menu (outside click, Escape, picking an
   // option) — always drops back to the root list for the next open.
   const closeMore = useCallback(() => {
@@ -831,6 +996,130 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     mq.addEventListener("change", sync);
     return () => mq.removeEventListener("change", sync);
   }, []);
+
+  // ─── Row popovers — open, toggle-close, and live re-clamping ───────────
+  // Every picker icon on the row opens its OWN popover anchored at that icon
+  // — the popup language quality has always used, now generalised — and the
+  // list inside is `PickerContent`, the exact component the ⋯ menu drills
+  // into, so each picker's list UI still exists exactly once.
+  //
+  // Semantics mirror the quality list: click the open icon again → close;
+  // click a different picker (or quality, or ⋯) → that one wins; click
+  // outside or Escape → everything closes. One `openPicker` slot carries all
+  // seven, so exclusion is a single state write everywhere.
+  const togglePicker = (id: MoreSection | "quality", trigger: HTMLElement) => {
+    if (openPicker === id) {
+      setOpenPicker(null); // the SAME icon again is the close gesture
+      return;
+    }
+    setOpenPicker(id);
+    // Measure now, while the trigger is where the user just clicked it: side
+    // + hard caps for this player's current geometry (see computePickerAnchor).
+    setPickerAnchor(
+      computePickerAnchor(
+        containerRef.current,
+        trigger,
+        id === "quality" ? QUALITY_POPOVER_W : PICKER_POPOVER_W
+      )
+    );
+    // Mutual exclusion both ways: opening a popover drops the ⋯ menu, and
+    // never open one on a bar that's about to fade.
+    closeMore();
+    setShowControls(true);
+  };
+
+  // Re-measure the open popover (fullscreen toggle, window resize, the fit
+  // effect's ResizeObserver) — equality-guarded, so an unchanged measurement
+  // can't feed a re-render back into the observer.
+  const refreshPickerAnchor = useCallback(() => {
+    const id = surfaceOpenRef.current.picker;
+    if (id === null) return;
+    const wrap = id === "quality" ? qualityWrapRef.current : pickerWrapRefs.current[id];
+    const trigger = (wrap?.firstElementChild as HTMLElement | null) ?? wrap;
+    if (!trigger) return;
+    const next = computePickerAnchor(
+      containerRef.current,
+      trigger,
+      id === "quality" ? QUALITY_POPOVER_W : PICKER_POPOVER_W
+    );
+    setPickerAnchor((prev) =>
+      prev && prev.side === next.side && prev.maxW === next.maxW && prev.maxH === next.maxH
+        ? prev
+        : next
+    );
+  }, []);
+
+  // ─── Icon toolbar fit — highest-priority icons that actually fit ───────
+  // `rowIconCount` is how many entries of ROW_ICON_PRIORITY get to render as
+  // icon-only buttons on the control row; the rest of that priority list
+  // stays in the ⋯ menu (always present), so the row NEVER wraps, scrolls or
+  // overflows. Starts at 0 — the first client measurement lands right after
+  // mount and fills it in, so SSR and hydration always agree.
+  //
+  // The mechanism is measurement, not breakpoints: one ResizeObserver on the
+  // four width consumers (row, left group, fixed right chunk, ⋯ + fullscreen
+  // buttons) recomputes the leftover width whenever ANY of them changes —
+  // windowed↔fullscreen, a window resize, the duration read-out gaining a
+  // digit, or the volume slider expanding on hover all arrive as plain width
+  // changes. The arithmetic can't feed back on itself: the row is `w-full`
+  // and the left group's width never depends on the icons, so the count only
+  // ever settles on a new integer (setRowIconCount no-ops when unchanged) —
+  // no thrash, no loop. Windowed fullscreening the <html> element changes
+  // the row's width, which the observer sees; the fullscreen BUTTON appearing
+  // is covered by the `isFullscreen` dep re-running the setup.
+  const [rowIconCount, setRowIconCount] = useState(0);
+  useEffect(() => {
+    const measure = () => {
+      const row = rowRef.current;
+      const left = leftGroupRef.current;
+      const fixed = fixedRightRef.current;
+      const more = moreBtnRef.current;
+      const fs = fullscreenBtnRef.current;
+      if (!row || !left || !fixed || !more) return;
+      const rowW = row.getBoundingClientRect().width;
+      if (rowW <= 0) return;
+      // Server has no icon when there is no server to pick.
+      const candidates = ROW_ICON_PRIORITY.filter(
+        (id) => id !== "server" || availableServers.length > 0
+      ).length;
+      const iconBtnW = isCompact ? 36 : 32; // w-9 → sm:w-8, the ⋯ button's own widths
+      const gap = 6; // gap-1.5, the right group's internal gap
+      const rowGap = isCompact ? 8 : 24; // gap-2 → sm:gap-6, left↔right group
+      const children = 3 + (fs ? 1 : 0); // fixed chunk, icons, ⋯, [fullscreen]
+      const slack = 8; // breathing room — when in doubt, an icon drops out
+      const avail =
+        rowW -
+        left.getBoundingClientRect().width -
+        fixed.getBoundingClientRect().width -
+        more.getBoundingClientRect().width -
+        (fs ? fs.getBoundingClientRect().width : 0) -
+        rowGap -
+        gap * children - // budgeted one gap MORE than the real gaps
+        slack;
+      const n = Math.max(0, Math.min(candidates, Math.floor(avail / (iconBtnW + gap))));
+      setRowIconCount((prev) => (prev === n ? prev : n));
+      // A fit change that drops the OPEN popover's own icon closes it: its
+      // trigger just unmounted, so the panel has nothing to hang from — and
+      // the auto-hide must not stay suppressed by an invisible surface.
+      // (Quality can't drop; it is fixed on the row at every width.)
+      const openId = surfaceOpenRef.current.picker;
+      if (openId !== null && openId !== "quality") {
+        const idx = ROW_ICON_PRIORITY.indexOf(openId);
+        const gone = idx < 0 || idx >= n || (openId === "server" && availableServers.length === 0);
+        if (gone) setOpenPicker(null);
+      }
+      // While a row popover is open, this same width change may have moved
+      // its trigger (fullscreen toggle, window resize) — re-clamp the panel
+      // to the new room so it can't go stale and cross the player's frame.
+      refreshPickerAnchor();
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    for (const el of [rowRef.current, leftGroupRef.current, fixedRightRef.current, moreBtnRef.current, fullscreenBtnRef.current]) {
+      if (el) ro.observe(el);
+    }
+    return () => ro.disconnect();
+  }, [isCompact, isFullscreen, availableServers.length, refreshPickerAnchor]);
 
   // Episode drawer — Netflix-style panel sliding in from the right, over the
   // video. Two flags: `drawerOpen` marks it open (or in its exit transition),
@@ -1052,11 +1341,6 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const prefsKeyRef = useRef(prefsKeyFor(anilistId, animeTitle));
   prefsKeyRef.current = prefsKeyFor(anilistId, animeTitle);
   /**
-   * Last subtitle LANG the viewer had selected. Kept so switching subtitles
-   * OFF (activeSubtitle -> null) doesn't forget which track to come back to.
-   */
-  const subtitleLangRef = useRef<string | null>(null);
-  /**
    * `loadedmetadata` can fire again when a stream is re-attached (server
    * failover, retry), and re-hydrating then would stomp a setting the viewer
    * just changed mid-episode. Hydrate the per-anime settings exactly once per
@@ -1075,6 +1359,36 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
    * stream has no such level the picker falls back to auto.
    */
   const pendingQualityRef = useRef<string | null>(null);
+
+  /**
+   * Per-anime PROVIDER override — the one per-anime field that hydrates at
+   * MOUNT, not at loadedmetadata: the stream-load effect starts as soon as
+   * the page renders, so the stored override must be in state before that
+   * first load (or at worst one aborted fetch after it). One-shot per show
+   * key; the write side sits just below. Show B never sees Show A's value —
+   * the key is per-anime, so a show without a stored override simply starts
+   * from the page's `providerId` prop.
+   */
+  const providerHydratedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = prefsKeyRef.current;
+    if (providerHydratedKeyRef.current === key) return;
+    providerHydratedKeyRef.current = key;
+    const stored = readPrefsByKey(key)?.providerId;
+    // `null` (the mount default) is also the "use the page default" value,
+    // so writing it back is a no-op bail in React when nothing is stored.
+    setProviderOverride(typeof stored === "string" && stored ? stored : null);
+  }, [anilistId, animeTitle]);
+
+  // Write side: any non-null override the viewer lands on (control-bar
+  // dropdown, error overlay) becomes this show's stored value. Hydration
+  // re-triggering this with the value it just read is skipped, so a reload
+  // doesn't bump the bucket's timestamp.
+  useEffect(() => {
+    if (!providerOverride) return;
+    if (readPrefsByKey(prefsKeyRef.current)?.providerId === providerOverride) return;
+    writePrefsByKey(prefsKeyRef.current, { providerId: providerOverride });
+  }, [providerOverride]);
 
   // ─── Playback progress persistence ────────────────────
   const storageKey = useMemo(
@@ -1339,14 +1653,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 name: qualityLabel(l, i),
               }));
               setHlsLevels(levels);
-              // Re-apply the per-anime quality preference now that this
+              // Re-apply the remembered quality preference now that this
               // stream's REAL levels are known. `pendingQualityRef` covers the
               // case where metadata hasn't hydrated prefs yet (MANIFEST_PARSED
-              // can beat loadedmetadata); the direct read covers the reverse.
-              // A remembered quality that this stream doesn't carry falls back
-              // to auto instead of sticking the picker on a missing entry.
+              // can beat loadedmetadata — which is also why the legacy
+              // per-anime field is still read here: migration may not have
+              // run yet); the direct reads cover the reverse. A remembered
+              // quality that this stream doesn't carry falls back to auto
+              // instead of sticking the picker on a missing entry.
               const wanted =
-                pendingQualityRef.current ?? readPrefsByKey(prefsKeyRef.current)?.quality;
+                pendingQualityRef.current ??
+                readSettings()?.quality ??
+                readLegacyPrefs(prefsKeyRef.current)?.quality;
               pendingQualityRef.current = null;
               const known = wanted === "auto" || levels.some((l) => l.name === wanted);
               const chosen = known && wanted ? wanted : "auto";
@@ -1841,64 +2159,125 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
   }, [saveProgress]);
 
-  // ─── Auto-set initial subtitle track (once per stream load) ──
+  // ─── Initial subtitle auto-select (one-shot per stream) ──
+  // Pre-feature chain: remembered lang → English → first, honouring the
+  // `subtitles === false` OFF veto. The stored `"auto"` sentinel (written by
+  // the since-removed Auto mode) is ignored — it falls through to the
+  // default chain instead of being lang-matched. One-shot: the ref is reset
+  // per stream by the stream-load effect above; tracks that arrive later
+  // (OpenSubtitles download, the dub AI sub) do NOT re-trigger selection —
+  // the viewer owns the track after this point.
   const hasSetInitialSubRef = useRef(false);
   useEffect(() => {
     if (hasSetInitialSubRef.current) return;
-    if (subtitles.length > 0) {
+    const prefs = readPrefsByKey(prefsKeyRef.current);
+    const global = readSettings();
+    // OFF veto — the per-anime override wins, else the global default.
+    if ((prefs?.subtitles ?? global?.subtitles) === false) {
       hasSetInitialSubRef.current = true;
-      const prefs = readPrefsByKey(prefsKeyRef.current);
-      // Subtitles were switched OFF for this anime → honour that and leave
-      // the track unset instead of force-enabling English.
-      if (prefs?.subtitles === false) return;
-      // Remembered track, matched by LANG (URLs are per-stream). Falls back
-      // to English, then to whatever the first track is.
-      const want = (prefs?.subtitleLang || subtitleLangRef.current || "").toLowerCase();
-      const remembered = want ? subtitles.find((s) => s.lang.toLowerCase() === want) : undefined;
-      const en = subtitles.find((s) => s.lang.toLowerCase().includes("en"));
-      const chosen = remembered || en || subtitles[0];
-      subtitleLangRef.current = chosen.lang;
-      setActiveSubtitle(chosen.url);
+      return; // leave the track unset
     }
-  }, [subtitles]);
+    if (subtitles.length === 0) return; // wait for the track list
+    hasSetInitialSubRef.current = true;
+    // Remembered lang — the per-anime override wins, else the global default.
+    const want = (prefs?.subtitleLang ?? global?.subtitleLang ?? "").toLowerCase();
+    const remembered = want && want !== "auto"
+      ? subtitles.find((s) => s.lang.toLowerCase() === want)
+      : undefined;
+    const resolved =
+      remembered ||
+      subtitles.find((s) => s.lang.toLowerCase().includes("en")) ||
+      subtitles[0];
+    // Apply in a microtask (lint-clean); the cleanup cancels it if the
+    // stream changes before it lands.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setActiveSubtitle(resolved.url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [subtitles, anilistId, animeTitle, episodeNumber, audioType]);
 
-  // ─── Persist the per-anime viewer settings ─────────────────
-  // One writer for every setting the ⋯ menu exposes. `handleLoadedMetadata`
-  // hydrates them above; this mirrors them back out. The first run is skipped
-  // because at mount the state is still the DEFAULTS, and writing those would
-  // clobber the very prefs hydration is about to read (it runs later, on the
-  // media event, and re-fires this effect once it has applied them).
+  // ─── Subtitle selection handler + dual-write persistence ──
+  // Every subtitle CONTROL (track/off in either picker, the `c` shortcut,
+  // offset/size, an OpenSubtitles download) dual-writes: the GLOBAL bucket
+  // keeps the default for future shows, the PER-ANIME bucket pins it to the
+  // show you're on. Only the fields the control actually changed are written
+  // — a whole-group write would copy THIS show's auto-selected lang into the
+  // global default and break every other show's remembered lang.
+  // `undefined` values are dropped by JSON.stringify, so a patch can never
+  // accidentally clear a stored field.
+  const persistSubtitles = useCallback((patch: {
+    subtitles?: boolean;
+    subtitleLang?: string;
+    subtitleOffset?: number;
+    subtitleSize?: "small" | "medium" | "large";
+  }) => {
+    writeSettings(patch);
+    writePrefsByKey(prefsKeyRef.current, patch);
+  }, []);
+
+  const pickSubtitle = useCallback((url: string | null) => {
+    setActiveSubtitle(url);
+    setActiveOSSubtitleId(null);
+    if (url === null) {
+      // OFF: the lang fields are left alone in both tiers, so re-enabling
+      // restores the last track; only the visibility flag flips.
+      persistSubtitles({ subtitles: false });
+    } else {
+      const lang = subtitles.find((s) => s.url === url)?.lang;
+      persistSubtitles({ subtitles: true, ...(lang ? { subtitleLang: lang } : {}) });
+    }
+  }, [persistSubtitles, subtitles]);
+
+  // Offset / size controls — same dual-write, one field at a time. The two
+  // wiring sites used to pass the raw setters; these wrap them for persistence.
+  const changeSubtitleOffset = useCallback((offset: number) => {
+    setSubtitleOffset(offset);
+    persistSubtitles({ subtitleOffset: offset });
+  }, [persistSubtitles]);
+
+  const changeSubtitleSize = useCallback((size: "small" | "medium" | "large") => {
+    setSubtitleSize(size);
+    persistSubtitles({ subtitleSize: size });
+  }, [persistSubtitles]);
+
+  // ─── Persist the viewer settings (split by scope) ─────────
+  // Global-only fields (quality, toggles, filters) → `n54tv-settings`;
+  // per-anime fields (sub/dub) → the show's bucket. The SUBTITLE fields are
+  // NOT written here: they persist from their controls (the dual-write
+  // above), because an effect write would echo the auto-selected track back
+  // into both buckets and clobber the global lang default for every other
+  // show. The provider override has its own write effect by the store.
+  //
+  // The first run is skipped because at mount the state is still the DEFAULTS
+  // (prefsSkipFirstWriteRef) — and the window extends until hydration has
+  // actually merged + applied the stored values (prefsHydratedRef): effects
+  // like the subtitle auto-select can change state before loadedmetadata,
+  // and echoing those values out early would hand migration a gutted bucket.
+  // Once hydration has applied them, re-fires write the same values back —
+  // an idempotent mirror.
   useEffect(() => {
     if (prefsSkipFirstWriteRef.current) {
       prefsSkipFirstWriteRef.current = false;
       return;
     }
-    const track = subtitles.find((s) => s.url === activeSubtitle);
-    // Remember the last real track so toggling subtitles OFF doesn't forget
-    // which language to restore later; `undefined` is dropped by
-    // JSON.stringify, so the stored label survives an off-state write.
-    if (track) subtitleLangRef.current = track.lang;
-    writePrefsByKey(prefsKeyRef.current, {
+    if (!prefsHydratedRef.current) return;
+    writeSettings({
+      quality: currentQuality,
       autoPlayNext,
       autoSkip: autoSkipEnabled,
-      audioType,
-      quality: currentQuality,
-      subtitles: activeSubtitle !== null,
-      subtitleLang: subtitleLangRef.current ?? undefined,
-      subtitleOffset,
-      subtitleSize,
       videoFilter,
       audioFilter,
     });
+    writePrefsByKey(prefsKeyRef.current, { audioType });
   }, [
     autoPlayNext,
     autoSkipEnabled,
     audioType,
     currentQuality,
-    activeSubtitle,
-    subtitles,
-    subtitleOffset,
-    subtitleSize,
     videoFilter,
     audioFilter,
   ]);
@@ -1938,15 +2317,16 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (blob.size < 50) return;
 
         const url = URL.createObjectURL(blob);
-        // Add to subtitles list right at the top (after Off)
+        // Add to subtitles list at the top. We do NOT select it here — the
+        // one-shot auto-select above has already run for this stream, and a
+        // viewer hand-pick is never overridden; the track simply becomes
+        // available in the picker (and for the next episode's one-shot).
         const aiLabel = `English (AI)`;
         setSubtitles((prev) => {
           // Don't duplicate if already present
           if (prev.some((s) => s.url === url)) return prev;
           return [{ url, lang: aiLabel }, ...prev];
         });
-        setActiveSubtitle(url);
-        setActiveOSSubtitleId(best.file_id);
         // Mark as searched so user can see results in picker
         setOsSearched(true);
         setOsResults(results);
@@ -2023,24 +2403,28 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         URL.revokeObjectURL(activeSubtitle);
       }
 
+      // The viewer picked this track by hand.
       setActiveSubtitle(url);
       // Track which OS subtitle is active
       setActiveOSSubtitleId(fileId);
+      // A blob URL isn't in the stream's track list, so there's no stable
+      // lang label to remember — only flip visibility in both tiers.
+      persistSubtitles({ subtitles: true });
       closeMore();
     } catch (e) {
       setOsDownloadError(e instanceof Error ? e.message : "Download failed");
       failedOSIdsRef.current.add(fileId);
     }
-  }, [activeSubtitle, closeMore]);
+  }, [activeSubtitle, closeMore, persistSubtitles]);
 
   // ─── Controls auto-hide ────────────────────────────────
   const resetControlsTimer = useCallback(() => {
     setShowControls(true);
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     controlsTimerRef.current = setTimeout(() => {
-      // The ⋯ menu parks right above the control bar — never yank the bar
-      // out from under an open menu.
-      if (playingRef.current && !moreOpenRef.current) setShowControls(false);
+      // The ⋯ menu and the row popovers park right above the control bar —
+      // never yank the bar out from under an open surface.
+      if (playingRef.current && !surfaceOpenRef.current.more && surfaceOpenRef.current.picker === null) setShowControls(false);
     }, 3000);
   }, []);
 
@@ -2052,7 +2436,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     if (showControlsRef.current) {
       controlsTimerRef.current = setTimeout(() => {
-        if (playingRef.current && !moreOpenRef.current) setShowControls(false);
+        if (playingRef.current && !surfaceOpenRef.current.more && surfaceOpenRef.current.picker === null) setShowControls(false);
       }, 3000);
     }
     return () => {
@@ -2072,7 +2456,15 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           !moreDismissRef.current?.contains(t)) {
         closeMore();
       }
-      if (showQualityPicker && qualityWrapRef.current && !qualityWrapRef.current.contains(t)) setShowQualityPicker(false);
+      // Row popovers: the open one's wrapper (trigger + panel as one unit)
+      // is the "inside" — clicking the open trigger again reaches its own
+      // toggle-close, clicking anything else drops the popover. Exactly how
+      // the quality list has always behaved; now all seven share it.
+      if (openPicker) {
+        const wrap =
+          openPicker === "quality" ? qualityWrapRef.current : pickerWrapRefs.current[openPicker];
+        if (wrap && !wrap.contains(t)) setOpenPicker(null);
+      }
       // Drawer's franchise dropdown: the trigger's wrapper counts as inside
       // (the trigger toggles it itself — exposing it would close-then-reopen
       // on the same tap). The drawer's own backdrop click closes the drawer,
@@ -2083,7 +2475,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     };
     document.addEventListener("pointerdown", closeIfOutside);
     return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [showMore, showQualityPicker, franchiseOpen, closeMore]);
+  }, [showMore, openPicker, franchiseOpen, closeMore]);
 
   // ─── Handlers ──────────────────────────────────────────
   const handleTimeUpdate = useCallback(() => {
@@ -2164,45 +2556,77 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       syncContentAspect();
       // Restore saved preferences.
       //
-      // Device-level things (volume / mute / speed) stay on the per-episode
-      // progress blob — they're the same on every show. The VIEWER SETTINGS
-      // come from the per-anime bucket, which wins outright; the episode blob
-      // is only a fallback for settings saved under the old per-episode
-      // scheme, so nobody loses what they'd already picked.
+      // Volume / mute / speed are GLOBAL (n54tv-settings) — they follow the
+      // viewer across every show, and the per-episode progress blob's copies
+      // (which `saveProgress` still writes, harmlessly) are only a legacy
+      // fallback for when the global field is absent. Everything else is the
+      // two-tier view: the per-anime bucket may pin a subtitle override,
+      // migration fills/strips the rest, and the merged result is applied
+      // once below.
       const saved = restoreProgress();
-      if (saved) {
-        videoRef.current.volume = saved.volume ?? 1;
-        setVolume(saved.volume ?? 1);
-        videoRef.current.muted = saved.muted ?? false;
-        setMuted(saved.muted ?? false);
-        videoRef.current.playbackRate = saved.speed ?? 1;
-        setPlaybackRate(saved.speed ?? 1);
-        playbackRateRef.current = saved.speed ?? 1;
+      const global = readSettings();
+      const vol = global?.volume ?? saved?.volume;
+      if (vol !== undefined) {
+        videoRef.current.volume = vol;
+        setVolume(vol);
+      }
+      const mutedNow = global?.muted ?? saved?.muted;
+      if (mutedNow !== undefined) {
+        videoRef.current.muted = mutedNow;
+        setMuted(mutedNow);
+      }
+      const rate = global?.speed ?? saved?.speed;
+      if (rate !== undefined) {
+        videoRef.current.playbackRate = rate;
+        setPlaybackRate(rate);
+        playbackRateRef.current = rate;
       }
       // Once per episode: `loadedmetadata` re-fires on stream re-attach, and
       // re-applying then would undo a toggle the viewer just flipped.
       if (!prefsHydratedRef.current) {
         prefsHydratedRef.current = true;
-        const prefs = readPrefsByKey(prefsKeyRef.current);
+        const prefs = readLegacyPrefs(prefsKeyRef.current);
+        // One-shot migration: seeds the global bucket from this show's legacy
+        // per-anime prefs + the episode blob (when the global bucket is
+        // absent), fills any fields it never got, then strips the pure-global
+        // fields out of this show's bucket. Runs BEFORE the reads below so
+        // they see the post-strip world.
+        migrateIntoGlobal({
+          animeKey: prefsKeyRef.current,
+          prefs,
+          legacy: saved
+            ? { volume: saved.volume, muted: saved.muted, speed: saved.speed }
+            : null,
+        });
+        // Fresh read — migration may have just created/filled the bucket.
+        const store = readSettings();
         const pick = <T,>(next: T | undefined, prev: T | undefined): T | undefined =>
           next !== undefined ? next : prev;
-        const skip = pick(prefs?.autoSkip, saved?.autoSkip);
+        // Global wins; the episode blob is the legacy fallback for buckets
+        // saved before the global store existed; per-anime leftovers (strip
+        // failed / private mode) sit last.
+        const skip = pick(store?.autoSkip, pick(saved?.autoSkip, prefs?.autoSkip));
         if (skip !== undefined) setAutoSkipEnabled(skip);
-        const playNext = pick(prefs?.autoPlayNext, saved?.autoPlayNext);
+        const playNext = pick(store?.autoPlayNext, pick(saved?.autoPlayNext, prefs?.autoPlayNext));
         if (playNext !== undefined) setAutoPlayNext(playNext);
-        const offset = pick(prefs?.subtitleOffset, saved?.subtitleOffset);
+        const offset = pick(store?.subtitleOffset, pick(saved?.subtitleOffset, prefs?.subtitleOffset));
         if (typeof offset === "number") setSubtitleOffset(offset);
-        const size = pick(prefs?.subtitleSize, saved?.subtitleSize);
+        const size = pick(store?.subtitleSize, pick(saved?.subtitleSize, prefs?.subtitleSize));
         if (size === "small" || size === "medium" || size === "large") setSubtitleSize(size);
-        const filter = pick(prefs?.videoFilter, saved?.videoFilter);
+        const filter = pick(store?.videoFilter, pick(saved?.videoFilter, prefs?.videoFilter));
         if (filter && FILTER_PRESETS.some((f) => f.id === filter)) setVideoFilter(filter);
-        // Audio filter is new, so only the per-anime bucket can carry it —
-        // and like the video filter, only a known id is ever adopted.
-        const audio = prefs?.audioFilter;
-        if (audio && AUDIO_FILTER_PRESETS.some((f) => f.id === audio)) setAudioFilter(audio);
+        // Like the video filter, only a known id is ever adopted — the
+        // `some` guard is the narrowing (the stored type is a plain string,
+        // same as the global bucket). The global bucket is the first-class
+        // home now; per-anime leftovers still read as a legacy fallback.
+        const audio = pick(store?.audioFilter, prefs?.audioFilter);
+        if (audio && AUDIO_FILTER_PRESETS.some((f) => f.id === audio)) {
+          setAudioFilter(audio as AudioFilterId);
+        }
         // Quality can only be applied once the real HLS levels are known —
         // MANIFEST_PARSED does that. Remember the wanted name for it.
-        if (prefs?.quality) pendingQualityRef.current = prefs.quality;
+        const quality = store?.quality ?? prefs?.quality;
+        if (quality) pendingQualityRef.current = quality;
       }
     }
   };
@@ -2230,6 +2654,26 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     }
   };
 
+  // ─── Persist device settings (speed / volume / mute) ─────
+  // Global bucket only — these follow the viewer across every show, so the
+  // progress blob's copies (still written by saveProgress) are just the
+  // legacy read fallback. Speed and mute persist on their discrete handlers;
+  // the volume SLIDER fires per tick, so its writes coalesce into one flush
+  // ~350ms after the last tick (patch buffer + timer below). Hydration never
+  // feeds these — it only applies stored values, it never echoes them back.
+  const devicePatchRef = useRef<Partial<GlobalSettings>>({});
+  const deviceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistDevice = useCallback((patch: Partial<GlobalSettings>) => {
+    devicePatchRef.current = { ...devicePatchRef.current, ...patch };
+    if (deviceTimerRef.current) clearTimeout(deviceTimerRef.current);
+    deviceTimerRef.current = setTimeout(() => {
+      deviceTimerRef.current = null;
+      const out = devicePatchRef.current;
+      devicePatchRef.current = {};
+      writeSettings(out);
+    }, 350);
+  }, []);
+
   const handleVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
     if (videoRef.current) {
@@ -2237,6 +2681,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       videoRef.current.muted = v === 0;
       setVolume(v);
       setMuted(v === 0);
+      persistDevice({ volume: v, muted: v === 0 });
     }
   };
 
@@ -2244,6 +2689,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     if (!videoRef.current) return;
     videoRef.current.muted = !videoRef.current.muted;
     setMuted(videoRef.current.muted);
+    persistDevice({ muted: videoRef.current.muted });
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2310,10 +2756,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     cancelDrawerSlide();
     franchiseOnScrimRef.current = false;
     // Opening a surface drops the others — the same set the ⋯ trigger clears
-    // when it opens: a control-bar picker left open underneath would reappear
-    // the moment the drawer closes, and the drawer is the modal now. No-ops
-    // (false → false) in the normal flow, so the usual path stays put.
-    setShowQualityPicker(false);
+    // when it opens: a row popover left open underneath would reappear the
+    // moment the drawer closes, and the drawer is the modal now. No-ops
+    // (null → null) in the normal flow, so the usual path stays put.
+    setOpenPicker(null);
     setDrawerOpen(true);
     // The panel is already in the DOM (closed, off-screen); slide it in on
     // the next frame so the browser has a style to transition from. Each
@@ -2477,7 +2923,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   const changeQuality = (q: string) => {
     // Dismiss the row dropdown on any pick (same-value clicks too) — the
     // menu drill used to close itself via closeMore(); this is its twin.
-    setShowQualityPicker(false);
+    setOpenPicker(null);
     // No change needed if already at this quality
     if (q === currentQuality) return;
 
@@ -2509,6 +2955,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     if (videoRef.current) {
       videoRef.current.playbackRate = rate;
     }
+    // Discrete handler (preset click) — write immediately.
+    writeSettings({ speed: rate });
   };
 
   // Keyboard speed steps (shift+, / shift+.): ±0.25, clamped to 0.25–4.
@@ -2519,6 +2967,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     playbackRateRef.current = next;
     setPlaybackRate(next);
     if (videoRef.current) videoRef.current.playbackRate = next;
+    // Discrete handler (one keypress = one step) — write immediately.
+    writeSettings({ speed: next });
   };
 
   // ─── Pick a streaming provider (control-bar dropdown) ───────
@@ -2798,23 +3248,28 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           e.preventDefault();
           video.muted = !video.muted;
           setMuted(video.muted);
+          persistDevice({ muted: video.muted });
           resetControlsTimer();
           break;
         // c — subtitles on/off. Only when a track exists (no-op otherwise);
-        // repeat-guarded so a held key can't flicker the track. Both visible
-        // states read activeSubtitle — the ⋯ row's On/Off value and the
-        // picker's highlight — so they follow with no extra wiring. Turning
-        // it back on prefers English, same as the per-stream auto-select.
+        // repeat-guarded so a held key can't flicker the track. Turning back
+        // ON re-applies the default chain (English → first). Both branches
+        // dual-write through `persistSubtitles` like every subtitle control.
         // The handler's deps re-subscribe on subtitle changes, so these
         // values are never stale inside the []-style closure.
         case 'c':
           e.preventDefault();
           if (!e.repeat && subtitles.length > 0) {
-            setActiveSubtitle(
-              activeSubtitle
-                ? null
-                : (subtitles.find((s) => s.lang.toLowerCase().includes("en")) ?? subtitles[0]).url
-            );
+            if (activeSubtitle) {
+              setActiveSubtitle(null);
+              persistSubtitles({ subtitles: false });
+            } else {
+              const fallback =
+                subtitles.find((s) => s.lang.toLowerCase().includes("en")) ||
+                subtitles[0];
+              setActiveSubtitle(fallback.url);
+              persistSubtitles({ subtitles: true, subtitleLang: fallback.lang });
+            }
           }
           break;
         case 'ArrowLeft':
@@ -2838,7 +3293,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           video.volume = nv;
           video.muted = false;
           setVolume(nv);
-          setMuted(false); }
+          setMuted(false);
+          persistDevice({ volume: nv, muted: false }); }
           resetControlsTimer();
           break;
         case 'ArrowDown':
@@ -2847,7 +3303,8 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           video.volume = nv;
           video.muted = nv === 0;
           setVolume(nv);
-          setMuted(nv === 0); }
+          setMuted(nv === 0);
+          persistDevice({ volume: nv, muted: nv === 0 }); }
           resetControlsTimer();
           break;
         case 'Escape':
@@ -2859,7 +3316,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           }
           setCountdown(null);
           closeMore();
-          setShowQualityPicker(false);
+          setOpenPicker(null);
           closeDrawer();
           break;
         // speed steps are handled above via e.code (shift + ,/.)
@@ -2892,10 +3349,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
     };
-    // Subtitle state is a dep so the `c` handler reads the current track
-    // (everything else in here is refs/stable setters).
+    // Subtitle state is a dep so the `c` handler reads the current track;
+    // persistSubtitles/persistDevice are stable useCallbacks used by the `c`,
+    // `m` and volume-key branches (everything else in here is refs/stable
+    // setters).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subtitles, activeSubtitle]);
+  }, [subtitles, activeSubtitle, persistSubtitles, persistDevice]);
 
   // ─── ⋯ "More" menu ──────────────────────────────────────────────────────
   // The panel never picks its own spot: `PlayerMoreMenu` computes the anchor
@@ -2904,6 +3363,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // the player's frame. Below is the slice of live state the menu renders —
   // state, refs and effects stay here; the markup lives in PlayerMoreMenu.
   const providerCurrent = providerOverride ?? providerId ?? "";
+  // The active provider's display name — one string, used by BOTH the ⋯
+  // menu's Provider row and the row icon's tooltip.
+  const providerValue = PROVIDER_OPTIONS.find((p) => p.id === providerCurrent)?.label ?? "Auto";
   const moreMenu = (
     <PlayerMoreMenu
       wrapRef={moreWrapRef}
@@ -2917,9 +3379,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       onSwitchAudioType={switchAudioType}
       providerOptions={PROVIDER_OPTIONS}
       providerCurrent={providerCurrent}
-      providerValue={
-        PROVIDER_OPTIONS.find((p) => p.id === providerCurrent)?.label ?? "Auto"
-      }
+      providerValue={providerValue}
       availableServers={availableServers}
       activeServer={activeServer}
       speedOptions={speedOptions}
@@ -2933,6 +3393,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       onToggleAutoPlayNext={() => setAutoPlayNext(!autoPlayNext)}
       autoSkipEnabled={autoSkipEnabled}
       onToggleAutoSkip={() => setAutoSkipEnabled(!autoSkipEnabled)}
+      // Inline arrows on purpose (same shape the row popovers' PickerContent
+      // block below mirrors): the compiler's ref rules flag handler FACTORIES
+      // but accept these, and each pick performs the SAME mutation on both
+      // surfaces — only the dismissed surface differs. Keep the popover's
+      // twin block in sync with this one.
       onSelectProvider={(id) => { selectProvider(id); closeMore(); }}
       onSelectServer={(srv) => {
         setActiveServer(srv);
@@ -2954,17 +3419,20 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         activeSubtitle,
         subtitles,
         onSelect: (url) => {
-          setActiveSubtitle(url);
-          setActiveOSSubtitleId(null);
+          pickSubtitle(url);
           closeMore();
         },
         subtitleOffset,
-        onOffsetChange: setSubtitleOffset,
+        onOffsetChange: changeSubtitleOffset,
         subtitleSize,
-        onSizeChange: setSubtitleSize,
+        onSizeChange: changeSubtitleSize,
         osSearched,
         osLoading,
         osError,
+        // Render-phase failedOSIdsRef read: the Set only ever mutates from
+        // click handlers, so it is stable within a pass — the pre-existing
+        // shape of this prop, before the row popovers shared the list.
+        // eslint-disable-next-line react-hooks/refs
         osResults: osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id)),
         osPage,
         osFilterQuery,
@@ -2985,6 +3453,99 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       }}
     />
   );
+
+  // ─── Control-row icon toolbar — the ⋯ menu's options, surfaced ──────────
+  // Every entry is EITHER a direct toggle (the two auto flags — the very
+  // state the menu rows flip, so there is one source of truth) OR a picker
+  // whose OWN popover opens right there on the row (`togglePicker` above),
+  // showing the same `PickerContent` list the ⋯ menu drills into. Quality is
+  // the seventh popover — same slot, same anchoring, same click-outside and
+  // Escape handling (see the quality trigger below). Titles/aria-labels
+  // carry the current value, so an icon-only button never leaves you guessing.
+  const rowIconCls = (on: boolean) =>
+    `w-9 h-10 shrink-0 sm:w-8 sm:h-8 flex items-center justify-center border transition-colors rounded-none ${
+      on
+        ? "text-[var(--accent)] bg-[var(--accent)]/20 border-[var(--accent)]/50"
+        : "text-[var(--accent)]/50 bg-black/40 border-[var(--accent)]/20 hover:text-[var(--accent)] hover:border-[var(--accent)]/50"
+    }`;
+  const rowIconGlyph = "w-5 h-5 sm:w-4 sm:h-4";
+  // Descriptors in ROW_ICON_PRIORITY order — the fit effect's slice(0, n)
+  // takes the FIRST n, so this array must stay in that exact order.
+  const rowIcons: {
+    id: RowIconId;
+    label: string;
+    title: string;
+    icon: ReactNode;
+    /** Present → it is a toggle (`aria-pressed`); absent → `picker` opens. */
+    pressed?: boolean;
+    toggle?: () => void;
+    /** Opens this picker's OWN anchored popover on the row (`togglePicker`). */
+    picker?: MoreSection;
+  }[] = [
+    {
+      id: "subs",
+      label: "Subtitles",
+      title: `Subtitles: ${activeSubtitle ? "On" : "Off"}`,
+      icon: <SubtitleIcon className={rowIconGlyph} />,
+      picker: "subs",
+    },
+    {
+      id: "speed",
+      label: "Speed",
+      title: `Speed: ${playbackRate}x`,
+      icon: <SpeedIcon className={rowIconGlyph} />,
+      picker: "speed",
+    },
+    // Same condition as the ⋯ menu's Server row: no servers, no icon.
+    ...(availableServers.length > 0
+      ? [
+          {
+            id: "server" as const,
+            label: "Server",
+            title: `Server: ${activeServer || "Auto"}`,
+            icon: <ServerIcon className={rowIconGlyph} />,
+            picker: "server" as const,
+          },
+        ]
+      : []),
+    {
+      id: "autoSkip",
+      label: "Auto Skip",
+      title: `Auto Skip: ${autoSkipEnabled ? "On" : "Off"}`,
+      icon: <Forward10Icon className={rowIconGlyph} />,
+      pressed: autoSkipEnabled,
+      toggle: () => setAutoSkipEnabled(!autoSkipEnabled),
+    },
+    {
+      id: "autoPlay",
+      label: "Auto Play",
+      title: `Auto Play: ${autoPlayNext ? "On" : "Off"}`,
+      icon: <PlayIcon className={rowIconGlyph} />,
+      pressed: autoPlayNext,
+      toggle: () => setAutoPlayNext(!autoPlayNext),
+    },
+    {
+      id: "provider",
+      label: "Provider",
+      title: `Provider: ${providerValue}`,
+      icon: <GlobeIcon className={rowIconGlyph} />,
+      picker: "provider",
+    },
+    {
+      id: "filter",
+      label: "Filter",
+      title: `Filter: ${FILTER_MENU_OPTIONS.find((f) => f.id === videoFilter)?.label ?? "Off"}`,
+      icon: <VideoFilterIcon className={rowIconGlyph} />,
+      picker: "filter",
+    },
+    {
+      id: "audio",
+      label: "Audio",
+      title: `Audio: ${AUDIO_FILTER_MENU_OPTIONS.find((f) => f.id === audioFilter)?.label ?? "Off"}`,
+      icon: <AudioFilterIcon className={rowIconGlyph} />,
+      picker: "audio",
+    },
+  ];
 
   return (
     <div className="w-full">
@@ -3018,7 +3579,9 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
         if (next && containerRef.current && !containerRef.current.contains(next)) {
-          setShowQualityPicker(false);
+          // Focus left the player entirely — drop whatever row popover was
+          // open (the old quality-only equivalent; one slot holds all seven).
+          setOpenPicker(null);
         }
       }}
     >
@@ -3328,12 +3891,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           auto-dismisses the instant the window closes (armed auto-skip still
           jumps at that same end), and the 240ms entrance gives the moment
           the window opens a beat of its own. z-30 keeps it over the HUD
-          while stepping to z-[19] when the quality picker is open, so the
-          picker — which lives inside the HUD's z-20 stacking context —
+          while stepping to z-[19] when a row popover is open, so the
+          popover — which lives inside the HUD's z-20 stacking context —
           always paints over it; the ⋯ panel and drawer are top-level z-50
           and need no such help. */}
       {!loading && sources.length > 0 && (inIntro || inOutro) && (
-        <div className={`absolute bottom-20 right-3 flex justify-end gap-2 sm:gap-3 ${showQualityPicker ? "z-[19]" : "z-30"}`}>
+        <div className={`absolute bottom-20 right-3 flex justify-end gap-2 sm:gap-3 ${openPicker !== null ? "z-[19]" : "z-30"}`}>
           {inIntro && introSegment && (
             <button
               onClick={() => { if (videoRef.current) videoRef.current.currentTime = introSegment.end; }}
@@ -3437,16 +4000,18 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
         {/* Controls row — grouped by priority, never scrolled. Left group:
             the always-on essentials (transport, volume, time); right group:
-            the next tier (from lg) plus the ⋯ menu that parks everything
-            else. No horizontal strip, no edge chevrons — the row always fits.
+            quality, then as many priority-ordered icon-only buttons as fit
+            (see ROW_ICON_PRIORITY / the rowIconCount effect), then the ⋯ menu
+            that parks everything else. No horizontal strip, no edge chevrons
+            — the row always fits; when in doubt an icon drops out.
 
             `z-20` is load-bearing: the seekbar input is `relative z-10`, so
             without an explicit z-index here the picker menus (z-50) open
             *under* the seekbar. The row lifts itself — menus included — above it. */}
-        <div className="relative z-20 flex w-full items-center justify-between gap-2 sm:gap-6 select-none">
+        <div ref={rowRef} className="relative z-20 flex w-full items-center justify-between gap-2 sm:gap-6 select-none">
           {/* Left group: prev/next episode, transport, volume, time — the
               essentials, always first so they are on screen at offset 0 */}
-          <div className="flex items-center gap-1 sm:gap-3 shrink-0">
+          <div ref={leftGroupRef} className="flex items-center gap-1 sm:gap-3 shrink-0">
             {/* Previous episode — first thing to go when the row gets tight */}
             <button
               onClick={() => { if (prevEpisodeTarget) goToEpisode(prevEpisodeTarget); }}
@@ -3552,10 +4117,13 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             </span>
           </div>
 
-          {/* Right group: quality picker (every width), second-tier pickers
-              (lg+), ⋯ menu, fullscreen.
+          {/* Right group: the fixed chunk (SUB/DUB at lg+, quality), then
+              the priority-ordered icon toolbar (as many as fit — see
+              ROW_ICON_PRIORITY), then ⋯ and fullscreen, which always stay.
               (The episode drawer is NOT here — it is an edge handle, see below) */}
           <div className="flex items-center gap-1.5 justify-end shrink-0">
+            {/* Fixed chunk — measured as ONE unit by the fit effect. */}
+            <div ref={fixedRightRef} className="flex items-center gap-1.5">
             {/* Second tier — lg+ only inline; below lg the same controls
                 live in the ⋯ menu, so nothing is ever offered twice */}
             <div className="hidden lg:contents">
@@ -3595,20 +4163,31 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
             )}
             </div>
 
-            {/* Quality selector — always on the row (the second tier stays
-                lg+-only, but quality must remain reachable at every width now
-                that its ⋯ drill is gone; ⋯ carries Speed instead). */}
+            {/* Quality selector — icon-only now, but still ALWAYS on the row
+                (the second tier stays lg+-only, and quality must remain
+                reachable at every width since its ⋯ drill is gone; ⋯ carries
+                Speed instead). The label text moved into the title/aria-label;
+                the popover keeps its compact w-28 list but joins the picker
+                slot: same toggle-close, same measured side + caps, same
+                click-outside / Escape handling as the six picker popovers. */}
             <div ref={qualityWrapRef} className="relative h-full flex items-center">
               <button
-                onClick={() => { setShowQualityPicker(!showQualityPicker); closeMore(); }}
-                className="h-7 flex items-center gap-1 text-[11px] px-2 text-[var(--accent)]/50 hover:text-[var(--accent)] bg-black/40 border border-[var(--accent)]/20 hover:border-[var(--accent)]/50 transition-colors rounded-none"
+                onClick={(e) => togglePicker("quality", e.currentTarget)}
+                aria-label={`Quality: ${currentQuality === "auto" ? "Auto" : currentQuality}`}
+                aria-haspopup="true"
+                aria-expanded={showQualityPicker}
+                title={`Quality: ${currentQuality === "auto" ? "Auto" : currentQuality}`}
+                className={rowIconCls(showQualityPicker)}
               >
-                <MenuIcon className="w-3 h-3 opacity-60" />
-                {currentQuality === "auto" ? "Auto" : currentQuality}
-                <CaretDownIcon className="w-3 h-3 opacity-50" />
+                <QualityIcon className={rowIconGlyph} />
               </button>
-              {showQualityPicker && (
-                <div className="absolute right-0 bottom-full mb-1.5 w-28 bg-[var(--panel)] border border-[var(--accent)]/20 shadow-xl max-h-[min(14rem,45vh)] overflow-y-auto overflow-x-hidden z-50 backdrop-blur-sm rounded-none">
+              {showQualityPicker && pickerAnchor && (
+                <div
+                  role="group"
+                  aria-label="Quality options"
+                  className={`absolute bottom-full mb-1.5 z-50 w-28 overflow-y-auto overflow-x-hidden overscroll-contain rounded-none border border-[var(--accent)]/20 bg-[var(--panel)] shadow-xl backdrop-blur-sm ${pickerAnchor.side === "right" ? "right-0" : "left-0"}`}
+                  style={{ maxWidth: pickerAnchor.maxW, maxHeight: pickerAnchor.maxH }}
+                >
                   <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] text-[var(--accent)]/30 uppercase tracking-wider font-semibold font-mono">
                     Quality
                   </div>
@@ -3628,11 +4207,149 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                 </div>
               )}
             </div>
+            </div>
 
-            {/* More (⋯) — always present, never scrolls away. It carries the
-                settings that aren't inline (provider, server, speed,
-                subtitles) plus the toggles at their peak (auto-play,
-                auto-skip, FX filter). */}
+            {/* Icon toolbar — the ⋯ menu's options as icon-only buttons, in
+                ROW_ICON_PRIORITY order, cut at whatever the fit effect says
+                fits (0..N; drop-outs simply live on in the ⋯ menu). The two
+                toggles are plain buttons; every picker is wrapped with its
+                popover in one `relative` unit, so the panel hangs off its own
+                icon and the click-outside test sees trigger + panel together.
+                Same glyph as the option's menu row; title + aria-label always
+                carry the word AND the current value, and the two toggles also
+                carry aria-pressed. */}
+            <div className="flex items-center gap-1.5">
+              {rowIcons.slice(0, rowIconCount).map((it) => {
+                // Toggle (auto play / auto skip) — one press, one state flip,
+                // the exact state the ⋯ menu's checkbox rows flip.
+                if (it.pressed !== undefined) {
+                  const pressed = it.pressed;
+                  const toggle = it.toggle;
+                  return (
+                    <button
+                      key={it.id}
+                      type="button"
+                      onClick={() => toggle?.()}
+                      aria-label={it.label}
+                      aria-pressed={pressed}
+                      title={it.title}
+                      className={rowIconCls(pressed)}
+                    >
+                      {it.icon}
+                    </button>
+                  );
+                }
+                // Picker — its OWN popover anchored at this icon, rendering
+                // the same `PickerContent` the ⋯ menu drills into.
+                const pickerId = it.picker;
+                if (!pickerId) return null;
+                const open = openPicker === pickerId;
+                return (
+                  <div
+                    key={it.id}
+                    ref={(el) => { pickerWrapRefs.current[pickerId] = el; }}
+                    className="relative flex items-center"
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => togglePicker(pickerId, e.currentTarget)}
+                      aria-label={it.label}
+                      aria-haspopup="true"
+                      aria-expanded={open}
+                      title={it.title}
+                      className={rowIconCls(open)}
+                    >
+                      {it.icon}
+                    </button>
+                    {open && pickerAnchor && (
+                      <div
+                        role="group"
+                        aria-label={`${PICKER_LABEL[pickerId]} options`}
+                        className={`absolute bottom-full mb-1.5 z-50 w-44 overflow-y-auto overflow-x-hidden overscroll-contain rounded-none border border-[var(--accent)]/20 bg-[var(--panel)] shadow-xl backdrop-blur-sm ${pickerAnchor.side === "right" ? "right-0" : "left-0"}`}
+                        style={{ maxWidth: pickerAnchor.maxW, maxHeight: pickerAnchor.maxH }}
+                      >
+                        {/* Label bar — the same glyph + name the ⋯ drill's
+                            back-header shows, minus the back chevron (the
+                            row popover has no parent level to go back to). */}
+                        <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-[var(--accent)]/15 bg-[var(--panel)] px-2 py-1">
+                          <span className="flex min-w-0 items-center gap-1.5 truncate label-micro text-[var(--accent)]/40">
+                            {PICKER_ICON[pickerId]}
+                            {PICKER_LABEL[pickerId]}
+                          </span>
+                        </div>
+                        {/* Twin of the ⋯ menu's handler block (see the note
+                            there): same mutations, but the pick dismisses
+                            THIS popover instead of the menu. */}
+                        <PickerContent
+                          section={pickerId}
+                          providerOptions={PROVIDER_OPTIONS}
+                          providerCurrent={providerCurrent}
+                          availableServers={availableServers}
+                          activeServer={activeServer}
+                          speedOptions={speedOptions}
+                          playbackRate={playbackRate}
+                          filterOptions={FILTER_MENU_OPTIONS}
+                          videoFilter={videoFilter}
+                          audioFilterOptions={AUDIO_FILTER_MENU_OPTIONS}
+                          audioFilter={audioFilter}
+                          onSelectProvider={(id) => { selectProvider(id); setOpenPicker(null); }}
+                          onSelectServer={(srv) => {
+                            setActiveServer(srv);
+                            activeServerRef.current = srv;
+                            setOpenPicker(null);
+                            loadByType(audioType, srv);
+                          }}
+                          onSelectSpeed={(r) => { changeSpeed(r); setOpenPicker(null); }}
+                          onSelectFilter={(id) => { setVideoFilter(id as FilterId); setOpenPicker(null); }}
+                          onSelectAudioFilter={(id) => {
+                            applyAudioFilter(id as AudioFilterId);
+                            setAudioFilter(id as AudioFilterId);
+                            setOpenPicker(null);
+                          }}
+                          subtitle={{
+                            activeSubtitle,
+                            subtitles,
+                            onSelect: (url) => {
+                              pickSubtitle(url);
+                              setOpenPicker(null);
+                            },
+                            subtitleOffset,
+                            onOffsetChange: changeSubtitleOffset,
+                            subtitleSize,
+                            onSizeChange: changeSubtitleSize,
+                            osSearched,
+                            osLoading,
+                            osError,
+                            osResults: osResults.filter((r) => !failedOSIdsRef.current.has(r.file_id)),
+                            osPage,
+                            osFilterQuery,
+                            onSearchOpenSubtitles: (page) => { searchOpenSubtitles(page); },
+                            onFilterChange: setOsFilterQuery,
+                            onSelectOpenSubtitle: (fileId) => selectOSSubtitle(fileId),
+                            onResetOpenSubtitles: () => {
+                              setOsSearched(false);
+                              setOsResults([]);
+                              setOsError(null);
+                              setOsPage(1);
+                              setOsFilterQuery("");
+                              failedOSIdsRef.current.clear();
+                            },
+                            activeOSSubtitleId,
+                            osDownloadError,
+                            onClearDownloadError: () => setOsDownloadError(null),
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* More (⋯) — always present, never scrolls away. It is the
+                overflow home for whatever the icon toolbar had to drop (plus
+                SUB/DUB below lg), and every row in it carries the same glyph
+                its row trigger uses. */}
             <button
               ref={moreBtnRef}
               onClick={() => {
@@ -3643,7 +4360,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
                   setMoreSection(null);
                   setShowControls(true);
                 }
-                setShowQualityPicker(false);
+                // Opening the menu drops any open row popover (and the
+                // pointerdown outside-click already closed it — this keeps
+                // the exclusion deterministic either way).
+                setOpenPicker(null);
               }}
               aria-label="More controls"
               aria-haspopup="menu"
@@ -3658,9 +4378,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               <MoreIcon className="w-5 h-5 sm:w-4 sm:h-4" />
             </button>
 
-            {/* Enter fullscreen (hidden when already fullscreen — top-right exit button handles that) */}
+            {/* Enter fullscreen (hidden when already fullscreen — top-right exit button handles that). The fit effect watches this button: it appearing/disappearing changes what the row has to make room for. */}
             {!isFullscreen && (
               <button
+                ref={fullscreenBtnRef}
                 onClick={toggleFullscreen}
                 aria-label="Enter fullscreen"
                 title="Fullscreen"
@@ -3690,15 +4411,19 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         </button>
       )}
 
-      {/* Episode drawer handle — docked at the MIDDLE of the right edge, the
-          only trigger there is (fullscreen-only; windowed mode has no drawer).
-          Fades with the control HUD so it never sits on a clean frame.
+      {/* Episode drawer handle — a VERTICAL RECTANGLE (24×56, ≈2.3:1) docked
+          at the MIDDLE of the right edge, the only trigger there is
+          (fullscreen-only; windowed mode has no drawer). Fades with the
+          control HUD so it never sits on a clean frame.
           Item 2a: filled accent chip, black-on-accent with sharp corners —
           the same visual language as the SUB/DUB control's active side, so the
           fullscreen edge trigger reads as a real control rather than a stray
           glyph floating on the frame (a bare accent chevron looked like an
-          overlay artifact). Slight accent fade on hover for the affordance a
-          solid chip needs (hover:text can't show on a fill). It slides in from
+          overlay artifact). The TALL bar is the point: a strip welded to the
+          frame edge says "there is a drawer behind this", where the old
+          28×28 square read as a stray button. The chevron stays centred in
+          the bar. Slight accent fade on hover for the affordance a solid
+          chip needs (hover:text can't show on a fill). It slides in from
           the right (the side the drawer arrives from) via
           n54-chevron-in-right; the drawer's close right-chevron mirrors it. */}
       {isFullscreen && !drawerOpen && hasDrawer && (
@@ -3707,11 +4432,11 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           aria-label="Episodes"
           aria-expanded={false}
           title="Episodes"
-          className={`group/handle absolute right-0 top-1/2 z-40 flex h-7 w-7 -translate-y-1/2 items-center justify-center bg-[var(--accent)] text-black transition-colors duration-300 hover:bg-[var(--accent)]/80 ${
+          className={`group/handle absolute right-0 top-1/2 z-40 flex h-14 w-6 -translate-y-1/2 items-center justify-center rounded-none bg-[var(--accent)] text-black transition-colors duration-300 hover:bg-[var(--accent)]/80 ${
             showControls ? "opacity-100" : "opacity-0 pointer-events-none"
           }`}
         >
-          <ChevronLeftIcon className="n54-chevron-in-right h-4 w-4 transition-transform duration-200 group-hover/handle:-translate-x-0.5" />
+          <ChevronLeftIcon className="n54-chevron-in-right h-5 w-5 transition-transform duration-200 group-hover/handle:-translate-x-0.5" />
         </button>
       )}
 

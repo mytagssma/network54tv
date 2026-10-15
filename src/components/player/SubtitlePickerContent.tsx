@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import { SearchIcon } from "@/components/ui/icons";
 
 interface SubtitlePickerContentProps {
   activeSubtitle: string | null;
   subtitles: { url: string; lang: string }[];
+  /** Pick a concrete track, or Off (null). */
   onSelect: (url: string | null) => void; // null = Off
   subtitleOffset: number;
   onOffsetChange: (offset: number) => void;

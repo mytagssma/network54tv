@@ -186,6 +186,8 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
     genres: a.genres,
     rating: a.score,
     episodes: a.episodes,
+    status: a.status,
+    nextAiringEpisode: a.nextAiringEpisode,
   });
 
   function handleTagToggle(genre: string) {

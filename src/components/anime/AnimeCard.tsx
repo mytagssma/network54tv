@@ -11,6 +11,10 @@ interface AnimeCardAnime {
   rating?: number;
   /** Total episode count */
   episodes?: number;
+  /** AniList MediaStatus ("FINISHED" | "RELEASING" | "NOT_YET_RELEASED" | …) */
+  status?: string;
+  /** AniList next schedule entry — the next NOT-yet-aired episode. */
+  nextAiringEpisode?: { airingAt?: number; episode?: number };
 }
 
 interface AnimeCardProps {
@@ -28,8 +32,33 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
     typeof anime.rating === "number" && Number.isFinite(anime.rating) && anime.rating > 0
       ? (anime.rating / 10).toFixed(1)
       : null;
+  // Episode badge — only when the total is known (finite > 0), else no badge.
+  // When the run is NOT fully released, show released/total as well:
+  // `3/12 EP` (3 aired of 12). A fully released run keeps the plain `12 EP`.
+  const total =
+    typeof anime.episodes === "number" && Number.isFinite(anime.episodes) && anime.episodes > 0
+      ? anime.episodes
+      : null;
+  // Released count so far; null = unknown (RELEASING without a schedule entry,
+  // HIATUS, CANCELLED, missing status). AniList's nextAiringEpisode is the next
+  // NOT-yet-aired episode, so `episode - 1` is what has aired.
+  let released: number | null = null;
+  if (total !== null) {
+    const nextEpisode = anime.nextAiringEpisode?.episode;
+    if (anime.status === "FINISHED") {
+      released = total;
+    } else if (typeof nextEpisode === "number" && Number.isFinite(nextEpisode) && nextEpisode >= 1) {
+      released = Math.min(Math.max(nextEpisode - 1, 0), total);
+    } else if (anime.status === "NOT_YET_RELEASED") {
+      released = 0;
+    }
+  }
   const episodeLabel =
-    typeof anime.episodes === "number" && anime.episodes > 0 ? `${anime.episodes} EP` : null;
+    total === null
+      ? null
+      : released === null || released >= total
+        ? `${total} EP`
+        : `${released}/${total} EP`;
   const hasMeta = Boolean(ratingLabel || episodeLabel);
 
   return (

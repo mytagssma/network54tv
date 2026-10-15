@@ -128,7 +128,8 @@ export function MoreIcon(props: IconProps) {
   );
 }
 
-/** The playback-rate lightning. */
+/** The playback-rate lightning. The player's Speed control moved to the
+ *  clock-like `SpeedIcon` — this glyph now only backs the /design specimen. */
 export function BoltIcon(props: IconProps) {
   return (
     <Stroke {...props}>
@@ -142,6 +143,82 @@ export function CaretDownIcon(props: IconProps) {
   return (
     <Fill {...props}>
       <path d="M7 10l5 5 5-5z" />
+    </Fill>
+  );
+}
+
+/* ── Control-row icon toolbar + ⋯ menu rows ──────────────────────────────
+ * One glyph per option, imported by BOTH its icon-only row trigger and its
+ * ⋯ menu row (PlayIcon / Forward10Icon / GlobeIcon are the pre-existing
+ * three reused here: auto play, auto skip, provider). Everything below is
+ * NEW so the row and the menu can't drift apart. Each glyph depicts its
+ * actual domain — a clock for rate, a contrast circle for picture, a
+ * waveform for sound — not a generic settings metaphor. */
+
+/** Quality / resolution — ascending level bars (replaces the old hamburger). */
+export function QualityIcon(props: IconProps) {
+  return (
+    <Fill {...props}>
+      <path d="M3 15h3v4H3zM8 11h3v8H8zM13 7h3v12h-3zM18 3h3v16h-3z" />
+    </Fill>
+  );
+}
+
+/** Playback speed — a plain clock face (rate = time per revolution). The
+ *  stopwatch crown was tried and dropped: at the row's 16px it is noise. */
+export function SpeedIcon(props: IconProps) {
+  return (
+    <Stroke {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3.5 2" />
+    </Stroke>
+  );
+}
+
+/** Server — the two-tray rack, dots and all. */
+export function ServerIcon(props: IconProps) {
+  return (
+    <Stroke {...props}>
+      <rect x="3" y="4" width="18" height="7" />
+      <rect x="3" y="13" width="18" height="7" />
+      <circle cx="7" cy="7.5" r="1" />
+      <circle cx="7" cy="16.5" r="1" />
+    </Stroke>
+  );
+}
+
+/** Subtitles — a caption box with two lines of text under it. */
+export function SubtitleIcon(props: IconProps) {
+  return (
+    <Stroke {...props}>
+      <rect x="3" y="5" width="18" height="14" />
+      <path strokeLinecap="round" d="M6.5 11h5M6.5 15h11" />
+    </Stroke>
+  );
+}
+
+/** Video filter — the half-filled contrast circle: the universal display /
+ *  picture-settings glyph. (Was a funnel — a data-filter metaphor from the
+ *  wrong domain.) The filled half is drawn INSIDE the stroked ring: the
+ *  Stroke shell paints the circle, one child paints the left half solid. */
+export function VideoFilterIcon(props: IconProps) {
+  return (
+    <Stroke {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path fill="currentColor" stroke="none" d="M12 3a9 9 0 000 18z" />
+    </Stroke>
+  );
+}
+
+/** Audio filter — a waveform: bars of varying heights around a midline, the
+ *  "processing what you hear" glyph. (Was mixer faders — a track-mixing
+ *  metaphor.) Bars are 2px wide and IRREGULAR — deliberately not the
+ *  monotonic baseline-ascent of QualityIcon, so the two bar-glyphs on the
+ *  same row can't be confused: this one peaks and troughs around centre. */
+export function AudioFilterIcon(props: IconProps) {
+  return (
+    <Fill {...props}>
+      <path d="M3 9h2v6H3zM7 6h2v12H7zM11 3h2v18h-2zM15 7h2v10h-2zM19 5h2v14h-2z" />
     </Fill>
   );
 }
@@ -188,6 +265,18 @@ export function MenuIcon(props: IconProps) {
     <Fill {...props}>
       <path d="M3 5h18v2H3zM3 11h18v2H3zM3 17h18v2H3z" />
     </Fill>
+  );
+}
+
+/** Dock — the watch page's layout toggle: the big panel is the player, the
+ *  narrow lined rail beside it is the episode list. */
+export function DockIcon(props: IconProps) {
+  return (
+    <Stroke {...props}>
+      <rect x="3" y="4" width="18" height="16" />
+      <path strokeLinecap="round" d="M14.5 4v16" />
+      <path strokeLinecap="round" d="M16.5 8.5h2.5M16.5 12h2.5M16.5 15.5h2.5" />
+    </Stroke>
   );
 }
 
