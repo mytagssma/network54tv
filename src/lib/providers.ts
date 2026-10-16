@@ -891,6 +891,26 @@ function isPlayableSourceUrl(url: string): boolean {
   }
 }
 
+/**
+ * Drop provider-site bumper clips. Some KickAssAnime servers (e.g. CatStream)
+ * resolve their player "manifest" to the site's own `intro.mp4` — a ~10KB
+ * black bumper that played as a ~20-second blank "episode". No legitimate
+ * stream lives at these paths: real sources are `.m3u8` manifests or
+ * full-length progressive files elsewhere on the CDN. Pathname-only check
+ * (query/hash ignored) so tokenized URLs still match.
+ */
+function isBumperSourceUrl(url: string): boolean {
+  let path = url;
+  try {
+    path = new URL(url, "http://localhost").pathname;
+  } catch {
+    path = url.split(/[?#]/)[0] ?? url;
+  }
+  return /(^|\/)(intro|outro|preview|trailer|bumper)(?:[-._ ]?\d+)?\.(mp4|webm|m3u8|mkv)$/i.test(
+    path
+  );
+}
+
 function toStreamResult(
   data: any,
   providerId: string
@@ -900,16 +920,20 @@ function toStreamResult(
   }
   const rawSources: any[] = Array.isArray(data.sources) ? data.sources : [];
   const sources: StreamSource[] = rawSources
-    .filter((s: any) => s?.url && isPlayableSourceUrl(String(s.url)))
+    .filter(
+      (s: any) =>
+        s?.url && isPlayableSourceUrl(String(s.url)) && !isBumperSourceUrl(String(s.url))
+    )
     .map((s: any) => ({
       url: s.url,
       quality: s.quality || "auto",
       isM3U8: s.isM3U8 !== false,
     }));
 
-  // Empty after filtering (e.g. only unplayable `.mpd` sources) ⇒ treat as
-  // "provider produced nothing" so getStreamingSources falls through to the
-  // next provider instead of short-circuiting on an unplayable payload.
+  // Empty after filtering (e.g. only unplayable `.mpd` sources, or only a
+  // provider-site bumper clip) ⇒ treat as "provider produced nothing" so
+  // getStreamingSources falls through to the next provider instead of
+  // short-circuiting on an unplayable payload.
   if (sources.length === 0) return null;
 
   const subtitles: Subtitle[] = (data.subtitles || [])
@@ -1057,9 +1081,11 @@ export async function getMegaPlaySources(
 ): Promise<StreamResult | null> {
   try {
     const data = await megaplay.fetchSources(episodeId, type, episodeNumber, malId);
-    const result = toStreamResult(data, "megaplay");
-    return result;
+    return toStreamResult(data, "megaplay");
   } catch (err) {
+    // "embed unavailable" is megaplay's definitive "no mapping for this
+    // anilist id/episode" answer (their Error page), not a transient blip —
+    // do not retry it.
     console.warn(`[providers] getMegaPlaySources(ep=${episodeId}) failed:`, err instanceof Error ? err.message : err);
     return null;
   }
