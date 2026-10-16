@@ -118,11 +118,13 @@ export default function Navbar() {
       }`}
     >
       <div className="max-w-7xl mx-auto px-4">
-        {/* ALIGNMENT SCHEME (below sm): one shared gutter — the page
-            container's own `px-4` (the nav's inner wrapper is the same
-            `max-w-7xl mx-auto px-4` the content column uses) — and equalized
-            44px edge boxes: the brand Link and the globe Link are both
-            `h-11 w-11`, so row 1's left/right edges are symmetric and the
+        {/* ALIGNMENT SCHEME — <sm: one shared gutter — the page container's
+            own `px-4` (the nav's inner wrapper is the same `max-w-7xl
+            mx-auto px-4` the content column uses) — and equalized 40px edge
+            boxes: the brand Link and the globe Link are both `h-10 w-10`
+            AND both carry the field's quiet frame at EVERY breakpoint (the
+            border/bg tokens are base classes, not sm:-gated), so row 1's
+            left/right edges are symmetric and framed alike — and the
             absolutely-centered swatch band reads dead-center between them.
             The search bar spans the same content box — its left/right edges
             flush with both edge boxes. VERTICAL: row 1 is `h-12` in both
@@ -136,81 +138,124 @@ export default function Navbar() {
             by the single pull-to-search gesture (or by a URL that already
             carries ?q) and auto-hidden again on pull-up, collapsed to h-0
             until then. The band never lands on the input: it centers over
-            row 1's content box, which is symmetric inside px-4 (78px clear
-            of both edge boxes at 390px). From sm up: the single h-14 row as
-            always — always visible, ordered brand · field · swatches ·
-            browse through the sm:order-* utils. */}
-        <div className="flex flex-col sm:flex-row sm:h-14 sm:items-center sm:gap-4">
+            row 1's content box, which is symmetric inside px-4 (82px clear
+            of both edge boxes at 390px).
+            ≥sm: the single h-14 row, CENTERED instead of flow-ordered. Two
+            flow groups stay at the edges via `justify-between` — the brand
+            box (left) and the swatch-band + globe cluster (right) — while
+            the field leaves the flow entirely and is absolutely centered
+            against THIS wrapper (`sm:relative`; the wrapper's 50% is the
+            viewport's 50% because `max-w-7xl mx-auto px-4` is symmetric):
+            true geometric center, independent of the side groups' unequal
+            widths. Width: `calc(100% - 24rem)` capped by max-w-xl (576px).
+            Math for the narrowest sm viewport (640 → 608px content): the
+            right cluster holds 166px (114 band + 16 gap + 36 globe), the
+            left brand box 36px — a centered 224px box clears the cluster
+            by a constant 26px and the brand by 156px; past 992px viewport
+            the cap engages and both clearances only grow. The three boxes
+            share ONE frame spec — 1px accent/45% edge over the inset
+            --background fill, the .header-search outline language — at
+            every breakpoint: 40×40 edge boxes below sm (row 1's symmetric
+            edges, the band's centering reference), h-9 / 36px from sm up.
+            Row 1 therefore always reads [boxed logo] … [boxed globe]; from
+            sm the field joins them dead-center. Note: the field keeps its
+            DOM place AFTER
+            the swatches/globe (unchanged from the two-band order), so
+            keyboard focus still walks logo → swatches → globe → field at
+            every width — only the field's paint position is centered. */}
+        <div className="sm:relative flex flex-col sm:flex-row sm:h-14 sm:items-center sm:gap-4 sm:justify-between">
           {/* ROW 1 (<sm): brand left, browse link right (justify-between);
               the swatch band is pulled out of flow and TRUE-centered over
               THIS row — the wrapper is `relative` and spans the content box
               inside px-4, so its 50% is the viewport's 50%. ≥sm the wrapper
-              generates no box (display:contents), so brand/band/browse fall
-              back into the single row through the sm:order-* utilities. */}
+              generates no box (display: contents), so the brand group and
+              the swatch+globe cluster become the row's two flow items —
+              justify-between pins them to the edges while the field below
+              is absolutely dead-centered. */}
           <div className="relative flex h-12 items-center justify-between sm:contents">
-            {/* Brand mark. <sm: a 44×44 box EQUAL to the globe's, mark
+            {/* Brand mark. <sm: a FRAMED 40×40 box EQUAL to the globe's
+                (frame tokens at the base breakpoint — no sm: gate), mark
                 centered — the two boxes are row 1's symmetric edges (and the
-                swatch band's centering reference). No negative margin: the
-                box sits flush on the px-4 gutter like everything else.
-                ≥sm: today's exact rendering restored — hugging box with the
-                p-1/-m-1 hover bleed (justify-center is a no-op on a
-                content-hugged box). */}
-            <div className="flex shrink-0 items-center gap-2 sm:order-1 sm:gap-3">
+                swatch band's centering reference) and now read [boxed logo]
+                … [boxed globe] like the field's outline language. No
+                negative margin: the box sits flush on the px-4 gutter like
+                everything else. ≥sm: the same frame scaled to a 36×36 badge
+                — h-9 outer height, matching the field and the globe's box,
+                1px accent/45% edge over the inset --background fill (the
+                .header-search frame tokens as utilities). The old hug +
+                p-1/-m-1 bleed goes away WITH the fixed box: border boxes
+                don't reflow on hover (glow/wash only paint), so there is
+                nothing left to bleed-compensate, and the target only grows. */}
+            <div className="flex shrink-0 items-center gap-2 sm:gap-3">
               <Link
                 href="/"
                 aria-label="n54tv"
-                className="flex h-11 w-11 items-center justify-center text-[var(--accent)] hover:accent-shadow-sm transition-shadow sm:h-auto sm:w-auto sm:p-1 sm:-m-1"
+                className="flex h-10 w-10 items-center justify-center rounded-none border border-[var(--accent)]/45 bg-[var(--background)] text-[var(--accent)] transition-all hover:bg-[var(--accent)]/10 hover:accent-shadow-sm sm:h-9 sm:w-9"
               >
                 <N54Mark />
               </Link>
             </div>
 
-            {/* Accent selector. <sm: absolutely TRUE-centered over row 1's
-                content box — the 114px band (6×14 + 5×6 gaps) clears both
-                44px edge boxes by an equal 78px at 390px, so it reads
-                dead-center; the selected-swatch ring sits inside the band
-                and nothing in either header state overlaps it. ≥sm: back
-                into the single h-14 row's flow, ordered after the field.
-                Width reserved either way so its mount-time appearance (it
-                renders null until mounted) doesn't shove the field over. */}
-            <div className="absolute left-1/2 top-1/2 flex min-w-[114px] -translate-x-1/2 -translate-y-1/2 shrink-0 items-center justify-end sm:static sm:order-3 sm:translate-x-0 sm:translate-y-0">
-              <AccentColorSelector />
-            </div>
+            {/* RIGHT CLUSTER: swatch band + browse globe. `contents`
+                below sm — generates no box, so the band's absolute
+                centering still resolves against row 1 (relative) and the
+                globe stays row 1's justify-between right edge, exactly as
+                before; ≥sm it is a real flex box whose gap-4 equals the
+                band↔globe spacing the row's single gap used to give them,
+                and justify-between pins the whole cluster to the row's
+                right edge — the field's absolute box clears it (see the
+                scheme above). */}
+            <div className="contents sm:flex sm:items-center sm:gap-4">
+              {/* Accent selector. <sm: absolutely TRUE-centered over row 1's
+                  content box — the 114px band (6×14 + 5×6 gaps) clears both
+                  40px edge boxes by an equal 82px at 390px, so it reads
+                  dead-center; the selected-swatch ring sits inside the band
+                  and nothing in either header state overlaps it. ≥sm: back
+                  into flow inside the right cluster. Width reserved either
+                  way so its mount-time appearance (it renders null until
+                  mounted) doesn't shove anything over. */}
+              <div className="absolute left-1/2 top-1/2 flex min-w-[114px] -translate-x-1/2 -translate-y-1/2 shrink-0 items-center justify-end sm:static sm:translate-x-0 sm:translate-y-0">
+                <AccentColorSelector />
+              </div>
 
-            {/* Browse link — the empty-field submit's visible home now that
-                the in-field globe/lens button is gone (Enter still submits;
-                an empty field still routes to /browse). <sm: the row's right
-                44×44 edge box, equal to the brand's (justify-between; the
-                absolute swatch band ignores both and stays true-centered).
-                ≥sm: sm:order-4 places it after the swatches — the single
-                row's last item. Box rendered from SSR, so — unlike the
-                late-mounting swatch band — there is nothing to pre-reserve:
-                no shift on either width. Accent glyph, quiet hover wash: a
-                sibling of the header's existing iconography. */}
-            <Link
-              href="/browse"
-              aria-label="Browse"
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-none text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10 hover:text-white motion-reduce:transition-none sm:order-4 sm:h-8 sm:w-8"
-            >
-              <GlobeIcon className="h-4 w-4" focusable="false" />
-            </Link>
+              {/* Browse link — the empty-field submit's visible home now that
+                  the in-field globe/lens button is gone (Enter still submits;
+                  an empty field still routes to /browse). <sm: the row's
+                  right 40×40 edge box, FRAMED at base exactly like the brand
+                  (justify-between; the absolute swatch band ignores both and
+                  stays true-centered). ≥sm: the cluster's last item — the
+                  same frame on the h-9 box (its quiet hover wash now lands
+                  on the inset fill instead of the panel). Box rendered from
+                  SSR, so — unlike the late-mounting swatch band — there is
+                  nothing to pre-reserve: no shift on either width. Accent
+                  glyph, sibling of the header's existing iconography. */}
+              <Link
+                href="/browse"
+                aria-label="Browse"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-none border border-[var(--accent)]/45 bg-[var(--background)] text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10 hover:text-white motion-reduce:transition-none sm:h-9 sm:w-9"
+              >
+                <GlobeIcon className="h-4 w-4" focusable="false" />
+              </Link>
+            </div>
           </div>
 
-          {/* The site's one query field: from sm up it sits in the single
-              h-14 row, always visible. Below sm it starts COLLAPSED (h-0,
-              SSR default) and opens via a single pull-to-search gesture — or
-              stays open whenever the URL carries ?q (a populated field is
-              never hidden). Suspense is required: HeaderSearch reads
-              useSearchParams, and prerendered pages must be able to bail out
-              to the placeholder instead of failing the production build with
-              "Missing Suspense boundary". The fallback mirrors HeaderSearch's
-              root div in its default (collapsed) state, so prerender →
-              hydration is the same shape — no CLS. */}
+          {/* The site's one query field: from sm up it leaves the flow and
+              is absolutely DEAD-CENTERED in the single h-14 row (true
+              viewport center — see the scheme above), always visible.
+              Below sm it starts COLLAPSED (h-0, SSR default) and opens via
+              a single pull-to-search gesture — or stays open whenever the
+              URL carries ?q (a populated field is never hidden). Suspense is
+              required: HeaderSearch reads useSearchParams, and prerendered
+              pages must be able to bail out to the placeholder instead of
+              failing the production build with "Missing Suspense boundary".
+              The fallback mirrors HeaderSearch's root div in its default
+              (collapsed) state — same class string, absolute box included —
+              so prerender → hydration is the same shape — no CLS. */}
           <Suspense
             fallback={
               <div
                 aria-hidden
-                className="flex min-w-0 w-full items-center h-0 pt-0 pb-0 opacity-0 overflow-hidden pointer-events-none transition-[height,opacity] duration-200 ease-out motion-reduce:transition-none sm:order-2 sm:w-auto sm:flex-1 sm:pt-0 sm:pb-0 sm:h-auto sm:overflow-visible sm:opacity-100 sm:pointer-events-auto"
+                className="flex min-w-0 w-full items-center h-0 pt-0 pb-0 opacity-0 overflow-hidden pointer-events-none transition-[height,opacity] duration-200 ease-out motion-reduce:transition-none sm:absolute sm:left-1/2 sm:top-1/2 sm:w-[calc(100%_-_24rem)] sm:max-w-xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:pt-0 sm:pb-0 sm:h-auto sm:overflow-visible sm:opacity-100 sm:pointer-events-auto"
               >
                 <div className="h-9 w-full max-w-xl border border-[var(--accent)]/45 bg-[var(--background)]" />
               </div>
@@ -225,8 +270,9 @@ export default function Navbar() {
 }
 
 /**
- * The site's single query field. From sm up: the middle slot of the single
- * h-14 row, always visible — sizing/frames/behavior unchanged apart from
+ * The site's single query field. From sm up: absolutely dead-centered in
+ * the single h-14 row (out of the flex flow — see the scheme in the nav's
+ * JSX), always visible — sizing/frames/behavior unchanged apart from
  * the trailing submit button being gone. Below sm: COLLAPSED by default
  * (SSR renders hidden, so hydration matches) and revealed by a SINGLE
  * PULL-TO-SEARCH gesture — one downward pull at the very top of the page
@@ -546,11 +592,13 @@ function HeaderSearch() {
           it from row 1 (this replaced the old flex gap, which left an 8px
           dead strip below row 1 while collapsed), pb-2 from the nav edge,
           the h-9 field between: the reveal adds exactly this one row's
-          height. The sm:* restorers return exactly today's always-visible
-          behavior (h-auto, no padding, visible, interactive). The field
+          height. The sm:* restorers return the always-visible behavior
+          (h-auto, no padding, visible, interactive) while the sm:absolute
+          utilities pull the whole row to the row's dead-center (see the
+          scheme above). The field
           itself never changes, only whether the row around it is open. */}
       <div
-        className={`flex min-w-0 w-full items-center transition-[height,opacity] duration-200 ease-out motion-reduce:transition-none sm:order-2 sm:w-auto sm:flex-1 sm:pt-0 sm:pb-0 sm:h-auto sm:overflow-visible sm:opacity-100 sm:pointer-events-auto ${
+        className={`flex min-w-0 w-full items-center transition-[height,opacity] duration-200 ease-out motion-reduce:transition-none sm:absolute sm:left-1/2 sm:top-1/2 sm:w-[calc(100%_-_24rem)] sm:max-w-xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:pt-0 sm:pb-0 sm:h-auto sm:overflow-visible sm:opacity-100 sm:pointer-events-auto ${
           visible
             ? "h-[52px] pt-2 pb-2 opacity-100"
             : "h-0 pt-0 pb-0 opacity-0 overflow-hidden pointer-events-none"
