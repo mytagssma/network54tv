@@ -356,7 +356,15 @@ function normalizeTitle(value: string): string {
   return out;
 }
 
-/** Levenshtein distance; strings far apart in length short-circuit to "unrelated". */
+/**
+ * Optimal-string-alignment (restricted Damerau-Levenshtein) distance:
+ * insertions, deletions, substitutions AND adjacent transpositions each
+ * cost 1. The transposition case matters because it is one of the most
+ * common human typos and plain Levenshtein prices it at 2 — "peice" for
+ * "piece" scored 0.6 and failed the 0.72 word bar, killing the whole
+ * "one peice" search. Strings far apart in length short-circuit to
+ * "unrelated".
+ */
 function editDistance(a: string, b: string): number {
   if (a === b) return 0;
   const m = a.length;
@@ -366,6 +374,8 @@ function editDistance(a: string, b: string): number {
   const maxLen = Math.max(m, n);
   if (Math.abs(m - n) > maxLen * 0.55) return maxLen;
 
+  // OSA needs d[i-2][j-2] for the transpose case — keep three rolling rows.
+  let prev2: number[] = [];
   let prev = new Array<number>(n + 1);
   let cur = new Array<number>(n + 1);
   for (let j = 0; j <= n; j++) prev[j] = j;
@@ -373,11 +383,23 @@ function editDistance(a: string, b: string): number {
     cur[0] = i;
     for (let j = 1; j <= n; j++) {
       const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      let best = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (
+        i > 1 &&
+        j > 1 &&
+        a.charCodeAt(i - 1) === b.charCodeAt(j - 2) &&
+        a.charCodeAt(i - 2) === b.charCodeAt(j - 1) &&
+        prev2.length === n + 1
+      ) {
+        best = Math.min(best, prev2[j - 2] + 1);
+      }
+      cur[j] = best;
     }
-    const swap = prev;
+    // Rotate: old prev → prev2, cur → prev, recycled buffer → cur.
+    const spare = prev2;
+    prev2 = prev;
     prev = cur;
-    cur = swap;
+    cur = spare.length === n + 1 ? spare : new Array<number>(n + 1);
   }
   return prev[n];
 }
@@ -651,11 +673,13 @@ type MediaFetcher = (
 //   (b) retry queries are derived from the typed words — longest (most
 //       distinctive) first, at most RETRY_MAX_WORD_QUERIES extra requests,
 //       no dictionary, no new network service. A word whose OWN query comes
-//       back empty additionally gets trailing-truncation variants (see
-//       RETRY_TRUNCATE_* and retryTruncationVariants below). The retry runs
-//       in PARALLEL ROUNDS — words at once, then variants at once (see
-//       retrySparseSearch) — so a sparse search costs 3 round-trips instead
-//       of one per request;
+//       back empty additionally gets glued-run probes (the token with a
+//       space inserted at a candidate split — "fatezero" → "fate zero" —
+//       see RETRY_SPLIT_MAX / retryGluedProbes below) and trailing-
+//       truncation variants (RETRY_TRUNCATE_* / retryTruncationVariants).
+//       The retry runs in PARALLEL ROUNDS — words at once, then probes at
+//       once (see retrySparseSearch) — so a sparse search costs 3
+//       round-trips instead of one per request;
 //   (c) the primary page is AniList's own answer for the phrase and is
 //       never dropped — the gate only filters RETRY-INJECTED candidates;
 //   (d) an injected candidate must pass passesQueryGate(): every significant
@@ -664,7 +688,14 @@ type MediaFetcher = (
 //       native or a synonym). "Overlord" is rejected for "lord of the
 //       mystries" — it explains neither word ("lord" is only a suffix of
 //       "overlord", similarity 0.5) — while "Lord of Mysteries" passes:
-//       "lord" is verbatim, "mystries" ≈ "mysteries" at edit distance 1;
+//       "lord" is verbatim, "mystries" ≈ "mysteries" at edit distance 1.
+//       A query word may also be explained by 2–3 ADJACENT title words
+//       concatenated, because users type word runs glued together
+//       ("onepunch man" → "One Punch Man", "fatezero" → "Fate/Zero"); the
+//       join consumes the whole window so the distinct-word rule still
+//       holds, and "lord" still cannot stand for "overlord" (one word, not
+//       a run). Word similarity uses Damerau-Levenshtein so an adjacent
+//       transposition ("peice"/"piece") costs 1, not 2;
 //   (e) candidates failing the gate are discarded outright, and an empty
 //       page after gating is still a legitimate empty answer — the browse
 //       page renders its empty-results state for it;
@@ -673,10 +704,19 @@ type MediaFetcher = (
 //       a word query that already returned candidates is never re-tried in
 //       variant form. The budget is ALLOCATED before each parallel round is
 //       fired, so concurrency can never overshoot the cap;
-//   (g) single-token queries get NO retry and NO variants: a one-word query
-//       would re-query the identical string (self-query guard), and the old
-//       widenSearchPool bug — lone word "lord" injecting Overlord — was
-//       exactly single-token broadening.
+//   (g) single-token queries skip the WORD round — re-querying the identical
+//       string is the primary request (self-query guard) — but they DO get
+//       trailing-truncation variants of the typed token, gated like every
+//       other injected candidate. That is the lever an equal-length typo
+//       needs: "apothicary" retrieves nothing, its variant "apothicar"
+//       returns the Apothecary Diaries family, and the gate accepts it.
+//       The old widenSearchPool bug — lone word "lord" injecting Overlord —
+//       stays prevented: the gate still rejects "lord" vs "overlord"
+//       (similarity 0.5, no shared prefix, length delta 4 > 3);
+//   (h) the whole retry phase is wall-clock capped (RETRY_DEADLINE_MS):
+//       rounds are only fired while under the deadline and in-flight rounds
+//       are aborted at it, so upstream rate-limit backoff can never pin the
+//       UI (observed: 48s for a sparse search under a warm rate limit).
 //
 // Why variants exist at all — probed AniList `search` behaviour (graphql
 // direct, sort SEARCH_MATCH, and re-probed through /api/anilist):
@@ -704,6 +744,14 @@ const RETRY_POOL_MIN = 6;
 const RETRY_MAX_WORD_QUERIES = 2;
 // Primary + word retries + variants, hard cap per sparse search (rule f).
 const RETRY_REQUEST_BUDGET = 6;
+// Wall-clock cap for the whole retry phase (rule h): upstream rate limits
+// stack across the parallel rounds and the hardened /api/anilist fetch
+// retries them with backoff, so a sparse search could otherwise pin the UI
+// for tens of seconds (observed: 48s for "levi attack on titan" under a
+// warm rate limit). Rounds are fired only while under the deadline, and
+// in-flight rounds are aborted at it — what arrived by then is kept, the
+// rest degrades to the honest empty state.
+const RETRY_DEADLINE_MS = 9_000;
 // A 1–2 character query still arrives via Enter-submit and hard loads and
 // matches a huge swath of AniList — every title containing those letters.
 // Left at the full page size it is the cheapest way to hand the grid a large
@@ -713,9 +761,34 @@ const RETRY_REQUEST_BUDGET = 6;
 // anyone who actually wants it.
 const SHORT_QUERY_MAX_PAGE = 12;
 // Trailing-truncation variants per zero-return word (rule b).
-const RETRY_VARIANT_MAX = 3;
-// AniList stops matching below ~7 characters ("apothic" ✓ / "apothi" → 0).
-const RETRY_TRUNCATE_MIN_LEN = 7;
+// Capped at 2: observed truncation wins land within one or two chops
+// ("apothicary" → "apothicar", "bleachh" → "bleach"), and the request freed
+// here funds the glued-word probes below — the budget (rule f) is shared.
+const RETRY_VARIANT_MAX = 2;
+// Trailing-truncation variants may go down to 4 chars. AniList stops
+// PREFIX-matching below ~7 characters ("apothic" ✓ / "apothi" → 0), but a
+// variant that lands exactly on a title word retrieves at ANY length ("bleachh"
+// → chop → "bleach" is BLEACH's own word; "aot" retrieves via exact synonym),
+// and a short variant that matches nothing simply returns 0 — cost is the
+// bounded request, never junk. The 4-char floor just stops pointless 1–3
+// character probes.
+const RETRY_TRUNCATE_MIN_LEN = 4;
+// Glued word runs ("onepunch" for "one punch", "fatezero" for "Fate/Zero")
+// cannot be retrieved by their own query or by tail truncation — the missing
+// space is in the MIDDLE. The glued probes re-query the token with a space
+// inserted at a candidate split ("fatezero" → "fate zero"), which AniList
+// resolves as a normal multi-word search; the gate's joined-words rule (d)
+// then decides whether the retrieved titles genuinely explain the glued
+// word. Split points run ends-then-inward (3, len−3, 4) so the common
+// short-first-word pattern ("one punch") is covered first; each side must
+// leave at least 3 chars so the probes cannot degenerate into noise.
+const RETRY_SPLIT_MAX = 3;
+// Retry queries cast a wider net than the caller's page: the gate filters
+// EVERY injected candidate, so a wider page only adds rescue surface — the
+// intended title for a typo'd phrase often sits just past a 20-cap relevance
+// page ("demon" → Demon Slayer buried under common-word noise). 50 is
+// AniList's perPage cap.
+const RETRY_FETCH_PER_PAGE = 50;
 
 // Words too generic to stand as evidence on their own ("lord OF THE
 // mysteries"); they stay in the phrase for whole-string ranking in
@@ -809,8 +882,37 @@ function passesQueryGate(query: string, media: SearchableTitle): boolean {
       const idx = titleWords.findIndex(
         (titleWord, i) => !used.has(i) && retryWordMatches(queryWord, titleWord)
       );
-      if (idx === -1) break;
-      used.add(idx);
+      if (idx !== -1) {
+        used.add(idx);
+        covered++;
+        continue;
+      }
+      // Joined-words match: users type word runs glued together ("onepunch
+      // man" for "One Punch Man", "fatezero" for "Fate/Zero"). A query word
+      // may also be explained by 2–3 ADJACENT unused title words
+      // concatenated — the join consumes the whole window, so the
+      // distinct-word rule still holds and "lord" still cannot stand for
+      // "overlord" (that is one word, not a run).
+      let matchedRun = 0;
+      for (const runLen of [2, 3]) {
+        for (let i = 0; i + runLen <= titleWords.length; i++) {
+          let windowFree = true;
+          for (let k = 0; k < runLen; k++) {
+            if (used.has(i + k)) {
+              windowFree = false;
+              break;
+            }
+          }
+          if (!windowFree) continue;
+          const joined = titleWords.slice(i, i + runLen).join("");
+          if (!retryWordMatches(queryWord, joined)) continue;
+          for (let k = 0; k < runLen; k++) used.add(i + k);
+          matchedRun = runLen;
+          break;
+        }
+        if (matchedRun) break;
+      }
+      if (!matchedRun) break;
       covered++;
     }
     if (covered === queryWords.length) return true;
@@ -841,6 +943,29 @@ function retryTruncationVariants(word: string): string[] {
     variants.push(word.slice(0, length));
   }
   return variants;
+}
+
+/**
+ * Glued-run probes for a zero-return word: the token with a space inserted
+ * at each candidate split, ends-then-inward. Each side must leave at least
+ * 3 chars; at most RETRY_SPLIT_MAX probes.
+ */
+function retryGluedProbes(word: string): string[] {
+  const len = word.length;
+  const minSplit = 3;
+  if (len < minSplit * 2) return [];
+  const splits = [minSplit, len - minSplit, 4];
+  const probes: string[] = [];
+  const seen = new Set<string>();
+  for (const s of splits) {
+    if (s < minSplit || s > len - minSplit) continue;
+    const probe = `${word.slice(0, s)} ${word.slice(s)}`;
+    if (seen.has(probe)) continue;
+    seen.add(probe);
+    probes.push(probe);
+    if (probes.length >= RETRY_SPLIT_MAX) break;
+  }
+  return probes;
 }
 
 /**
@@ -875,25 +1000,41 @@ async function retrySparseSearch(
   signal?: AbortSignal
 ): Promise<RawSearchMedia[]> {
   const queryNorm = normalizeTitle(query).trim();
-  // Rule (g): a one-word query would re-query itself — skip it entirely, so
-  // single-token queries never retry and never generate variants.
-  const words = retryQueryWords(query)
-    .filter((word) => word !== queryNorm)
-    .slice(0, RETRY_MAX_WORD_QUERIES);
+  const allWords = retryQueryWords(query);
+  // Rule (g), revised: a single-significant-token query must not re-query
+  // itself (that IS the primary request), but its trailing-truncation
+  // variants are exactly the lever an equal-length typo needs — "apothicary"
+  // retrieves nothing, its variant "apothicar" returns the Apothecary
+  // Diaries family, and the gate accepts it (similarity 0.818 ≥ 0.72). So
+  // single tokens skip the word round and go straight to variants.
+  const selfQuery = allWords.length === 1 && allWords[0] === queryNorm;
+  const words = selfQuery ? [] : allWords.slice(0, RETRY_MAX_WORD_QUERIES);
   // The primary search already spent one request of the budget (rule f).
   let remaining = RETRY_REQUEST_BUDGET - 1;
-  if (words.length === 0 || remaining <= 0) return primaryMedia;
+  if ((words.length === 0 && !selfQuery) || remaining <= 0) return primaryMedia;
 
   const seen = new Set(primaryMedia.map((m) => m.id));
   const injected: RawSearchMedia[] = [];
   const poolSize = () => primaryMedia.length + injected.length;
+  // Rule (h): wall-clock deadline for the whole retry phase.
+  const startedAt = Date.now();
+  /** The caller's abort merged with the retry-phase deadline. */
+  const deadlineSignal = (): AbortSignal => {
+    const left = Math.max(1, RETRY_DEADLINE_MS - (Date.now() - startedAt));
+    const timeout = AbortSignal.timeout(left);
+    return signal ? AbortSignal.any([signal, timeout]) : timeout;
+  };
   /** One upstream page-1 search; a failed re-query degrades to no candidates. */
   const fetchCandidates = async (search: string): Promise<RawSearchMedia[]> => {
     try {
       // The signal travels into every retry round too, so a query
       // that was superseded mid-retry dies at the network instead of leaving
       // the parallel rounds running behind it.
-      const data = await fetcher(SEARCH_QUERY, { ...variables, search, page: 1 }, signal);
+      const data = await fetcher(
+        SEARCH_QUERY,
+        { ...variables, search, page: 1, perPage: RETRY_FETCH_PER_PAGE },
+        deadlineSignal()
+      );
       return data?.Page?.media || [];
     } catch {
       // The retry is a refinement — a failed re-query never fails the search.
@@ -916,21 +1057,38 @@ async function retrySparseSearch(
   };
 
   if (poolSize() >= RETRY_POOL_MIN) return [...primaryMedia, ...injected];
+  if (Date.now() - startedAt >= RETRY_DEADLINE_MS) return [...primaryMedia, ...injected];
 
   // Round 2 — every significant word at once (longest word first).
   const activeWords = words.slice(0, Math.min(words.length, remaining));
   remaining -= activeWords.length;
   const wordResults = await runRound(activeWords);
   const zeroWords: string[] = [];
+  // Single-token queries have no word round — their variant plan is built
+  // from the typed token itself (rule g, revised).
+  if (selfQuery) zeroWords.push(queryNorm);
   wordResults.forEach((candidates, i) => {
     if (candidates.length > 0) inject(candidates);
     else zeroWords.push(activeWords[i]);
   });
 
-  // Round 3 — truncation variants of the zero-return words, all at once
-  // (rule b, evidence in the note above). Budget split across those words,
-  // longest word first, so parallelism still cannot exceed rule (f).
-  const plans = zeroWords.map((word) => retryTruncationVariants(word));
+  // Round 3 — glued-run probes AND truncation variants of the zero-return
+  // words, all at once (rule b, evidence in the note above). Glued probes
+  // come first inside each word's plan: they are the only retrieval that
+  // can surface a mid-word space, and the shared budget is too small to
+  // reach them behind a full truncation plan. Budget split across the
+  // zero-return words, longest word first, so parallelism still cannot
+  // exceed rule (f).
+  const plans = zeroWords.map((word) => {
+    const seenProbe = new Set<string>();
+    const plan: string[] = [];
+    for (const probe of [...retryGluedProbes(word), ...retryTruncationVariants(word)]) {
+      if (seenProbe.has(probe)) continue;
+      seenProbe.add(probe);
+      plan.push(probe);
+    }
+    return plan;
+  });
   let variantBudget = remaining;
   const variantSearches: string[] = [];
   const variantOwners: string[] = []; // parallel to variantSearches
@@ -945,7 +1103,11 @@ async function retrySparseSearch(
   }
   remaining -= variantSearches.length;
 
-  if (variantSearches.length > 0 && poolSize() < RETRY_POOL_MIN) {
+  if (
+    variantSearches.length > 0 &&
+    poolSize() < RETRY_POOL_MIN &&
+    Date.now() - startedAt < RETRY_DEADLINE_MS
+  ) {
     const variantResults = await runRound(variantSearches);
     // Plans are longest-first, so the first non-empty hit per word is the
     // longest (most faithful) variant — inject that one only.
