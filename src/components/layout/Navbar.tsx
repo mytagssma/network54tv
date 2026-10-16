@@ -309,10 +309,27 @@ export default function Navbar() {
  * auto-hides (the URL owns that state — we don't collapse and don't blur);
  * a keystroke within the last 1500ms defers the collapse (focus is the
  * keyboard-open proxy, recency is the typing proxy — type, then scroll, and
- * the keyboard stays up); sm+ never collapses (the row is permanent there,
- * so collapsing would only blur mid-scroll). Passive scroll listener,
+ * the keyboard stays up), and the guard releases the moment the field
+ * blurs — keyboard dismissed, Enter-submit, Escape, or the collapse itself;
+ * sm+ never collapses (the row is permanent there, so collapsing would only
+ * blur mid-scroll). Passive scroll listener,
  * no preventDefault; the collapse reuses the row's height/opacity
  * transition (instant under prefers-reduced-motion).
+ *
+ * Keyboard dismiss (mobile): closing the software keyboard (Android back
+ * gesture or drag-dismiss) does NOT blur the input on its own — the page
+ * stays zoomed/keyboard-ready and the field stays focused, so every
+ * focus-based guard keeps waiting on a keyboard that is already gone (URL
+ * sync paused; auto-hide holding). A visualViewport resize listener tracks
+ * the viewport height against a keyboard-free baseline: "meaningfully
+ * open" once the height sits ≥120px below it, closed when it collapses
+ * back within 60px of the baseline — hysteresis, so URL-bar wiggle and
+ * other small chrome resizes touch neither edge. Closing blurs the field
+ * through the same release path as submit/Escape (releaseAndBlur below),
+ * and only when it actually holds focus; refs only — no state, so the
+ * no-JS Suspense copy has nothing to mirror — the effect runs client-side
+ * only, guards browsers without visualViewport, and removes its listener
+ * on unmount.
  *
  * Pull indicator (HOME only, <sm): a small chevron pill just below the
  * header (absolute against the nav — it never counts toward the measured
@@ -477,6 +494,8 @@ function HeaderSearch() {
   // collapse nor blur); a keystroke within TYPING_GUARD_MS defers the
   // collapse (focus is the keyboard-open proxy, recency is the typing
   // proxy — type, then scroll, and nothing collapses under the keyboard);
+  // every blur path zeroes lastTypedAt, so a keyboard dismissed by the
+  // viewport listener below frees the next clear scroll at once;
   // sm+ never collapses (the row is permanent there, so it would only blur
   // mid-scroll). Passive listener, no preventDefault; blur FIRST so the
   // keyboard dismisses together with the collapse; `revealed` resets, so
@@ -493,12 +512,55 @@ function HeaderSearch() {
       if (window.matchMedia("(min-width: 640px)").matches) return;
       if (Date.now() - lastTypedAt.current < TYPING_GUARD_MS) return;
       if (window.scrollY - baseline < HIDE_AFTER_PX) return;
+      lastTypedAt.current = 0; // guard releases with the blur below
       inputRef.current?.blur();
       setRevealed(false);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, [revealed, urlQ]);
+
+  // KEYBOARD-DISMISS BLUR (mobile) — see the doc above. Dismissing the
+  // software keyboard leaves the input focused; this listener is what
+  // unfocuses it. Baseline = a keyboard-free viewport height (captured at
+  // mount, tracked while the field is idle so browser-chrome movement
+  // doesn't masquerade as a keyboard, re-anchored after every close).
+  // Hysteresis guards the two edges: open needs ≥120px of drop (a real
+  // keyboard, not URL-bar wiggle), close needs the height back within
+  // 60px of baseline (a real collapse, not a mid-typing suggestion-bar
+  // resize). The close branch is ref-only — zero the typing guard, blur
+  // ONLY if this field actually holds focus (idempotent across the
+  // animation's repeated resizes) — so no setState lives in this effect,
+  // there is nothing to mirror in SSR, and nothing depends on render
+  // scope beyond stable refs. Without visualViewport (older browsers) the
+  // effect is a no-op; the listener is removed on unmount.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const KEYBOARD_OPEN_PX = 120;
+    const KEYBOARD_CLOSED_PX = 60;
+    let baseline = vv.height;
+    let open = false;
+    const onResize = () => {
+      const delta = baseline - vv.height;
+      if (!open) {
+        if (delta >= KEYBOARD_OPEN_PX) {
+          open = true;
+        } else if (document.activeElement !== inputRef.current) {
+          baseline = vv.height; // idle: any height is keyboard-free chrome
+        }
+        return;
+      }
+      if (delta >= KEYBOARD_CLOSED_PX) return; // still open / mid-animation
+      open = false;
+      lastTypedAt.current = 0; // the guard releases WITH the keyboard
+      const input = inputRef.current;
+      if (input && document.activeElement === input) input.blur();
+      baseline = vv.height; // re-anchor: chrome may have moved while open
+    };
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, []);
 
   // Indicator lifecycle (home only): fade/slide in ~600ms after mount, hold
   // with a subtle pulse ~3.5s, fade out, unmount. Every setState lives in
@@ -523,7 +585,10 @@ function HeaderSearch() {
   // every URL change, which made the URL a SECOND writer — a submitted
   // navigation landing mid-edit overwrote the newer draft. The URL is
   // therefore adopted only when the field holds no focus — which is exactly
-  // "not typing". Back/forward, internal links and browse's Clear (it pushes
+  // "not typing". Focus now actually drops when the keyboard closes (the
+  // viewport listener blurs), so a dismissed keyboard resumes this sync
+  // instead of freezing it until the scroll-collapse. Back/forward,
+  // internal links and browse's Clear (it pushes
   // /browse) all arrive unfocused and still sync the field as before; while
   // the user IS typing, nothing but the user can move `draft`.
   // Accepted trade-off: pressing the browser Back button while focused in the
@@ -534,11 +599,27 @@ function HeaderSearch() {
     setDraft(urlQ);
   }, [urlQ]);
 
+  // ONE blur path for every keyboard dismisser (viewport-close listener,
+  // Enter-submit, Escape): zero the typing guard FIRST — once the keyboard
+  // is gone there is nothing left to protect, so auto-hide's next clear
+  // scroll is free — then blur only if the field actually holds focus (the
+  // check keeps the viewport listener's mid-animation resizes idempotent;
+  // blur on an unfocused element would be a no-op anyway).
+  function releaseAndBlur() {
+    lastTypedAt.current = 0;
+    const input = inputRef.current;
+    if (input && document.activeElement === input) input.blur();
+  }
+
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     // Empty field → the browse landing view, exactly what the header's
     // standalone globe link does (Enter is now the only submit path).
     router.push(q ? `/browse?q=${encodeURIComponent(q)}` : "/browse");
+    // Submit takes the keyboard with it — the same release path a keyboard
+    // close takes, so Enter never leaves a focused field behind holding
+    // the page zoomed/keyboard-ready.
+    releaseAndBlur();
   }
 
   // ✕ (only rendered while the field has text): empties the field right
@@ -626,6 +707,15 @@ function HeaderSearch() {
               onChange={(e) => {
                 lastTypedAt.current = Date.now(); // arms the auto-hide typing guard
                 setDraft(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                // Escape = cheap keyboard dismiss (the same release path a
+                // viewport close takes). preventDefault blocks type=search's
+                // native Escape-clear, so the query survives — this only
+                // drops focus and the keyboard.
+                if (e.key !== "Escape") return;
+                e.preventDefault();
+                releaseAndBlur();
               }}
               placeholder="Search anime..."
               aria-label="Search anime"
