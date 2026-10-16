@@ -25,6 +25,18 @@
 html {
   background: var(--background);
   color: var(--foreground);
+  /* Layer 2 of the pull-to-refresh fix: the standard CSS switch that
+     disables the native PTR / rubber-band at the DOCUMENT edge before any
+     touchmove runs (Chromium, Firefox, and modern WebKit all honor it).
+     Trade-off: pull-to-refresh is disabled SITE-WIDE on mobile — accepted
+     because the pull-to-search reveal occupies exactly that interaction at
+     page top (Navbar's non-passive guard covers engines this reaches
+     late, and revealed state gives native scrolling back at the edge);
+     desktop is unaffected (no PTR exists there). Inner scrollers keep
+     their own edge rules — the watch page's bounded sections area uses
+     overscroll-contain, which governs ITS boundary and composes with this
+     root-level property rather than being overridden by it. */
+  overscroll-behavior-y: none;
 }
 
 /* ── Base body ─────────────────────────────────────────── */

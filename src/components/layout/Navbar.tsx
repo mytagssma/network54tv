@@ -233,10 +233,23 @@ export default function Navbar() {
  * (scrollY ≤ 4, ≥40px of travel). The qualifying pull opens the row
  * (≈200ms height/opacity, instant under prefers-reduced-motion) and
  * focuses the input inside the same touch gesture so the keyboard opens —
- * no arming step, no hint line, no second pull to wait for. Listeners are
- * passive and only ever arm at scrollY ≈ 0 with downward direction —
- * normal scrolling is never hijacked (the OS may still win some pulls to
- * refresh; that's accepted). A URL that carries ?q keeps the field visible
+ * no arming step, no hint line, no second pull to wait for. The reveal
+ * listeners themselves are passive and only ever arm at scrollY ≈ 0 with
+ * downward direction — normal scrolling is never hijacked. On top of them,
+ * ONE non-passive touchmove guard cancels the browser's native
+ * pull-to-refresh (the reported bug: Chrome's spinner / Safari's
+ * rubber-band refresh won the pull at page top before the reveal could
+ * act). It fires only while the gesture is armed — that touch started
+ * <sm at scrollY ≤ 4, row not visible — AND the finger is moving
+ * downward, vertical-dominant, from its own origin; at scrollY ≤ 4 a
+ * downward pull has no scroll to do, so the only default action cancelled
+ * is the refresh gesture itself. Horizontal-dominant movement is never
+ * cancelled (the Player's video swipe keeps its stream), and the guard
+ * tears down with the same `visible` gate: once revealed, native PTR
+ * works normally again until auto-hide returns the row to hidden. The
+ * root-level `overscroll-behavior-y: none` on <html> (globals.css) is
+ * the belt-and-braces layer — see that rule's comment for the site-wide
+ * trade-off. A URL that carries ?q keeps the field visible
  * unconditionally — a populated field is never hidden. The revealed flag
  * is component state: the navbar lives in the root layout, so it survives
  * client navigations for the page session and resets with the document
@@ -317,18 +330,30 @@ function HeaderSearch() {
   const visible = revealed || urlQ.length > 0;
 
   // SINGLE PULL-TO-SEARCH (<sm; the row is always visible from sm up, so the
-  // gesture has nothing to do there). Pure listeners — no preventDefault —
-  // so scrolling and the OS pull-to-refresh are untouched. Torn down once
-  // `visible` flips (populated URL or an already-open row).
+  // gesture has nothing to do there). The reveal listeners stay PURE —
+  // passive, no preventDefault — so scrolling is untouched; a separate
+  // NON-PASSIVE guard below cancels ONLY the native pull-to-refresh
+  // gesture (the bug: the browser's spinner consumed the pull at page top
+  // before the reveal could act). Everything in this effect — guard
+  // included — tears down once `visible` flips (populated URL or an
+  // already-open row), so the revealed state restores native PTR until
+  // auto-hide returns the row to hidden.
   useEffect(() => {
     if (visible) return;
     let startY = 0;
+    let startX = 0;
     let pulling = false;
+    // Downward travel from the touch's own origin that counts as "the
+    // pull" for the PTR guard — far below the 40px reveal threshold, so
+    // suppression starts the moment the pull departs, before any engine
+    // can commit to its refresh gesture.
+    const PTR_GUARD_EPSILON_PX = 2;
 
     const onTouchStart = (e: TouchEvent) => {
       // Arm only at the very top — a downward drag mid-page is just reading.
       if (window.matchMedia("(max-width: 639px)").matches && window.scrollY <= 4) {
         startY = e.touches[0].clientY;
+        startX = e.touches[0].clientX;
         pulling = true;
       } else {
         pulling = false;
@@ -360,12 +385,39 @@ function HeaderSearch() {
       setPullP(0); // an uncommitted pull releases the indicator
     };
 
+    // ── Native pull-to-refresh guard — THE one intentional preventDefault
+    // in this file (everything else here stays passive). Registered
+    // { passive: false } — a passive listener couldn't cancel anything.
+    // ALL of these must hold before the call:
+    //   1. `pulling` — this touch STARTED armed: its touchstart happened
+    //      <sm (max-width: 639px) at scrollY ≤ 4; the effect's own
+    //      `visible` gate already excludes revealed / ?q states. So sm+,
+    //      mid-page, and revealed gestures never reach this line;
+    //   2. dy > PTR_GUARD_EPSILON_PX from the touch's OWN origin — the
+    //      finger is genuinely pulling down (upward/still never);
+    //   3. dy ≥ |dx| — downward-DOMINANT. The Player's video swipe arms
+    //      only when |dx| ≥ 2.5×|dy| (and ≥44px), which always fails
+    //      this test — horizontal movement is never preventDefaulted, so
+    //      the Player's touch-action: pan-y stream is untouched.
+    // At scrollY ≤ 4 a downward pull has no scroll left to perform; the
+    // only default action this cancels is the browser's refresh gesture.
+    const onGuardMove = (e: TouchEvent) => {
+      if (!pulling) return;
+      const t = e.touches[0];
+      const dy = t.clientY - startY;
+      if (dy <= PTR_GUARD_EPSILON_PX) return;
+      if (Math.abs(t.clientX - startX) > dy) return; // horizontal-dominant — hands off
+      e.preventDefault();
+    };
+
     window.addEventListener("touchstart", onTouchStart, { passive: true });
     window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchmove", onGuardMove, { passive: false });
     window.addEventListener("touchend", onTouchEnd, { passive: true });
     return () => {
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchmove", onGuardMove);
       window.removeEventListener("touchend", onTouchEnd);
     };
   }, [visible]);
