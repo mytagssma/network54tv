@@ -43,7 +43,26 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3, si
     // completion — otherwise every submit in quick succession leaves an
     // orphaned request piling up against AniList.
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const res = await fetch(url, { ...options, signal });
+
+    // Network-level failures (connect timeout / DNS / reset — the
+    // `TypeError: fetch failed` class) used to skip this retry loop
+    // entirely and surface as an instant 500 on one transient blip.
+    // Treat them like 429s: back off and try again; only the caller's
+    // own abort is allowed through without a retry.
+    let res: Response;
+    try {
+      res = await fetch(url, { ...options, signal });
+    } catch (err) {
+      if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) throw err;
+      if (i === retries) throw err;
+      const delay = Math.min(1000 * 2 ** i, 10000);
+      console.warn(
+        `AniList network error, retrying in ${delay}ms (attempt ${i + 1}/${retries + 1}):`,
+        err instanceof Error ? err.message : err
+      );
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
 
     if (res.status === 429) {
       const retryAfter = res.headers.get("Retry-After");
@@ -82,16 +101,37 @@ async function runQuery(
     );
   }
 
-  const res = await fetchWithRetry(ANILIST_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Origin: "https://anilist.co",
-      Referer: "https://anilist.co/",
-    },
-    body: JSON.stringify({ query, variables }),
-  }, 3, signal);
+  // Even after fetchWithRetry's backoff, a sustained network outage still
+  // throws — the stale-first policy below must apply to THAT path too, not
+  // just to HTTP error statuses (it used to bypass stale entirely and crash
+  // the route into Next's default 500).
+  let res: Response;
+  try {
+    res = await fetchWithRetry(ANILIST_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Origin: "https://anilist.co",
+        Referer: "https://anilist.co/",
+      },
+      body: JSON.stringify({ query, variables }),
+    }, 3, signal);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    const stale = cache.get(cacheKey);
+    if (stale) {
+      return NextResponse.json(
+        { data: stale.data, stale: true },
+        { headers: cdnCacheable ? { "Cache-Control": GET_STALE_CACHE_CONTROL } : undefined }
+      );
+    }
+    console.warn("AniList upstream unreachable after retries:", err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { error: "AniList API error: upstream unreachable" },
+      { status: 502, headers: cdnCacheable ? { "Cache-Control": NO_STORE } : undefined }
+    );
+  }
 
   if (!res.ok) {
     // Serve stale cache if available — briefly CDN-cacheable, never a day.
