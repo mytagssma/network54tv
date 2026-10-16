@@ -79,7 +79,19 @@ function cacheKey(provider: string, title: string): string {
 }
 
 function normalize(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+  return (
+    s
+      .toLowerCase()
+      // Multiplication glyphs in romaji titles ("HUNTER×HUNTER", "SPY×FAMILY")
+      // are the letter x on every provider's side — map them to a SPACED x
+      // BEFORE the strip below, or the words glue together ("hunterhunter")
+      // and no provider search hit can ever match them.
+      .replace(/[×✕✖]/g, " x ")
+      .replace(/[^a-z0-9\s]/g, "")
+      // Collapse the spaces the glyph map may have doubled ("a× b" → "a x  b").
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 // ─── Negative cache ──────────────────────────────────────────────────
@@ -128,8 +140,9 @@ function forgetNegative(key: string): void {
 /**
  * Token-level Jaccard similarity between two (already normalizable) titles.
  * Used to decide whether a lone search hit still looks like the requested
- * anime — e.g. "spy x family" vs "spy family" (the `×` is stripped by
- * `normalize`, so the substring test below misses while the anime matches).
+ * anime — e.g. the trailing year in "HUNTER×HUNTER (2011)" against a
+ * provider's bare "Hunter x Hunter", or a romaji query against an English
+ * display title (the substring test above misses while the anime matches).
  */
 function titleSimilarity(a: string, b: string): number {
   const setA = new Set(normalize(a).split(/\s+/).filter(Boolean));
@@ -214,6 +227,21 @@ function titleQueryVariants(title: string): string[] {
     if (t && !variants.includes(t)) variants.push(t);
   };
   push(title);
+  // Romaji "×" titles ("HUNTER×HUNTER", "SPY×FAMILY") are indexed on provider
+  // search endpoints in the letter-x form — query that form FIRST so the
+  // (slower, multi-second) provider search isn't spent on a query that
+  // returns nothing. The raw form stays as a fallback. Matching below runs
+  // on normalized names either way, so this only affects which query reaches
+  // the provider, never how hits are scored.
+  const xForm = title
+    .replace(/[×✕✖]/g, " x ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (xForm !== title) {
+    variants.length = 0;
+    push(xForm);
+    push(title);
+  }
   // Head before ":" / "：" / " - " (a bare "Re:" must NOT yield "Re").
   const head = (title.split(/\s+[:：-]\s+|[:：]/)[0] ?? "").trim();
   if (head && head !== title && normalize(head).split(/\s+/).filter(Boolean).length >= 2) {
