@@ -22,6 +22,12 @@ interface StreamCacheEntry {
   expires: number;
   /** Provider that answered, or null when the walk found nothing. */
   resolvedProvider: string | null;
+  /**
+   * The `providerId` preference this walk ran under (null = no preference).
+   * Used by `canServe` so an explicit choice is never answered with another
+   * preference's outcome unless that outcome IS the provider it names.
+   */
+  requestedProvider: string | null;
 }
 
 const streamCache = new Map<string, StreamCacheEntry>();
@@ -37,7 +43,6 @@ const STREAM_CACHE_MAX = 100;
 
 interface WalkOutcome {
   data: StreamResponseBody;
-  storeKey: string;
   resolvedProvider: string | null;
 }
 
@@ -62,6 +67,25 @@ function writeCache(key: string, entry: StreamCacheEntry): void {
   }
 }
 
+/**
+ * May a cache entry produced by SOME walk answer THIS request?
+ *
+ * Without an explicit `providerId` the answer is always yes: "any" means
+ * "any working sources", and a miss that exhausted the chain is a miss for
+ * everyone. With an explicit `providerId` the entry must either come from a
+ * walk that ran under the SAME preference (`requestedProvider` — re-running
+ * that walk replays the same fall-through), or it must have been answered by
+ * the named provider itself, or it must be a full-chain miss.
+ */
+function canServe(entry: StreamCacheEntry, providerId?: string): boolean {
+  if (!providerId) return true;
+  return (
+    entry.requestedProvider === providerId ||
+    entry.resolvedProvider === providerId ||
+    entry.resolvedProvider === null
+  );
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const title = searchParams.get("title");
@@ -81,7 +105,12 @@ export async function GET(req: NextRequest) {
   }
 
   const anilistId = anilistIdParam ? parseInt(anilistIdParam, 10) : undefined;
-  const strict = searchParams.get("strict") === "true";
+  // `strict=1` (contract shared with the player) = "requested type only, no
+  // opposite-type fallback" — the stage-2 re-walk below is skipped entirely.
+  // Absent (or any other value) keeps the old self-contained two-stage
+  // behaviour byte-for-byte for direct callers that don't send it yet.
+  const strictParam = searchParams.get("strict");
+  const strict = strictParam === "1" || strictParam === "true";
   // Retry bypass: the player's Retry button sends `fresh=1` so a manual retry
   // is NOT served the cached failure. Without this, a failed walk is cached
   // for 90s (STREAM_FAIL_TTL) and shared across all `server` values — so for
@@ -91,32 +120,54 @@ export async function GET(req: NextRequest) {
   // so the next ordinary request benefits from the re-walk either way.
   const fresh = searchParams.get("fresh") === "1";
 
-  // ── Key canonicalisation ─────────────────────────────────────────────
-  // `server` only ever reaches anikoto: every other provider's `getSources`
-  // takes it as `_server` and ignores it, and anikoto already falls back
-  // through `[server, "hd-1", "vidstream-2"]` internally (probed: all four of
-  // its servers return one identical master). So the key carries `server` only
-  // for the one provider where it can change the answer — and that is only
-  // known once a walk resolves. Hence two keys: `exact` first, then `canonical`.
-  const baseKey = `${title}::${episodeNumber}::${type}::${strict}::${providerId || "any"}`;
-  const exactKey = `${baseKey}::${server || "any"}`;
-  const canonicalKey = `${baseKey}::any`;
+  // ── Key consolidation ─────────────────────────────────────────────────
+  // Investigation of which params actually change the RESULT SET:
+  //
+  //  • `server=` — only ever reaches anikoto: every other provider's
+  //    `getSources` takes it as `_server` and ignores it, and anikoto falls
+  //    back through `[server, "hd-1", "vidstream-2"]` internally (probed:
+  //    all of its servers return one identical master). It therefore never
+  //    changes the result set, and it is DROPPED from the cache key
+  //    entirely. Before this, anikoto results were stored under a
+  //    server-suffixed exact key and NOT shared with the canonical one, so
+  //    the same episode paid one walk per server value (measured in the dev
+  //    log: "ROAD OF NARUTO" ep1 — three walks differing only in `server`).
+  //
+  //  • `providerId=` — only REORDERS the chain (phase 1 preference; phase
+  //    2/3 still walk every provider, so a miss is a miss under any
+  //    preference). It does change which provider WINS, so an explicit
+  //    choice must never be answered with another preference's provider
+  //    — that is enforced logically (see `canServe`) instead of by key
+  //    fragmentation: results live under ONE canonical key, explicit
+  //    walks additionally memoise under a per-preference key, and the
+  //    canonical entry records which preference produced it. Log evidence
+  //    of the old fragmentation: "Dandivine" ep1 — a providerId=kickassanime
+  //    walk (3.8s) followed seconds later by a bare walk of the same
+  //    episode (4.1s) that could only reach the same provider anyway.
+  //
+  //  • `strict` stays in the key: it DOES change the result set (stage 2
+  //    may answer a sub request with dub sources), and the player relies on
+  //    the key carrying it (see its warm-up comment).
+  const cacheKey = `${title}::${episodeNumber}::${type}::${strict ? 1 : 0}`;
+  const providerKey = providerId ? `${cacheKey}::p=${providerId}` : null;
 
-  const exactHit = fresh ? null : readCache(exactKey);
-  if (exactHit) return NextResponse.json(exactHit.data);
-  if (server && !fresh) {
-    const sharedHit = readCache(canonicalKey);
-    // Reuse the shared entry only when the provider that produced it ignores
-    // `server`; an anikoto result is server-specific. A recorded miss has
-    // `resolvedProvider === null` and is shared — a walk that exhausted every
-    // provider would have failed under any `server`, because anikoto retried
-    // its own fallback list on the way through.
-    if (sharedHit && sharedHit.resolvedProvider !== "anikoto") {
-      return NextResponse.json(sharedHit.data);
+  if (!fresh) {
+    let hit: StreamCacheEntry | null = providerKey ? readCache(providerKey) : null;
+    if (!hit) {
+      const shared = readCache(cacheKey);
+      if (shared && canServe(shared, providerId)) hit = shared;
     }
+    if (hit) return NextResponse.json(hit.data);
   }
 
   const runWalk = async (): Promise<WalkOutcome> => {
+    // One log line per ACTUAL walk (cache hits and single-flight joins never
+    // reach here) — the before/after evidence trail for key consolidation
+    // and for the strict stage-2 skip below.
+    console.log(
+      `[stream] walk start "${title}" ep${episodeNumber} ${type} strict=${strict ? 1 : 0} providerId=${providerId || "any"} server=${server || "any"}`
+    );
+
     // Stage 1 — the requested type.
     let result = await getStreamingSources(
       title,
@@ -129,9 +180,14 @@ export async function GET(req: NextRequest) {
 
     // Stage 2 — the other type, so a dub-only episode still answers a
     // `type=sub` request. (The player runs its own `type=dub` probe too; this
-    // keeps the route self-contained for direct callers.) `strict` skips it.
+    // keeps the route self-contained for direct callers.) `strict=1` skips
+    // it: the request asked for ONE type and the player already probes the
+    // other itself, so without this a miss cost TWO full provider walks.
     if (!strict && !result) {
       const otherType = type === "sub" ? "dub" : "sub";
+      console.log(
+        `[stream] walk stage2 opposite-type re-walk "${title}" ep${episodeNumber} ${otherType}`
+      );
       result = await getStreamingSources(
         title,
         episodeNumber,
@@ -157,8 +213,6 @@ export async function GET(req: NextRequest) {
           error: `No streaming sources available for this episode from the current providers. Try selecting a different provider.`,
           providerId,
         },
-        // Shared across `server` values (see above), hence the canonical key.
-        storeKey: canonicalKey,
         resolvedProvider: null,
       };
     }
@@ -173,11 +227,7 @@ export async function GET(req: NextRequest) {
     if (result.intro) data.intro = result.intro;
     if (result.outro) data.outro = result.outro;
 
-    return {
-      data,
-      storeKey: result.providerId === "anikoto" && server ? exactKey : canonicalKey,
-      resolvedProvider: result.providerId,
-    };
+    return { data, resolvedProvider: result.providerId };
   };
 
   try {
@@ -186,24 +236,32 @@ export async function GET(req: NextRequest) {
     // only in `server` (vidstream-2 / vidcloud-1 / vidstream-1) — measured as
     // 6-10 concurrent 35-51s walks doing identical upstream work. Collapsed
     // onto one walk, keyed canonically so the concurrent variants share it.
-    // (Cross-server sharing during the walk itself is safe for the same reason
-    // `server` is dropped from the canonical key: anikoto's servers all resolve
-    // to one identical master, and no other provider reads the value.)
-    let walk = inFlight.get(canonicalKey);
+    // The key deliberately matches the pre-consolidation canonical key
+    // (preference included, server excluded): walk SEMANTICS are unchanged,
+    // only the cache read/write layer was consolidated.
+    const walkKey = `${cacheKey}::${providerId || "any"}`;
+    let walk = inFlight.get(walkKey);
     if (!walk) {
       walk = runWalk()
         .then((outcome): StreamResponseBody => {
-          writeCache(outcome.storeKey, {
+          const entry: StreamCacheEntry = {
             data: outcome.data,
             expires: Date.now() + (outcome.resolvedProvider ? STREAM_CACHE_TTL : STREAM_FAIL_TTL),
             resolvedProvider: outcome.resolvedProvider,
-          });
+            requestedProvider: providerId ?? null,
+          };
+          // Explicit walks are valid for "any" readers (any working sources
+          // answers "any"), so the canonical key takes every walk's outcome;
+          // the per-preference key additionally keeps repeat explicit choices
+          // stable so alternating preferences can't evict each other.
+          writeCache(cacheKey, entry);
+          if (providerKey) writeCache(providerKey, entry);
           return outcome.data;
         })
         .finally(() => {
-          inFlight.delete(canonicalKey);
+          inFlight.delete(walkKey);
         });
-      inFlight.set(canonicalKey, walk);
+      inFlight.set(walkKey, walk);
     }
     return NextResponse.json(await walk);
   } catch (e) {

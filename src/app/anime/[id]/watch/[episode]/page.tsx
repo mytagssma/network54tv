@@ -1,48 +1,55 @@
+import { Suspense, type ReactNode } from "react";
 import { getAnimeById, getAnimeFull } from "@/lib/anilist";
+import type { Anime, Episode } from "@/types/anime";
 import { getAudioFlags, getEpisodes } from "@/lib/providers";
 import { notFound } from "next/navigation";
 import WatchDock from "@/components/watch/WatchDock";
-import { EmptyState } from "@/components/anime/Availability";
+import { EmptyState, LoadingNote } from "@/components/anime/Availability";
 import FranchiseStrip from "@/components/watch/FranchiseStrip";
 import { buildFranchiseEntries } from "@/components/watch/franchiseEntries";
-import { getFranchiseItems } from "@/lib/franchise";
+import { getFranchiseItems, type FranchiseSeedMedia } from "@/lib/franchise";
 import Link from "next/link";
 
-export const revalidate = 0;
+// Same TTL as the detail page — per-episode URLs are per-cache-entry, so
+// navigation to another episode still renders fresh; what this caches is one
+// episode's shell for five minutes instead of re-rendering it every hit.
+export const revalidate = 300;
 
 interface Props {
   params: Promise<{ id: string; episode: string }>;
   searchParams: Promise<{ provider?: string }>;
 }
 
-export default async function WatchPage({ params, searchParams }: Props) {
-  const { id, episode } = await params;
-  const { provider } = await searchParams;
-  const animeId = parseInt(id, 10);
-  const episodeNumber = parseInt(episode, 10);
-  if (isNaN(animeId) || isNaN(episodeNumber)) notFound();
-
-  const anime = await getAnimeById(animeId);
-  if (!anime) notFound();
-
+/**
+ * Everything under the title band, streamed: the franchise walk is the only
+ * await left before the player mounts, and it used to hold the WHOLE page
+ * (band included) hostage while the episodes were already in hand. With the
+ * boundary here, the breadcrumb + title line paint in the first chunk and
+ * WatchDock streams in behind the shared LoadingNote.
+ */
+async function WatchBody({
+  anime,
+  animeId,
+  episodeNumber,
+  provider,
+  fullMedia,
+  episodes,
+  title,
+}: {
+  anime: Anime;
+  animeId: number;
+  episodeNumber: number;
+  provider?: string;
+  fullMedia: FranchiseSeedMedia | null;
+  episodes: Episode[];
+  title: ReactNode;
+}) {
   // getAnimeById maps DETAIL_QUERY down to `Anime` (no relations), so pull the
   // raw media too for the franchise strip — same query, so Next's fetch cache
   // (revalidate: 300) serves it from the request getAnimeById just made. The
   // shared resolver then expands the relation graph transitively (batched
   // `id_in` fetches, each cached for 300s) so this strip lists exactly the
   // same entries, with the same season numbers, as the detail page's row.
-  const [fullMedia, episodeList] = await Promise.all([
-    getAnimeFull(animeId),
-    getEpisodes(anime.title, animeId, provider),
-  ]);
-  const rawEpisodes = episodeList.episodes;
-  // Why the list below can be empty — `ok` / `none` / `suspect`. It only
-  // changes the reason line under `// NO EPISODE DATA`, never the heading.
-  const { listStatus } = episodeList;
-  // Fold in any sub/dub flags an earlier audio probe already learned — pure
-  // cache lookup, zero I/O, so it costs nothing here. `episodeHasDub` below is
-  // the ONE dub truth the player consumes; it does not re-derive it.
-  const { episodes } = await getAudioFlags(rawEpisodes, animeId, false);
   const franchise = buildFranchiseEntries(
     await getFranchiseItems(animeId, fullMedia),
     animeId
@@ -72,31 +79,9 @@ export default async function WatchPage({ params, searchParams }: Props) {
     currentEpIndex < availableEpisodes.length - 1
       ? availableEpisodes[currentEpIndex + 1]
       : null;
-  const providerQs = provider ? `?provider=${provider}` : "";
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-xs text-[var(--text-decorative)] mb-4">
-        <Link
-          href="/"
-          className="text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors"
-        >
-          Home
-        </Link>
-        <span className="text-[var(--accent)]">/</span>
-        <Link
-          href={`/anime/${animeId}${providerQs}`}
-          className="text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors truncate max-w-[200px]"
-        >
-          {anime.title}
-        </Link>
-        <span className="text-[var(--accent)]">/</span>
-        <span className="text-[var(--accent)]/50">
-          EP {String(episodeNumber).padStart(2, "0")}
-        </span>
-      </div>
-
+    <>
       {/* Player + episode panel — WatchDock owns the dock toggle and the
           title band: the h1 renders above the player in both modes, and the
           docked panel header joins it on the right (lg+, preference
@@ -104,14 +89,7 @@ export default async function WatchPage({ params, searchParams }: Props) {
           player. FranchiseStrip passes through as children so it stays
           server-rendered here, full width, below the docked row. */}
       <WatchDock
-        title={
-          <h1 className="text-xl font-bold text-[var(--accent)] mb-4 uppercase tracking-wider">
-            {anime.title}{" "}
-            <span className="text-[var(--accent)]/50 font-mono text-base">
-              &mdash; Episode {episodeNumber}
-            </span>
-          </h1>
-        }
+        title={title}
         animeTitle={anime.title}
         episodeNumber={episodeNumber}
         anilistId={animeId}
@@ -143,11 +121,104 @@ export default async function WatchPage({ params, searchParams }: Props) {
         {/* Franchise / season switcher (hidden when there are no relations) */}
         <FranchiseStrip entries={franchise} provider={provider} />
       </WatchDock>
+    </>
+  );
+}
+
+/** Suspense fallback: the title band still paints immediately, over the
+ *  shared LoadingNote, so the streamed swap only adds the player. */
+function WatchBodySkeleton({ title }: { title: ReactNode }) {
+  return (
+    <div>
+      {title}
+      <div className="py-4">
+        <LoadingNote state="list" />
+      </div>
+    </div>
+  );
+}
+
+export default async function WatchPage({ params, searchParams }: Props) {
+  const { id, episode } = await params;
+  const { provider } = await searchParams;
+  const animeId = parseInt(id, 10);
+  const episodeNumber = parseInt(episode, 10);
+  if (isNaN(animeId) || isNaN(episodeNumber)) notFound();
+
+  const anime = await getAnimeById(animeId);
+  if (!anime) notFound();
+
+  const [fullMedia, episodeList] = await Promise.all([
+    getAnimeFull(animeId),
+    getEpisodes(anime.title, animeId, provider),
+  ]);
+  const rawEpisodes = episodeList.episodes;
+  // Why the list below can be empty — `ok` / `none` / `suspect`. It only
+  // changes the reason line under `// NO EPISODE DATA`, never the heading.
+  const { listStatus } = episodeList;
+  // Fold in any sub/dub flags an earlier audio probe already learned — pure
+  // cache lookup, zero I/O, so it costs nothing here. `episodeHasDub` below is
+  // the ONE dub truth the player consumes; it does not re-derive it. (No
+  // metadata badge line under the h1 — the player page stays title-only by
+  // request; the detail page owns the badge language.)
+  const { episodes } = await getAudioFlags(rawEpisodes, animeId, false);
+
+  const providerQs = provider ? `?provider=${provider}` : "";
+
+  const title = (
+    <h1 className="text-xl font-bold text-[var(--accent)] mb-4 uppercase tracking-wider">
+      {anime.title}{" "}
+      <span className="text-[var(--accent)]/50 font-mono text-base">
+        &mdash; Episode {episodeNumber}
+      </span>
+    </h1>
+  );
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-6">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 text-xs text-[var(--text-decorative)] mb-4">
+        <Link
+          href="/"
+          className="text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors"
+        >
+          Home
+        </Link>
+        <span className="text-[var(--accent)]">/</span>
+        <Link
+          href={`/anime/${animeId}${providerQs}`}
+          className="text-[var(--accent)]/50 hover:text-[var(--accent)] transition-colors truncate max-w-[200px]"
+        >
+          {anime.title}
+        </Link>
+        <span className="text-[var(--accent)]">/</span>
+        <span className="text-[var(--accent)]/50">
+          EP {String(episodeNumber).padStart(2, "0")}
+        </span>
+      </div>
+
+      {/* The franchise walk is the last await before the player — stream it
+          (and everything downstream of it) instead of blocking first paint.
+          Each episode URL is its own cache entry, so per-episode navigation
+          still renders fresh under `revalidate = 300`. */}
+      <Suspense fallback={<WatchBodySkeleton title={title} />}>
+        <WatchBody
+          anime={anime}
+          animeId={animeId}
+          episodeNumber={episodeNumber}
+          provider={provider}
+          fullMedia={fullMedia}
+          episodes={episodes}
+          title={title}
+        />
+      </Suspense>
 
       {/* Zero episodes is a real provider answer, not a loading gap, so it
           says so instead of rendering nothing under the player. (The
           non-empty case renders inside WatchDock, which owns the panel's
-          docked-rail vs below-the-band positions.) */}
+          docked-rail vs below-the-band positions.) Kept OUTSIDE the
+          Suspense boundary — it depends on the episodes, which are already
+          in hand, so it paints with the shell above. */}
       {episodes.length === 0 && (
         <div className="mt-8">
           <EmptyState

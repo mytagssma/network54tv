@@ -7,6 +7,13 @@ import FranchiseRow from "@/components/anime/FranchiseRow";
 import { getFranchiseItems } from "@/lib/franchise";
 import { getAudioFlags, getEpisodes } from "@/lib/providers";
 import { LoadingNote } from "@/components/anime/Availability";
+import {
+  formatAirsDate,
+  formatAirsDelta,
+  formatLabel,
+  resolveEpisodeFraction,
+  statusLabel,
+} from "@/lib/anime-meta";
 
 export const revalidate = 300;
 
@@ -70,6 +77,27 @@ function EpisodeListSkeleton() {
   );
 }
 
+/**
+ * The relation walk, streamed behind its own Suspense boundary so it can no
+ * longer block first paint: the shell above (title, badges, synopsis, genres)
+ * and the episode list (which streams independently) render without waiting
+ * for it.
+ *
+ * getAnimeById maps DETAIL_QUERY down to `Anime` (relations dropped), so pull
+ * the raw media too for the franchise row — same query, so Next's fetch cache
+ * (revalidate: 300) serves it from the request getAnimeById just made. The
+ * resolver then walks the relation graph transitively (bounded BFS over batch
+ * `id_in` fetches, each cached for 300s) so seasons that are only linked
+ * through *other* entries show up here too. The fallback is `null` because
+ * FranchiseRow itself renders nothing when no entry qualifies — a standalone
+ * title shows the same page either way, so there is no layout shift.
+ */
+async function FranchiseSection({ animeId }: { animeId: number }) {
+  const fullMedia = await getAnimeFull(animeId);
+  const franchiseItems = await getFranchiseItems(animeId, fullMedia);
+  return <FranchiseRow items={franchiseItems} currentId={animeId} />;
+}
+
 export default async function AnimeDetailPage({ params, searchParams }: Props) {
   const { id } = await params;
   const animeId = parseInt(id, 10);
@@ -78,15 +106,6 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
   const anime = await getAnimeById(animeId);
   if (!anime) notFound();
 
-  // getAnimeById maps DETAIL_QUERY down to `Anime` (relations dropped), so pull
-  // the raw media too for the franchise row — same query, so Next's fetch cache
-  // (revalidate: 300) serves it from the request getAnimeById just made. The
-  // resolver then walks the relation graph transitively (bounded BFS over batch
-  // `id_in` fetches, each cached for 300s) so seasons that are only linked
-  // through *other* entries show up here too.
-  const fullMedia = await getAnimeFull(animeId);
-  const franchiseItems = await getFranchiseItems(animeId, fullMedia);
-
   // AniList scores are 0–100 → render as e.g. 8.5. Same gate and shape as
   // AnimeCard.tsx (ratingLabel): a number > 0 only, so an unresolved/absent
   // score renders no element at all rather than a stray ★.
@@ -94,6 +113,19 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
     typeof anime.score === "number" && Number.isFinite(anime.score) && anime.score > 0
       ? (anime.score / 10).toFixed(1)
       : null;
+
+  // Same fraction the card badge renders (`3/12 EP` while airing, plain
+  // `12 EP` once the run is done) — one episode-count truth across surfaces.
+  // Null = AniList doesn't know the total → no episode badge at all.
+  const fraction = resolveEpisodeFraction(anime);
+  // Quiet schedule line: "Ep 4 airs in 2d" while airing, "Airs Oct 20" for a
+  // not-yet-released title with a known premiere.
+  const nextAiring = anime.status === "RELEASING" ? anime.nextAiringEpisode : undefined;
+  const airsDelta =
+    typeof nextAiring?.episode === "number" && nextAiring.airingAt != null
+      ? formatAirsDelta(nextAiring.airingAt)
+      : null;
+  const airsDate = anime.status === "NOT_YET_RELEASED" ? formatAirsDate(anime.startDate) : null;
 
   return (
     <div className="min-h-screen bg-[var(--background)] text-white">
@@ -139,22 +171,49 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
                 )}
                 {anime.status && (
                   <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
-                    {anime.status.replace(/_/g, " ")}
+                    {statusLabel(anime.status)}
                   </span>
                 )}
                 {anime.format && (
                   <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
-                    {anime.format}
+                    {formatLabel(anime.format)}
                   </span>
                 )}
-                {anime.episodes != null && (
+                {/* One episode-count truth: the SAME fraction the card badge
+                    renders — `3/12 EP` while airing, `12 EP` once released —
+                    instead of a bare total next to a card that knows better. */}
+                {fraction && (
                   <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
-                    {anime.episodes} ep
+                    {fraction.label}
+                  </span>
+                )}
+                {/* Quiet schedule/premiere line — same badge box, same ladder. */}
+                {airsDelta && nextAiring?.episode != null && (
+                  <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
+                    Ep {nextAiring.episode} airs {airsDelta}
+                  </span>
+                )}
+                {airsDate && (
+                  <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
+                    {airsDate}
                   </span>
                 )}
                 {anime.season && anime.seasonYear && (
                   <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
                     {anime.season} {anime.seasonYear}
+                  </span>
+                )}
+                {/* Selected in DETAIL_QUERY and mapped since forever, but never
+                    rendered — now the studio line + runtime complete the badge
+                    block, in the exact same box. */}
+                {anime.studios.length > 0 && (
+                  <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
+                    {anime.studios.slice(0, 2).join(", ")}
+                  </span>
+                )}
+                {typeof anime.duration === "number" && anime.duration > 0 && (
+                  <span className="bg-transparent border border-[var(--accent)]/30 text-[var(--accent)] px-3 py-1 font-mono uppercase tracking-wider text-xs rounded-none">
+                    {anime.duration} min
                   </span>
                 )}
               </div>
@@ -198,8 +257,12 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
           </div>
         </div>
 
-        {/* ── Same franchise — compact row of related entries (hidden when none) ── */}
-        <FranchiseRow items={franchiseItems} currentId={animeId} />
+        {/* ── Same franchise — compact row of related entries (hidden when none).
+            Streamed behind its own boundary so the relation walk can't hold
+            the first paint hostage while the episodes stream in. ── */}
+        <Suspense fallback={null}>
+          <FranchiseSection animeId={animeId} />
+        </Suspense>
 
         {/* ── Episode List — server-fetched, streamed behind a Suspense
             boundary: the shell above paints immediately and this section

@@ -11,10 +11,13 @@ import { cn } from "@/lib/utils";
  * Paged episode selector (YouTube playlist-panel style).
  *
  * - ONE level of boxing: the outer panel owns the frame; the rows inside are
- *   FLAT — no per-row chips — separated by collapsed hairline grid lines
+ *   FLAT — no per-row *box*, separated by collapsed hairline grid lines
  *   (top+left at a low accent tint, tucked under the panel border), with
- *   every state carried by background + text colour alone. The panel is the
- *   only box; if borders ever return to the rows, the panel border goes.
+ *   every state carried by background + text colour alone. The two exceptions
+ *   are borrowed verbatim, not new design: EpisodeList's SUB/DUB mini-chips
+ *   (only on rows whose flags are known true) and the shared `N/A` reason
+ *   label on unavailable rows. The panel is the only box; if borders ever
+ *   return to the rows, the panel border goes.
  * - Dense rows: episode number + short (truncated) name.
  * - Chunk navigation: `‹ 1/5 ›` — never renders the whole run at once.
  * - Natural height: each page is bounded by its own item count, so the grid
@@ -265,6 +268,10 @@ export default function EpisodeSelector({
           {items.map((ep, i) => {
             const isCurrent = ep.number === currentEpisode;
             const isAvailable = ep.available !== false;
+            // Only tag what is actually known — unknown availability renders
+            // no chip (same gate as EpisodeList's rows).
+            const hasSub = ep.hasSub === true;
+            const hasDub = ep.hasDub === true;
 
             const label = getSectionLabel ? getSectionLabel(ep) : null;
             const prevLabel = i > 0 && getSectionLabel ? getSectionLabel(items[i - 1]) : null;
@@ -300,6 +307,15 @@ export default function EpisodeSelector({
                 >
                   {ep.title || `Episode ${ep.number}`}
                 </span>
+                {/* Per-row audio flags — the exact SUB/DUB mini-chips EpisodeList
+                    renders (same components, same gate: only what is known true),
+                    so both episode surfaces agree on a row's tracks. */}
+                {isAvailable && (hasSub || hasDub) && (
+                  <span className="flex items-center gap-1 shrink-0">
+                    {hasSub && <AvailabilityChip kind="sub" />}
+                    {hasDub && <AvailabilityChip kind="dub" />}
+                  </span>
+                )}
                 {isCurrent ? (
                   <span aria-hidden="true" className="shrink-0 text-[9px] leading-none">
                     &#9654;

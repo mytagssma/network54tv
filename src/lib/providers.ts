@@ -82,6 +82,49 @@ function normalize(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
 }
 
+// ─── Negative cache ──────────────────────────────────────────────────
+//
+// Some upstream calls fail UNCONDITIONALLY for a given anime and re-pay
+// their full cost on every single provider walk: animeunity's search
+// answers 403 to every query (bot wall — measured ~50×/session in the dev
+// log), anineko's resolveSeries scrapes AniList + AniZip + several
+// catalogue searches before concluding "match not found" for titles it
+// simply doesn't carry (~66×), and megaplay's session fetch rides
+// AniList's rate limiter (the 429s in the log). A short-lived "this
+// failed recently" marker keyed per anime stops the repeat payment
+// WITHOUT touching node_modules; a success clears the marker, so a
+// provider that recovers is consulted again on the next walk.
+const negativeCache = new Map<string, number>(); // key → expiresAt
+const NEGATIVE_CACHE_TTL_MS = 10 * 60 * 1000;
+const NEGATIVE_CACHE_MAX = 500;
+
+/** Scope-guarded key: `${scope}::${anilistId}:${normalized title}`. */
+function negativeCacheKey(scope: string, title: string, anilistId?: number): string {
+  return `${scope}::${anilistId ?? ""}:${normalize(title)}`;
+}
+
+function isNegativelyCached(key: string): boolean {
+  const expiresAt = negativeCache.get(key);
+  if (expiresAt === undefined) return false;
+  if (Date.now() >= expiresAt) {
+    negativeCache.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function rememberNegative(key: string): void {
+  negativeCache.set(key, Date.now() + NEGATIVE_CACHE_TTL_MS);
+  if (negativeCache.size > NEGATIVE_CACHE_MAX) {
+    const oldest = negativeCache.keys().next().value;
+    if (oldest !== undefined) negativeCache.delete(oldest);
+  }
+}
+
+function forgetNegative(key: string): void {
+  negativeCache.delete(key);
+}
+
 /**
  * Token-level Jaccard similarity between two (already normalizable) titles.
  * Used to decide whether a lone search hit still looks like the requested
@@ -207,9 +250,19 @@ async function searchProvider(
   providerName: string,
   searchFn: (q: string) => Promise<any>,
   title: string,
-  idOfResult?: (r: any) => string | number | null
+  idOfResult?: (r: any) => string | number | null,
+  negativeKey?: string
 ): Promise<(string | number)[]> {
   try {
+    // A recently-cached unconditional failure (see the negative cache
+    // section) is not worth re-paying — treat it as "this provider has
+    // nothing for this anime" until the marker expires.
+    if (negativeKey && isNegativelyCached(negativeKey)) {
+      console.warn(
+        `[providers] searchProvider(${providerName}) skipped — recent failure is negative-cached for "${title}"`
+      );
+      return [];
+    }
     const clean = normalize(title);
     const marker = trailingSeasonMarker(clean);
     const markerOk = (name: string): boolean => {
@@ -254,6 +307,9 @@ async function searchProvider(
     let loneHit: any = null;
     for (const q of titleQueryVariants(title)) {
       const res = await searchFn(q);
+      // The upstream ANSWERED — any earlier failure marker for this key is
+      // obsolete, even when this answer itself carries no candidates.
+      if (negativeKey) forgetNegative(negativeKey);
       const results = res?.results ?? res?.data ?? [];
       if (!Array.isArray(results) || results.length === 0) continue;
       const candidates = collect(results);
@@ -275,6 +331,14 @@ async function searchProvider(
     return loneId !== null ? [loneId] : [];
   } catch (err) {
     console.warn(`[providers] searchProvider(${providerName}) failed:`, err instanceof Error ? err.message : err);
+    // Only the UNCONDITIONAL block (403) is worth remembering — a transient
+    // blip (timeout / reset) should be retried on the very next walk.
+    if (
+      negativeKey &&
+      /(?:^|\D)403(?:\D|$)|Forbidden/i.test(err instanceof Error ? err.message : String(err))
+    ) {
+      rememberNegative(negativeKey);
+    }
     return [];
   }
 }
@@ -703,15 +767,30 @@ const PROVIDERS: ProviderDef[] = [
       const cacheKeyStr = cacheKey("anineko", title);
       const cached = sessionCache.get(cacheKeyStr);
       if (cached) return cached;
+      // "match not found" is UNCONDITIONAL for titles anineko doesn't carry
+      // — and reaching that conclusion costs AniList + AniZip + several
+      // catalogue scrapes (measured ~66 repeats/session in the dev log).
+      // Remember it for 10 min; a success clears the marker.
+      const negKey = negativeCacheKey("anineko-resolve", title, anilistId);
+      if (isNegativelyCached(negKey)) {
+        console.warn(
+          `[providers] anineko getSession skipped — recent "match not found" is negative-cached for anilistId=${anilistId}`
+        );
+        return null;
+      }
       try {
         const info = await anineko.fetchAnimeInfo(String(anilistId));
         const episodes = info?.episodes ?? [];
         if (!Array.isArray(episodes) || episodes.length === 0) return null;
+        forgetNegative(negKey);
         const session: ProviderSession = { providerId: "anineko", animeId: String(anilistId), episodes };
         sessionCache.set(cacheKeyStr, session);
         return session;
       } catch (err) {
         console.warn(`[providers] anineko getSession("${title}", anilistId=${anilistId}) failed:`, err instanceof Error ? err.message : err);
+        if (err instanceof Error && /match not found/i.test(err.message)) {
+          rememberNegative(negKey);
+        }
         return null;
       }
     },
@@ -738,7 +817,18 @@ const PROVIDERS: ProviderDef[] = [
       getSessionForProvider(
         "animeunity",
         title,
-        () => searchProvider("animeunity", (q) => animeunity.search(q), title),
+        () =>
+          searchProvider(
+            "animeunity",
+            (q) => animeunity.search(q),
+            title,
+            undefined,
+            // animeunity's archivio answers 403 to every query from this IP
+            // (bot wall) — measured ~50 identical 403s per dev session. The
+            // marker skips the walk-level search for 10 min; any success
+            // clears it (see the negative cache section).
+            negativeCacheKey("animeunity-search", title, anilistId)
+          ),
         (id) => animeunity.fetchAnimeInfo(id),
         episodeNumber,
         anilistId
@@ -860,17 +950,101 @@ function toStreamResult(
 
 // ─── MegaPlay direct (AniList ID) ─────────────────────────────────────
 
+/**
+ * MegaPlay session by AniList ID — the one provider with no search.
+ *
+ * Successful sessions are written into the SHARED `sessionCache` (keyed by
+ * AniList ID, the only namespace megaplay addresses its catalogue by), with
+ * the same eviction semantics `getSessionForProvider` uses. Until now this
+ * function cached NOTHING, so every cold stream walk re-ran
+ * megaplay.fetchAnimeInfo — an uncached AniList POST through
+ * /api/anilist/fetch plus an AniZip fetch, serially, which is exactly where
+ * the logged 429s originate.
+ *
+ * Like `getSessionForProvider`, a cached listing is only trusted when it can
+ * serve the requested `episodeNumber` (exact number or a verified AniZip
+ * normalized match) — otherwise the list is re-fetched so a newly aired
+ * episode is never held back by a months-old cached listing.
+ *
+ * Failures are NOT stored in `sessionCache`: a thrown 429/network failure
+ * goes through the negative cache instead (below), and an EMPTY listing is
+ * simply returned as null so a future walk retries it for free.
+ */
 export async function getMegaPlaySession(
   anilistId: number,
-  _title: string
+  _title: string,
+  episodeNumber?: number
 ): Promise<ProviderSession | null> {
+  const cacheKeyStr = `megaplay::id:${anilistId}`;
+  // Positive entries are keyed by the AniList ID alone (megaplay addresses
+  // its catalogue only by ID, and one anime answers under several title
+  // spellings — the log shows id 162561 under both "NARUTO×NINKU" and
+  // "NARUTO (2026)"); the negative marker follows the shared title+id
+  // convention of the negative cache section.
+  const negKey = negativeCacheKey("megaplay-session", _title, anilistId);
+
+  const cached = sessionCache.get(cacheKeyStr);
+  if (cached) {
+    // Only trust the cache if it can serve the requested episode — a cached
+    // listing that predates a newly aired episode must not poison the walk.
+    const cachedOk =
+      episodeNumber === undefined ||
+      (Array.isArray(cached.episodes) &&
+        (cached.episodes.some((ep) => ep?.number === episodeNumber) ||
+          (await normalizedEpisodeMatch(cached.episodes, episodeNumber, anilistId, "megaplay", {
+            logUse: false,
+            logReject: false,
+          })) !== null));
+    if (cachedOk) return cached;
+    // else fall through to re-fetch
+  }
+
+  if (isNegativelyCached(negKey)) {
+    console.warn(
+      `[providers] getMegaPlaySession(anilistId=${anilistId}) skipped — recent failure is negative-cached`
+    );
+    return null;
+  }
+
   try {
     const info = await megaplay.fetchAnimeInfo(String(anilistId));
     const episodes = info?.episodes ?? [];
     if (!Array.isArray(episodes) || episodes.length === 0) return null;
-    return { providerId: "megaplay", animeId: String(anilistId), episodes };
+    forgetNegative(negKey);
+    const session: ProviderSession = { providerId: "megaplay", animeId: String(anilistId), episodes };
+    sessionCache.set(cacheKeyStr, session);
+    if (sessionCache.size > SESSION_CACHE_MAX) {
+      const firstKey = sessionCache.keys().next().value;
+      if (firstKey) sessionCache.delete(firstKey);
+    }
+    // The refreshed listing stays cached for the episodes it DOES carry, but
+    // a request it still cannot serve is rejected here — same rejection
+    // shape `getSessionForProvider` applies.
+    if (
+      episodeNumber !== undefined &&
+      !session.episodes.some((ep) => ep?.number === episodeNumber) &&
+      (await normalizedEpisodeMatch(session.episodes, episodeNumber, anilistId, "megaplay", {
+        logUse: false,
+        logReject: false,
+      })) === null
+    ) {
+      return null;
+    }
+    return session;
   } catch (err) {
     console.warn(`[providers] getMegaPlaySession(anilistId=${anilistId}) failed:`, err instanceof Error ? err.message : err);
+    // Remember the UNCONDITIONAL failure classes only: AniList 429s (the
+    // "AniList Error: 429" shape kaizoku-core throws through the proxy) and
+    // network/timeout failures of the fetch chain. Anything else stays
+    // non-cached so a genuine bug keeps being re-paid and re-logged.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      /(?:^|\D)429(?:\D|$)|Too Many Requests|fetch failed|network|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up|abort/i.test(
+        msg
+      )
+    ) {
+      rememberNegative(negKey);
+    }
     return null;
   }
 }
@@ -1093,10 +1267,23 @@ type AudioFlag = { sub: boolean | null; dub: boolean | null };
 const audioFlagCache = new Map<number, Map<number, AudioFlag>>();
 
 export interface AudioSummary {
-  /** Episodes verified to carry subtitle audio — `null` when any is unknown. */
+  /**
+   * Episodes VERIFIED to carry subtitle audio — `null` only when not a
+   * single sub flag in the list is known. When SOME flags are known this is
+   * the count of confirmed ones (see `subOfTotal`).
+   */
   subCount: number | null;
-  /** Episodes verified to carry dub audio — `null` when any is unknown. */
+  /** Same rule, independently, for dub audio. */
   dubCount: number | null;
+  /**
+   * Present only when SOME (but not all) of the list's sub flags are known:
+   * `subCount` is then a confirmed-subset count out of `episodes.length`
+   * episodes, not a total. Absent when everything was resolved (or nothing
+   * was) — the shared partial-tally contract.
+   */
+  subOfTotal?: number;
+  /** Same rule, independently, for dub audio. */
+  dubOfTotal?: number;
   /** A megaplay probe could resolve the remaining unknowns (needs AniList ID). */
   canProbe: boolean;
   /** This response actually ran the probe. */
@@ -1193,6 +1380,37 @@ function countKnown(episodes: Episode[], key: "hasSub" | "hasDub"): number | nul
 }
 
 /**
+ * Per-audio-type tally under the shared contract (independent rules per
+ * type):
+ *  - all flags known  → `count` = #true, no `ofTotal`;
+ *  - SOME known       → `count` = #true so far, `ofTotal` = episodes.length
+ *                       (the caller knows it is a confirmed SUBSET);
+ *  - NONE known       → `count` = null, no `ofTotal`.
+ */
+function audioCountSummary(
+  episodes: Episode[],
+  key: "hasSub" | "hasDub"
+): { count: number | null; ofTotal?: number } {
+  let unknown = 0;
+  let trues = 0;
+  for (const ep of episodes) {
+    const value = ep[key];
+    if (value === null || value === undefined) {
+      unknown++;
+      continue;
+    }
+    if (value) trues++;
+  }
+  if (unknown === 0) {
+    // Every flag is known ⇒ `countKnown` cannot answer null here; `trues` is
+    // the same number it computes, used only to keep the type honest.
+    return { count: countKnown(episodes, key) ?? trues };
+  }
+  if (unknown === episodes.length) return { count: null };
+  return { count: trues, ofTotal: episodes.length };
+}
+
+/**
  * Fold verified flags into a list. `flags` describes megaplay's listing only,
  * so another provider's episodes are never tagged with them. Pure — returns a
  * new array, never mutates (the input may be the shared availability cache).
@@ -1249,14 +1467,23 @@ export async function getAudioFlags(
 
   resolved = applyAvailability(resolved);
 
+  // Per-audio-type tallies under the shared contract (see
+  // `audioCountSummary`): rules are independent per type, and an
+  // `*OfTotal` field appears only for the SOME-known state.
+  const sub = audioCountSummary(resolved, "hasSub");
+  const dub = audioCountSummary(resolved, "hasDub");
+  const audio: AudioSummary = {
+    subCount: sub.count,
+    dubCount: dub.count,
+    canProbe,
+    probed,
+  };
+  if (sub.ofTotal !== undefined) audio.subOfTotal = sub.ofTotal;
+  if (dub.ofTotal !== undefined) audio.dubOfTotal = dub.ofTotal;
+
   return {
     episodes: resolved,
-    audio: {
-      subCount: countKnown(resolved, "hasSub"),
-      dubCount: countKnown(resolved, "hasDub"),
-      canProbe,
-      probed,
-    },
+    audio,
   };
 }
 
@@ -1300,8 +1527,12 @@ function scoreEpisodeList(episodes: Episode[], expectedCount?: number): number |
   return isSuspectSingleEpisodeList(episodes) ? -1_000_000 : 0;
 }
 
-/** AniList's episode count for `anilistId` (fetch-cached, revalidate 300). */
-async function resolveExpectedEpisodeCount(anilistId?: number): Promise<number | undefined> {
+/**
+ * AniList's episode count for `anilistId` (fetch-cached, revalidate 300).
+ * Exported so `/api/episodes` resolves the SAME value instead of keeping a
+ * duplicated copy (it used to — same body, second definition).
+ */
+export async function resolveExpectedEpisodeCount(anilistId?: number): Promise<number | undefined> {
   if (!anilistId) return undefined;
   try {
     const anime = await getAnimeById(anilistId);
@@ -1573,7 +1804,9 @@ async function attemptMegaPlay(
   type: "sub" | "dub"
 ): Promise<StreamResult | null> {
   try {
-    const session = await getMegaPlaySession(anilistId, animeTitle);
+    // Pass the episode so a cached listing that predates a newly aired
+    // episode is refreshed instead of blocking the walk (see above).
+    const session = await getMegaPlaySession(anilistId, animeTitle, episodeNumber);
     if (!session) return null;
     // Exact match first; verified AniZip translation only on an exact miss.
     let targetEp = session.episodes.find((ep) => ep.number === episodeNumber);

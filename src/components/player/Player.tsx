@@ -268,6 +268,93 @@ function clearSwitchHandoff(): void {
   }
 }
 
+/* ─── Sub/dub flags cache (shared with the episode list) ───────────────
+ * The `?audio=1` second pass behind `/api/episodes` costs a megaplay probe
+ * (~1-3s) and answers the SAME question for every consumer in the tab: the
+ * detail page's episode list and the player's DUB toggle both ask it per
+ * AniList ID. One sessionStorage slot makes the second ask free — this was
+ * the last refire of an identical URL inside a single navigation (detail →
+ * watch used to pay it twice, once per page).
+ *
+ * Contract (shared with the episode list side): key `n54tv-audio:{id}`,
+ * JSON `{subCount, dubCount, subOfTotal?, dubOfTotal?, at}` — the counts are
+ * `null` while unknown (never `false`; a non-null count means every listed
+ * episode's flag is KNOWN and the count is how many carry the audio), `at`
+ * is epoch ms and the entry is trusted for AUDIO_FLAGS_TTL_MS.
+ * `subOfTotal`/`dubOfTotal` are optional and tolerated, never required:
+ * either side may land without them, and an absent pair just means the
+ * counts stand alone. The player additionally reads (and writes) an OPTIONAL
+ * `dubByEpisode` map — extra keys are invisible to any other reader, and it
+ * is what lets a later navigation answer THIS episode's flag outright.
+ */
+const AUDIO_FLAGS_KEY_PREFIX = "n54tv-audio:";
+const AUDIO_FLAGS_TTL_MS = 5 * 60_000;
+
+interface AudioFlagsCacheEntry {
+  subCount: number | null;
+  dubCount: number | null;
+  subOfTotal?: number;
+  dubOfTotal?: number;
+  at: number;
+  /** Optional player-side extra: per-episode dub answers (episode → hasDub). */
+  dubByEpisode?: Record<string, boolean>;
+}
+
+function readAudioFlagsCache(anilistId?: number | null): AudioFlagsCacheEntry | null {
+  if (!anilistId || typeof window === "undefined") return null;
+  try {
+    const key = `${AUDIO_FLAGS_KEY_PREFIX}${anilistId}`;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AudioFlagsCacheEntry;
+    if (!parsed || typeof parsed.at !== "number") return null;
+    if (Date.now() - parsed.at > AUDIO_FLAGS_TTL_MS) {
+      sessionStorage.removeItem(key);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Merge a fresh fact into the (possibly absent / just-expired) slot. The
+ * `at` stamp refreshes on every write, so a probe-confirmed fact extends the
+ * entry's life — the facts themselves don't expire faster than the provider
+ * side's own flag cache, and a 5-minute re-ask is the contract either way.
+ */
+function mergeAudioFlagsCache(
+  anilistId: number | null | undefined,
+  patch: Partial<Omit<AudioFlagsCacheEntry, "at">>
+): void {
+  if (!anilistId) return;
+  const existing = readAudioFlagsCache(anilistId); // stale reads as absent
+  const merged: AudioFlagsCacheEntry = {
+    subCount: patch.subCount !== undefined ? patch.subCount : existing?.subCount ?? null,
+    dubCount: patch.dubCount !== undefined ? patch.dubCount : existing?.dubCount ?? null,
+    at: Date.now(),
+    ...(patch.subOfTotal !== undefined
+      ? { subOfTotal: patch.subOfTotal }
+      : existing?.subOfTotal !== undefined
+        ? { subOfTotal: existing.subOfTotal }
+        : {}),
+    ...(patch.dubOfTotal !== undefined
+      ? { dubOfTotal: patch.dubOfTotal }
+      : existing?.dubOfTotal !== undefined
+        ? { dubOfTotal: existing.dubOfTotal }
+        : {}),
+    ...((patch.dubByEpisode ?? existing?.dubByEpisode) && {
+      dubByEpisode: { ...(existing?.dubByEpisode ?? {}), ...(patch.dubByEpisode ?? {}) },
+    }),
+  };
+  try {
+    sessionStorage.setItem(`${AUDIO_FLAGS_KEY_PREFIX}${anilistId}`, JSON.stringify(merged));
+  } catch {
+    /* private mode / quota — the flags simply refetch next time */
+  }
+}
+
 /**
  * Last-resort fullscreen recovery: browsers only grant `requestFullscreen()`
  * inside user activation, so when the instant post-navigation attempt above
@@ -655,6 +742,38 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     if (episodeHasDub !== null && episodeHasDub !== undefined) return;
     if (!anilistId) return;
     let cancelled = false;
+    // Fresh cache first — the SAME `?audio=1` answer either this tab's detail
+    // page or a previous episode hop already paid for. A hit skips the
+    // network entirely; it can also answer the episode outright (the
+    // per-episode map, or `dubCount === 0`, which rules a dub out for EVERY
+    // listed episode), and when it can't say anything episode-specific it
+    // simply leaves the flag unknown — the stream-level probe below still
+    // decides the toggle, so nothing is guessed here.
+    const cached = readAudioFlagsCache(anilistId);
+    if (cached) {
+      // Counts first: they are megaplay-VERIFIED for every listed episode,
+      // while a probe-written map entry can be hearsay (until the route
+      // honours `strict`, a stage-2 answer can hand a `type=dub` probe SUB
+      // sources — a false "has dub"). Verified data beats probe data.
+      const fromMap = cached.dubByEpisode?.[String(episodeNumber)];
+      const answer =
+        cached.dubCount === 0
+          ? false
+          : typeof fromMap === "boolean"
+            ? fromMap
+            : null;
+      if (answer !== null) {
+        // Deferred a tick — a setState straight from the effect body is a
+        // cascading render (the same reasoning as the episode list's deferred
+        // probe): behaviour is identical, the flag simply lands one microtask
+        // after mount instead of inside the effect itself.
+        queueMicrotask(() => {
+          if (!cancelled) setFetchedDub({ key: `${anilistId}:${episodeNumber}`, value: answer });
+        });
+        return;
+      }
+      return; // fresh but not episode-specific — the stream probe answers
+    }
     (async () => {
       try {
         const params = new URLSearchParams({
@@ -666,6 +785,32 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const listed: { number?: number; hasDub?: boolean | null }[] | undefined = data?.episodes;
+        const audio:
+          | { subCount?: number | null; dubCount?: number | null; subOfTotal?: number; dubOfTotal?: number }
+          | undefined = data?.audio;
+        // Write what this answer learned — counts plus the per-episode map —
+        // so the NEXT navigation (detail → watch, watch → watch) can take
+        // the branch above instead of refiring an identical URL. Only
+        // definitive booleans enter the map; `null` means unknown, never no.
+        if (Array.isArray(listed) || audio) {
+          const dubByEpisode: Record<string, boolean> = {};
+          if (Array.isArray(listed)) {
+            for (const e of listed) {
+              if (typeof e?.number === "number" && typeof e?.hasDub === "boolean") {
+                dubByEpisode[String(e.number)] = e.hasDub;
+              }
+            }
+          }
+          mergeAudioFlagsCache(anilistId, {
+            subCount: typeof audio?.subCount === "number" ? audio.subCount : null,
+            dubCount: typeof audio?.dubCount === "number" ? audio.dubCount : null,
+            // Optional Lane A fields — forwarded verbatim when present,
+            // silently absent when not (old count-only shape tolerated).
+            ...(typeof audio?.subOfTotal === "number" ? { subOfTotal: audio.subOfTotal } : {}),
+            ...(typeof audio?.dubOfTotal === "number" ? { dubOfTotal: audio.dubOfTotal } : {}),
+            dubByEpisode,
+          });
+        }
         const ep = Array.isArray(listed) ? listed.find((e) => e.number === episodeNumber) : null;
         if (!cancelled && typeof ep?.hasDub === "boolean") {
           setFetchedDub({ key: `${anilistId}:${episodeNumber}`, value: ep.hasDub });
@@ -1799,6 +1944,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           });
           if (anilistId) params.set("anilistId", String(anilistId));
           if (activeProvider) params.set("providerId", activeProvider);
+          // The audio type here is a known `sub`/`dub`, never "auto" — so
+          // tell the route to skip its opposite-type stage-2 re-walk on a
+          // miss (a silent extra provider walk per server otherwise, i.e.
+          // up to double the wall time per failed lookup). Absent `strict`
+          // keeps the old self-contained behaviour for direct callers.
+          params.set("strict", "1");
 
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
@@ -1857,6 +2008,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
         });
         if (anilistId) params.set("anilistId", String(anilistId));
         if (activeProvider) params.set("providerId", activeProvider);
+        // Known type → skip the route's opposite-type stage-2 re-walk (see
+        // fetchStream above). The cache key carries `strict`, so this also
+        // keeps every player-originated lookup on ONE canonical key.
+        params.set("strict", "1");
         if (fresh) params.set("fresh", "1");
         const res = await fetch(`/api/stream?${params}`);
         if (!res.ok) return null;
@@ -1993,26 +2148,62 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
     // When the flag IS known this is a no-op: no requests, no guess, and
     // `dubEnabled` reads straight from the data instead.
     //
-    // It deliberately starts only ONCE the preferred stream has settled
-    // (see both call sites below) instead of racing it from mount: it is three
-    // more `/api/stream` calls, i.e. three more provider walks fired at the
-    // exact moment episode load is most congested. Same probes, same gate,
-    // same `dubProbeOk` answer — only the ordering changed, and it no longer
-    // holds the error overlay hostage to a probe the user didn't ask for.
+    // It deliberately starts only ONCE THE PREFERRED STREAM HAS SETTLED
+    // (see both call sites below) instead of racing it from mount: it is
+    // more `/api/stream` calls, i.e. more provider walks fired at the
+    // exact moment episode load is most congested. And it now runs the
+    // servers SEQUENTIALLY with early abandon, capped at two probes: the
+    // first positive answer settles it (`dubProbeOk`), so the common
+    // "dub exists" case costs ONE walk instead of three parallel ones —
+    // three parallel identical-purpose walks used to land exactly while the
+    // route was still warm from the main load, doubling congestion. Only a
+    // definitive negative (a server that answered, with no sources) moves
+    // on to the next server; two negatives settle at "no dub found" the
+    // same way the old three-negative did — the third server is never
+    // asked, which is the accepted cost of the cap.
     const startDubProbe = () => {
       if (cancelled || dubFlag !== null) return;
-      void Promise.all(
-        SERVERS.map(async (s) => {
+      void (async () => {
+        for (const s of SERVERS.slice(0, 2)) {
+          if (cancelled) return;
+          // Cleared so the answer test below can tell a server that
+          // ANSWERED (its miss reason lands in the ref → definitive
+          // negative) from one that failed silently (non-OK / network →
+          // inconclusive). Clearing also stops the probe from leaving a
+          // bogus miss reason behind an otherwise successful load.
+          lastApiErrorRef.current = null;
+          let found = false;
           try {
-            const d = await probeServer(s, "dub");
-            return !!d;
+            found = !!(await probeServer(s, "dub"));
           } catch {
-            return false;
+            found = false;
           }
-        })
-      ).then((dubResults) => {
-        if (!cancelled && dubResults.some(Boolean)) setDubProbeOk(true);
-      });
+          if (cancelled) return;
+          if (found) {
+            setDubProbeOk(true);
+            // A positive probe is evidence about THIS episode — park it in
+            // the shared flags cache so a later navigation can answer from
+            // sessionStorage instead of probing again. Counts stay null
+            // (the stream probe knows nothing about other episodes); null
+            // means unknown, never "no". But never let probe hearsay
+            // OVERRIDE megaplay-verified facts: while the route's stage-2
+            // still answers `strict` misses with the opposite type's
+            // sources, a probe "hit" on a sub-only title is an artifact —
+            // `dubCount === 0` in the cache outranks it.
+            if (readAudioFlagsCache(anilistId)?.dubCount !== 0) {
+              mergeAudioFlagsCache(anilistId, {
+                dubByEpisode: { [String(episodeNumber)]: true },
+              });
+            }
+            return;
+          }
+          // Continue ONLY on a definitive negative. A silent failure proves
+          // nothing about dub availability, so the chain stops there rather
+          // than burning more provider walks on what may be a dead route —
+          // `dubProbeOk` stays false exactly as the old all-negative did.
+          if (!lastApiErrorRef.current) return;
+        }
+      })();
     };
 
     (async () => {
@@ -2028,6 +2219,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           });
           if (anilistId) params.set("anilistId", String(anilistId));
           if (activeProvider) params.set("providerId", activeProvider);
+          // Known type ("sub" or "dub", never auto) → no opposite-type
+          // stage-2 re-walk on the route side; same canonical cache key as
+          // every other player lookup (probeServer/fetchStream).
+          params.set("strict", "1");
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
           const data = await res.json();
@@ -2127,6 +2322,10 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       });
       if (anilistId) params.set("anilistId", String(anilistId));
       if (activeProvider) params.set("providerId", activeProvider);
+      // Known `audioType` → strict, AND the key must match the one the next
+      // episode's mount loop will ask for (route cache keys carry `strict`),
+      // or this warm-up would be written under a key nobody re-reads.
+      params.set("strict", "1");
       void fetch(`/api/stream?${params}`, { signal: controller.signal }).catch(() => {
         /* aborted / offline — the switch simply pays the walk itself */
       });

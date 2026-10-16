@@ -1,6 +1,7 @@
 "use client";
 
 import CardShell from "./CardShell";
+import { resolveEpisodeFraction } from "@/lib/anime-meta";
 
 interface AnimeCardAnime {
   id: number;
@@ -35,30 +36,10 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
   // Episode badge — only when the total is known (finite > 0), else no badge.
   // When the run is NOT fully released, show released/total as well:
   // `3/12 EP` (3 aired of 12). A fully released run keeps the plain `12 EP`.
-  const total =
-    typeof anime.episodes === "number" && Number.isFinite(anime.episodes) && anime.episodes > 0
-      ? anime.episodes
-      : null;
-  // Released count so far; null = unknown (RELEASING without a schedule entry,
-  // HIATUS, CANCELLED, missing status). AniList's nextAiringEpisode is the next
-  // NOT-yet-aired episode, so `episode - 1` is what has aired.
-  let released: number | null = null;
-  if (total !== null) {
-    const nextEpisode = anime.nextAiringEpisode?.episode;
-    if (anime.status === "FINISHED") {
-      released = total;
-    } else if (typeof nextEpisode === "number" && Number.isFinite(nextEpisode) && nextEpisode >= 1) {
-      released = Math.min(Math.max(nextEpisode - 1, 0), total);
-    } else if (anime.status === "NOT_YET_RELEASED") {
-      released = 0;
-    }
-  }
-  const episodeLabel =
-    total === null
-      ? null
-      : released === null || released >= total
-        ? `${total} EP`
-        : `${released}/${total} EP`;
+  // The math lives in `resolveEpisodeFraction` (src/lib/anime-meta.ts) so the
+  // detail page and watch header derive the exact same badge — output here is
+  // byte-identical to the inline version this was extracted from.
+  const episodeLabel = resolveEpisodeFraction(anime)?.label ?? null;
   const hasMeta = Boolean(ratingLabel || episodeLabel);
 
   return (

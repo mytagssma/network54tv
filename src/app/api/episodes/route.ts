@@ -1,21 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAudioFlags, getEpisodes } from "@/lib/providers";
-import { getAnimeById } from "@/lib/anilist";
+import { getAudioFlags, getEpisodes, resolveExpectedEpisodeCount } from "@/lib/providers";
 
 /**
- * AniList's episode count for `id` (fetch-cached, revalidate 300), or
- * `undefined` when unknown. It powers the plausibility gate inside
+ * `resolveExpectedEpisodeCount` (AniList's episode count, fetch-cached,
+ * revalidate 300) now lives in `@/lib/providers` — this route used to keep a
+ * byte-identical duplicate of it. It powers the plausibility gate inside
  * `getEpisodes`: reject clearly-wrong lists (a lone "Full" episode for a
  * multi-episode anime) and prefer the provider whose count matches.
  */
-async function resolveExpectedEpisodeCount(id: number): Promise<number | undefined> {
-  try {
-    const anime = await getAnimeById(id);
-    return typeof anime?.episodes === "number" && anime.episodes > 0 ? anime.episodes : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;

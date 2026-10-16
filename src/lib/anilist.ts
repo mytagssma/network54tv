@@ -101,6 +101,7 @@ query ($id: Int) {
     popularity
     studios { nodes { name } }
     nextAiringEpisode { airingAt episode }
+    startDate { year month day }
     relations {
       edges {
         node { id type format title { romaji english } coverImage { large } }
@@ -1139,6 +1140,34 @@ export async function searchAnime(
 }
 
 /**
+ * The airing-feed time window, bucketed to a 15-minute grid.
+ *
+ * `Date.now()` in the query VARIABLES churned the client GET URL
+ * (`/api/anilist?payload={…airingAt_greater…}`) every single second, so the
+ * L1 in-process Map and the CDN's `s-maxage` could never key two home loads
+ * together — every load paid the full AniList round trip (log: consecutive
+ * 677–1220ms GETs whose airingAt differed by exactly 1s). Flooring BOTH
+ * bounds to the same grid keeps the window LENGTH byte-identical
+ * (`lesser - greater === daysWindow * 86400`, a multiple of 900s) while the
+ * URL only changes twice an hour, which is what makes the cache reachable.
+ *
+ * Trade-off: episodes that aired within the current bucket are excluded until
+ * the grid flips — at most 15 minutes of schedule lag on a 30-day window.
+ */
+const AIRING_FEED_GRID_SEC = 15 * 60;
+
+function recentlyAiredWindow(daysWindow: number): {
+  airingAt_greater: number;
+  airingAt_lesser: number;
+} {
+  const nowBucket = Math.floor(Math.floor(Date.now() / 1000) / AIRING_FEED_GRID_SEC) * AIRING_FEED_GRID_SEC;
+  return {
+    airingAt_greater: nowBucket - daysWindow * 24 * 60 * 60,
+    airingAt_lesser: nowBucket,
+  };
+}
+
+/**
  * Fetch anime with recently aired episodes (by airing schedule), deduplicated.
  * Uses a time window filter to get only episodes that aired within the past N days.
  */
@@ -1147,12 +1176,11 @@ export async function getRecentlyAired(
   page = 1,
   perPage = 50
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
-  const now = Math.floor(Date.now() / 1000);
-  const windowStart = now - daysWindow * 24 * 60 * 60;
+  const { airingAt_greater, airingAt_lesser } = recentlyAiredWindow(daysWindow);
 
   const data = await fetchGraphQL(RECENTLY_AIRED_QUERY, {
-    airingAt_greater: windowStart,
-    airingAt_lesser: now,
+    airingAt_greater,
+    airingAt_lesser,
     page,
     perPage,
   });
@@ -1293,12 +1321,11 @@ export async function getRecentlyAiredClient(
   page = 1,
   perPage = 50
 ): Promise<{ media: Anime[]; hasNextPage: boolean }> {
-  const now = Math.floor(Date.now() / 1000);
-  const windowStart = now - daysWindow * 24 * 60 * 60;
+  const { airingAt_greater, airingAt_lesser } = recentlyAiredWindow(daysWindow);
 
   const data = await anilistFetch(RECENTLY_AIRED_QUERY, {
-    airingAt_greater: windowStart,
-    airingAt_lesser: now,
+    airingAt_greater,
+    airingAt_lesser,
     page,
     perPage,
   });

@@ -160,13 +160,48 @@ export function LoadingNote({ state }: { state: LoadingState }) {
 }
 
 /**
- * `Sub 28` / `Dub 12` tally. `null` means "not known" and renders the shared
- * em dash — the count never guesses.
+ * `Sub 28` / `Dub 12` tally — now the SHARED sub/dub contract (Lane A's
+ * `getAudioFlags` summary), rendered three ways:
+ *
+ *   null/unknown count  → `—`        (never guesses)
+ *   count + ofTotal     → `12/30 SUB` (partial knowledge: 12 of the 30 rows
+ *                                      are known to carry the track)
+ *   count alone         → `30 SUB`    (every row was checked)
+ *
+ * `ofTotal` is read defensively: a numeric count with an undefined ofTotal
+ * renders the plain form, so this works both before and after Lane A lands.
+ * The watch-page header uses `audioTallyText` for the exact same wording.
  */
-export function AudioCount({ label, value }: { label: "Sub" | "Dub"; value: number | null }) {
+export interface AudioTallies {
+  subCount?: number | null;
+  dubCount?: number | null;
+  subOfTotal?: number | null;
+  dubOfTotal?: number | null;
+}
+
+/** The numeric half of a tally: `12/30`, `30`, or null when unknown. */
+export function audioTallyText(
+  count: number | null | undefined,
+  ofTotal?: number | null
+): string | null {
+  if (typeof count !== "number" || !Number.isFinite(count)) return null;
+  if (typeof ofTotal === "number" && Number.isFinite(ofTotal)) return `${count}/${ofTotal}`;
+  return String(count);
+}
+
+export function AudioCount({
+  label,
+  value,
+  ofTotal,
+}: {
+  label: "Sub" | "Dub";
+  value: number | null;
+  ofTotal?: number | null;
+}) {
+  const count = audioTallyText(value, ofTotal);
   return (
     <span className="bg-transparent border border-[var(--accent)]/20 text-[var(--accent)]/70 px-2 py-0.5 label-micro rounded-none">
-      {label} {value ?? UNKNOWN_COUNT}
+      {count === null ? UNKNOWN_COUNT : `${count} ${label.toUpperCase()}`}
     </span>
   );
 }
