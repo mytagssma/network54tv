@@ -1250,23 +1250,17 @@ async function fetchGraphQL(query: string, variables: Record<string, any>) {
   // "some titles 404 by luck" bug). The proxy path passes the upstream
   // status/body through unchanged, so parsing below is identical either way.
   // The direct fetch stays as the fallback for the build phase (the deployed
-  // routes aren't serving while next build runs) and for self-fetch network
-  // failures.
-  let res: Response;
+  // routes aren't serving while next build runs) and for EVERY proxy-path
+  // failure — network error, non-2xx status, or a non-JSON body (an HTML
+  // interstitial from the self-fetch host). That last class is what took
+  // production detail/watch pages down for every id at once: the old code
+  // only fell back when fetch() itself rejected, so a proxy that ANSWERED
+  // with the wrong thing threw straight into the page render.
   const atBuildTime = process.env.NEXT_PHASE === "phase-production-build";
-  if (atBuildTime) {
-    // During `next build` the deployment's routes aren't serving yet —
-    // self-fetch would hit a building-state response. Keep the old direct
-    // path there (build-IP AniList fetches are what always built fine).
-    res = await fetch(ANILIST_API, {
-      method: "POST",
-      headers: directHeaders,
-      body: payload,
-      next: { revalidate: 300 },
-    });
-  } else {
+  let json: Awaited<ReturnType<Response["json"]>> = null;
+  if (!atBuildTime) {
     try {
-      res = await fetch(ANILIST_FETCH_PROXY, {
+      const res = await fetch(ANILIST_FETCH_PROXY, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1275,23 +1269,35 @@ async function fetchGraphQL(query: string, variables: Record<string, any>) {
           headers: directHeaders,
           body: payload,
         }),
+        // The forwarder retries upstream failures internally for up to ~30s;
+        // the direct path below is the escape hatch, so don't wait that out.
+        signal: AbortSignal.timeout(12_000),
       });
-    } catch {
-      // Self-fetch unreachable — last resort, same as the pre-proxy path.
-      res = await fetch(ANILIST_API, {
-        method: "POST",
-        headers: directHeaders,
-        body: payload,
-        next: { revalidate: 300 },
-      });
+      if (!res.ok) throw new Error(`forwarder responded ${res.status}`);
+      // Parsed INSIDE the guard on purpose: a same-origin interstitial or any
+      // malformed body counts as a proxy failure, not an AniList answer.
+      json = await res.json();
+    } catch (err) {
+      console.warn(
+        "[anilist] same-origin forwarder failed, falling back to direct fetch:",
+        err instanceof Error ? err.message : err
+      );
     }
   }
-  if (!res.ok) {
-    const err = new Error(`AniList API error: ${res.status}`) as Error & { status?: number };
-    err.status = res.status;
-    throw err;
+  if (!json) {
+    const res = await fetch(ANILIST_API, {
+      method: "POST",
+      headers: directHeaders,
+      body: payload,
+      next: { revalidate: 300 },
+    });
+    if (!res.ok) {
+      const err = new Error(`AniList API error: ${res.status}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+    json = await res.json();
   }
-  const json = await res.json();
   if (json.errors) throw new Error(json.errors[0]?.message);
   return json.data;
 }
