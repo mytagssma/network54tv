@@ -97,6 +97,40 @@ const PROVIDER_OPTIONS = [
   { id: "animeunity", label: "AnimeUnity" },
 ];
 
+/* ─── Mount-only stream handoff (schedule → provider reality) ─────────
+ * The watch URL's episode number is AniList SCHEDULE truth (the home
+ * strip's "Play latest", a shared link, a bookmark), but the providers
+ * can lag it: the newest aired episode often has no uploaded stream yet
+ * (the classic latest-episode lag), and for some titles no episode
+ * streams at all. A card can't know any of this — walking 10 providers
+ * per home card is infeasible — so the correction happens HERE, once,
+ * on the first lookup after mount: when the landing episode comes back
+ * with the route's definitive "exhausted providers" miss (and ONLY that
+ * class — a transient failure must never silently redirect the viewer),
+ * step down to the newest episode the list marks available and play
+ * that instead, rewriting the URL so it tells the truth.
+ *
+ * The gate string below is verbatim /api/stream's walk-miss body
+ * (src/app/api/stream/route.ts). Everything else that lands in
+ * `data.error` or in a non-OK/network failure is transient (provider
+ * outage, thrown walk) and keeps the normal error state.
+ */
+const EXHAUSTED_SOURCES_ERROR = "No streaming sources available for this episode";
+
+function isExhaustedSourcesError(err: string | null | undefined): boolean {
+  return typeof err === "string" && err.startsWith(EXHAUSTED_SOURCES_ERROR);
+}
+
+/**
+ * Hard cap on stream lookups during ONE mount: the landing episode's own
+ * lookup counts as the first, so the handoff may try at most two lower
+ * candidates. Each miss is a full provider walk (~10–20s), so the cap
+ * bounds the worst case at ~3 walks before the error overlay takes over —
+ * unbounded stair-stepping down a dead run would strand the viewer on a
+ * loading bar for minutes.
+ */
+const MOUNT_HANDOFF_MAX_LOOKUPS = 3;
+
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 
 /**
@@ -668,6 +702,26 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // resets it here — every site that *opens* a loading window clears the flag
   // first, so a stale hint can never paint at the start of the next one.
   const [slowLoad, setSlowLoad] = useState(false);
+  // ─── Mount-only stream handoff note ─────────────────────
+  // Set while the mount handoff (see the bottom of the mount effect below)
+  // is walking a lower candidate: "Episode 57 isn't available yet — playing
+  // episode 56." Rendered inside the loading overlay, so it disappears the
+  // moment playback starts (the overlay, and the note with it, unmount when
+  // `loading` flips false) and can never stack on the error overlay, which
+  // owns its own reason line on exhaustion. Every user-driven load window
+  // (loadByType, the mount effect's own re-runs) clears it first.
+  const [handoffNote, setHandoffNote] = useState<{ from: number; to: number } | null>(null);
+  // One-shot arming for the handoff above: TRUE only for the FIRST stream
+  // lookup this Player instance ever runs (the initial load of a watch URL).
+  // Every later lookup — the provider-override re-run of the mount effect,
+  // Retry / Try Dub / server switches via loadByType — is user-driven and
+  // must show the normal error state instead of silently swapping episodes.
+  // The mount chain retires the flag when it actually settles (success
+  // included: a stream that PLAYED means there was nothing to hand off, and
+  // a subsequent user-driven failure must not resurrect the behaviour); a
+  // superseded run leaves it armed for its successor, and loadByType
+  // additionally consumes it on entry.
+  const mountLookupArmedRef = useRef(true);
 
   // ─── Slow-load hint ─────────────────────────────────────
   // One timer per loading window; the window closing tears it down.
@@ -2053,6 +2107,12 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
   // answered the same cached miss that caused the error in the first place.
   const loadByType = useCallback(
     async (type: "sub" | "dub", serverOverride?: string, opts?: { fresh?: boolean }) => {
+      // User-driven from here on (Retry / Try Dub / server switches): drop
+      // any stale handoff note and retire the one-shot mount handoff — a
+      // manual load must show the normal error state, never silently swap
+      // episodes (see mountLookupArmedRef).
+      setHandoffNote(null);
+      mountLookupArmedRef.current = false;
       setAudioType(type);
       setLoading(true);
       setSlowLoad(false);
@@ -2106,6 +2166,7 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
 
     setLoading(true);
     setSlowLoad(false);
+    setHandoffNote(null);
     setStreamError(false);
     setStreamErrorDetail(null);
     lastApiErrorRef.current = null;
@@ -2206,15 +2267,32 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
       })();
     };
 
-    (async () => {
-      // Fetch preferred stream type — try servers sequentially until one works
+    /** The slice of /api/stream's JSON body this effect consumes. */
+    type EpisodeLookupData = {
+      sources: StreamSource[];
+      subtitles?: Subtitle[];
+      headers?: Record<string, string> | null;
+      intro?: { start: number; end: number };
+      outro?: { start: number; end: number };
+    };
+    // ── One mount lookup: the sequential SERVERS walk for ONE episode ──
+    // The old inline loop inlined exactly this per landing episode; the
+    // mount handoff below needs the SAME walk runnable for lower
+    // candidates, so it is one local function now. It answers with the
+    // first server that returns sources, or with HOW the walk ended — the
+    // handoff hinges on telling a definitive "providers have nothing" from
+    // a transient failure.
+    type EpisodeLookup =
+      | { outcome: "sources"; server: string; data: EpisodeLookupData }
+      | { outcome: "exhausted" | "transient" | "cancelled" };
+    const lookupEpisode = async (ep: number, type: "sub" | "dub"): Promise<EpisodeLookup> => {
       for (const server of SERVERS) {
-        if (cancelled) return;
+        if (cancelled) return { outcome: "cancelled" };
         try {
           const params = new URLSearchParams({
             title: animeTitle,
-            episode: String(episodeNumber),
-            type: preferredType,
+            episode: String(ep),
+            type,
             server,
           });
           if (anilistId) params.set("anilistId", String(anilistId));
@@ -2226,58 +2304,181 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
           const res = await fetch(`/api/stream?${params}`);
           if (!res.ok) continue;
           const data = await res.json();
-          if (cancelled) return;
+          if (cancelled) return { outcome: "cancelled" };
 
-          if (data.sources?.length > 0) {
-            setSources(data.sources);
-            setSubtitles(data.subtitles || []);
-            setStreamHeaders(data.headers || null);
-            setActiveServer(server);
-            activeServerRef.current = server;
-            setAvailableServers([server]);
-            setStreamError(false);
-            setStreamErrorDetail(null);
-            lastApiErrorRef.current = null;
-            setAudioType(preferredType);
-            // Don't dismiss the loading bar here — the attempt owns it and
-            // clears it on MANIFEST_PARSED / loadedmetadata (or fails over).
-            loadHls(data.sources, data.headers || null, true);
-
-            // Dub probe now that the stream itself is in hand.
-            startDubProbe();
-
-            // Use provider skip times if available (more accurate than AniSkip)
-            if (data.intro || data.outro) {
-              if (data.intro && !introSegment) {
-                providerSkipRef.current.intro = true;
-                setIntroSegment(data.intro);
-              }
-              if (data.outro && !outroSegment) {
-                providerSkipRef.current.outro = true;
-                setOutroSegment(data.outro);
-              }
-            }
-
-            // Discover remaining sub servers in background
-            const otherServers = SERVERS.filter((s) => s !== server);
-            const subExtras = await Promise.all(
-              otherServers.map(async (s) => {
-                const d = await probeServer(s, "sub");
-                return d ? s : null;
-              })
-            );
-            const allSub = [server, ...subExtras.filter(Boolean)] as string[];
-            if (!cancelled) setAvailableServers(allSub);
-
-            return;
-          }
+          if (data.sources?.length > 0) return { outcome: "sources", server, data };
           // No sources on this server — keep the reason for the error card.
           if (typeof data?.error === "string" && data.error) lastApiErrorRef.current = data.error;
         } catch { /* continue to next server */ }
       }
+      if (cancelled) return { outcome: "cancelled" };
+      // Classify the total miss. The route answers 200 + the exhausted-
+      // sources body ONLY when its provider walk completed with nothing
+      // (definitive); a thrown walk comes back 500 — skipped above, so it
+      // never lands in the ref — and therefore reads as "transient". Only
+      // the definitive class may trigger the handoff below.
+      return {
+        outcome: isExhaustedSourcesError(lastApiErrorRef.current) ? "exhausted" : "transient",
+      };
+    };
 
-      // All sub servers failed. The error must not wait on the dub probe —
-      // start it in the background so the toggle still gets its answer.
+    (async () => {
+      // ── Preferred-type load, with the mount stream handoff ──────────
+      // Handoff candidates: episodes BELOW the landing one that the list
+      // marks playable (`available !== false` — the same filter the watch
+      // page's server-side next handoff applies), NEWEST first, so the
+      // first hop lands straight on the highest playable below rather than
+      // climbing from ep 1. At most MOUNT_HANDOFF_MAX_LOOKUPS − 1 of them:
+      // the landing walk itself counts as attempt 1, so the two hop slots
+      // below ARE the cap (see the module block for why a cap exists).
+      //
+      // The chain is deliberately UNROLLED — two flat hops, no loop around
+      // the awaits. The React Compiler (which backs the react-hooks lint
+      // rules) silently BAILS OUT of analyzing this entire component when a
+      // locally-defined async function is awaited inside a loop, and that
+      // bail suppresses every other compiler diagnostic in the file (refs,
+      // immutability, set-state-in-effect…) — a false "improvement" that
+      // would hide real bugs. The fixed unrolled shape keeps the compiler
+      // engaged and makes the cap literally structural.
+      const hopCandidates = (episodes ?? [])
+        .filter((ep) => ep.number < episodeNumber && ep.available !== false)
+        .sort((a, b) => b.number - a.number)
+        .slice(0, MOUNT_HANDOFF_MAX_LOOKUPS - 1);
+      // The episode the RUNNING lookup is for — the landing one until a hop
+      // moves it. `episodeNumber` (the prop) deliberately never changes
+      // here: re-keying it would rewire every episode-scoped callback in
+      // this component. Instead the success branch rewrites the URL so it
+      // tells the truth, and any later navigation remounts with real props.
+      let tryingEpisode = episodeNumber;
+
+      // Attempt 1 — the landing episode the URL asked for.
+      let result = await lookupEpisode(tryingEpisode, preferredType);
+
+      // Hop gate, checked before EACH hop: the definitive "providers
+      // exhausted" miss only (a TRANSIENT miss proves nothing about the
+      // episode and must never silently redirect the viewer), AND the
+      // one-shot arm still live — this Player instance's FIRST load; the
+      // ref retires when this chain settles, so Retry / Try Dub / server
+      // switches / a provider-override re-run of this effect never hop —
+      // AND an anilistId to rewrite the URL with (no /watch route to
+      // reflect the real episode in would strand the viewer on a lie).
+      //
+      // Hop 1 — the NEWEST lower playable episode (one hop, not a climb).
+      if (
+        result.outcome === "exhausted" &&
+        anilistId &&
+        mountLookupArmedRef.current &&
+        hopCandidates[0]
+      ) {
+        tryingEpisode = hopCandidates[0].number;
+        // The note lives inside the loading overlay: it shows while the
+        // hop's walk runs, unmounts the moment playback starts, and can
+        // never stack on the error overlay (which owns its own reason line
+        // when every candidate is dead).
+        setHandoffNote({ from: episodeNumber, to: tryingEpisode });
+        result = await lookupEpisode(tryingEpisode, preferredType);
+      }
+      // Hop 2 — the cap: at most three lookup attempts per mount, total
+      // (landing + two hops); every miss is a full provider walk.
+      if (
+        result.outcome === "exhausted" &&
+        anilistId &&
+        mountLookupArmedRef.current &&
+        hopCandidates[1]
+      ) {
+        tryingEpisode = hopCandidates[1].number;
+        setHandoffNote({ from: episodeNumber, to: tryingEpisode });
+        result = await lookupEpisode(tryingEpisode, preferredType);
+      }
+
+      // A superseded run (StrictMode's dev double-invoke, or an episode/
+      // provider change mid-walk) stops here WITHOUT disarming: the arm
+      // belongs to the instance's first LOAD, and its successor run is
+      // still that load — only a run that actually settles may retire it.
+      if (result.outcome === "cancelled") return;
+
+      // The first load of this Player instance has settled — played or
+      // errored. Retire the one-shot arm HERE (not per hop) so the hops
+      // above stay allowed while every later lookup — Retry / Try Dub /
+      // server switches via loadByType, a provider-override re-run of this
+      // effect — shows the normal error state instead of silently swapping
+      // episodes. Success consumes it too: a stream that PLAYED means there
+      // was nothing to hand off, and a subsequent user-driven failure must
+      // not resurrect the behaviour.
+      mountLookupArmedRef.current = false;
+
+      if (result.outcome === "sources") {
+        const { server, data } = result;
+        // Handed off? Reflect the REAL episode in the address bar (copy /
+        // refresh / bookmark tell the truth from here on; the in-flight
+        // note already told the viewer). history.replaceState, NOT
+        // router.push/replace: a router navigation remounts this page —
+        // re-running the very lookup that just failed for the episode we
+        // escaped — an unbounded bounce loop. The query string (provider
+        // override, …) rides along untouched, same as goToEpisode.
+        if (tryingEpisode !== episodeNumber && anilistId) {
+          window.history.replaceState(
+            null,
+            "",
+            `/anime/${anilistId}/watch/${tryingEpisode}${window.location.search}`
+          );
+        }
+        setSources(data.sources);
+        setSubtitles(data.subtitles || []);
+        setStreamHeaders(data.headers || null);
+        setActiveServer(server);
+        activeServerRef.current = server;
+        setAvailableServers([server]);
+        setStreamError(false);
+        setStreamErrorDetail(null);
+        lastApiErrorRef.current = null;
+        setAudioType(preferredType);
+        // Don't dismiss the loading bar here — the attempt owns it and
+        // clears it on MANIFEST_PARSED / loadedmetadata (or fails over).
+        loadHls(data.sources, data.headers || null, true);
+
+        // Use provider skip times if available (more accurate than AniSkip)
+        if (data.intro || data.outro) {
+          if (data.intro && !introSegment) {
+            providerSkipRef.current.intro = true;
+            setIntroSegment(data.intro);
+          }
+          if (data.outro && !outroSegment) {
+            providerSkipRef.current.outro = true;
+            setOutroSegment(data.outro);
+          }
+        }
+
+        // After a HOP, both follow-ups below would probe the LANDING
+        // episode (probeServer is keyed on the `episodeNumber` prop) —
+        // i.e. burn provider walks against the episode we just proved
+        // dead — so a handed-off load skips them. Accepted cost: the dub
+        // toggle and the extra-server list stay unknown for this session
+        // (fixing either needs a prop re-key, far from surgical); manual
+        // server switches still work and, per the mount-only rule, show
+        // the normal error state if they miss.
+        if (tryingEpisode === episodeNumber) {
+          // Dub probe now that the stream itself is in hand.
+          startDubProbe();
+
+          // Discover remaining sub servers in background
+          const otherServers = SERVERS.filter((s) => s !== server);
+          const subExtras = await Promise.all(
+            otherServers.map(async (s) => {
+              const d = await probeServer(s, "sub");
+              return d ? s : null;
+            })
+          );
+          const allSub = [server, ...subExtras.filter(Boolean)] as string[];
+          if (!cancelled) setAvailableServers(allSub);
+        }
+
+        return;
+      }
+
+      // No handoff taken, or every candidate dead: the error card exactly
+      // as today. The error must not wait on the dub probe — start it in
+      // the background so the toggle still gets its answer.
       startDubProbe();
       if (!cancelled) {
         setStreamErrorDetail(lastApiErrorRef.current);
@@ -4172,6 +4373,23 @@ export default function Player({ animeTitle, episodeNumber, anilistId, malId, ne
               >
                 Still checking providers…
               </div>
+            )}
+            {/* Mount handoff note — "Episode 57 isn't available yet — playing
+                episode 56." Only the mount-time handoff ever sets it (every
+                user-driven load window clears it first), so it can only
+                describe the one episode swap that got THIS load moving. It
+                lives and dies with this overlay: playback start unmounts it,
+                and exhaustion hands the screen to the error card, which owns
+                its own reason line. */}
+            {handoffNote && (
+              <p
+                role="status"
+                aria-live="polite"
+                className="font-mono text-[10px] tracking-[0.15em] text-[var(--accent)]/70"
+              >
+                Episode {handoffNote.from} isn&rsquo;t available yet — playing
+                episode {handoffNote.to}.
+              </p>
             )}
           </div>
         </div>

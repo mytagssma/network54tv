@@ -24,8 +24,14 @@ interface AnimeCardProps {
   href?: string;
   loading?: boolean;
   /**
-   * Home's Latest Releases feed only: adds the "Play episode N" strip on the
-   * cover, deep-linking to the latest RELEASED episode (/anime/{id}/watch/{n}).
+   * Home's Latest Releases feed only: adds the play strip on the cover,
+   * deep-linking to the latest RELEASED episode (/anime/{id}/watch/{n}).
+   * The strip NAMES the episode ("Play episode N") only when N is settled
+   * fact — a FINISHED, fully released run, whose number can't lag the
+   * providers. For anything still airing the number is AniList-schedule-
+   * derived and routinely leads the uploads around air time, so the strip
+   * promises no number ("Play latest") and the watch page's mount-time
+   * stream handoff resolves the newest actually-playable episode.
    * Browse/search/detail grids never pass it and render exactly as before.
    */
   playLatest?: boolean;
@@ -61,6 +67,29 @@ function latestReleasedEpisode(anime: AnimeCardAnime): number | null {
   return null;
 }
 
+/**
+ * May the strip PROMISE the derived episode number ("Play episode 57")?
+ *
+ * The number above is AniList schedule truth, not provider truth: for a
+ * still-airing run the newest "released" episode routinely has no stream
+ * yet (the classic latest-episode lag — the card can't cheaply know; a
+ * stream walk per home card is infeasible). So the strip only names a
+ * number when the run is over: FINISHED with the total fully released,
+ * where every episode is as streamable as it will ever be. Everything
+ * else says "Play latest" and lets the watch page's mount-time stream
+ * handoff pick the newest episode that actually plays. The LINK still
+ * targets the derived episode either way — the handoff is what saves it.
+ */
+function stripNamesEpisode(anime: AnimeCardAnime): boolean {
+  const fraction = resolveEpisodeFraction(anime);
+  return (
+    anime.status === "FINISHED" &&
+    fraction !== null &&
+    fraction.released !== null &&
+    fraction.released >= fraction.total
+  );
+}
+
 export default function AnimeCard({ anime, href, loading, playLatest, onClick }: AnimeCardProps) {
   const baseHref = href ?? `/anime/${anime.id}`;
 
@@ -80,6 +109,13 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
   // The play strip rides the REAL cover only — while a card is navigating
   // (loading skeleton), `playLatest` yields nothing, same as the meta row.
   const playEpisode = playLatest && !loading ? latestReleasedEpisode(anime) : null;
+  // …and it only NAMES that episode when the number is settled fact
+  // (FINISHED run, fully released). Schedule-derived numbers for still-
+  // airing runs can lead the providers, so those strips say "Play latest"
+  // — see `stripNamesEpisode`. The link target is the same derived
+  // episode in both cases; the watch page's mount-time stream handoff
+  // corrects it if providers haven't caught up.
+  const stripSaysNumber = playEpisode !== null && stripNamesEpisode(anime);
 
   return (
     <CardShell
@@ -104,7 +140,11 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
             // else on the card opens /anime/{id}. It stays a real anchor, so
             // modifier-clicks and "open in new tab" work natively;
             // globals.css draws the focus ring.
-            aria-label={`Play episode ${playEpisode} of ${anime.title}`}
+            aria-label={
+              stripSaysNumber
+                ? `Play episode ${playEpisode} of ${anime.title}`
+                : `Play the latest episode of ${anime.title}`
+            }
             className="label-micro absolute inset-x-0 bottom-0 z-10 flex items-center gap-1.5
                        bg-gradient-to-t from-black/95 via-black/60 to-transparent
                        px-2.5 pt-8 pb-2 font-medium tabular-nums text-white
@@ -112,7 +152,7 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
                        focus-visible:text-[var(--accent)]"
           >
             <span aria-hidden="true" className="text-[var(--accent)]">▶</span>
-            Play episode {playEpisode}
+            {stripSaysNumber ? <>Play episode {playEpisode}</> : "Play latest"}
           </Link>
         )
       }
