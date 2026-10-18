@@ -90,6 +90,7 @@ query ($id: Int) {
     id
     idMal
     title { romaji english native }
+    synonyms
     coverImage { large extraLarge color }
     bannerImage
     description

@@ -15,10 +15,13 @@ import {
   megaplay,
   animeunity,
   kickassanime,
+  anibd,
+  animesogo,
+  twodhive,
   configure,
 } from "kaizoku-core";
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
-import { getAnimeById } from "@/lib/anilist";
+import { getAnimeById, getAnimeFull } from "@/lib/anilist";
 import { buildSiteUrl } from "@/lib/site-url";
 
 // ─── Wire scrape proxy for Cloudflare-protected providers ──────────────
@@ -598,10 +601,58 @@ async function normalizedEpisodeMatch(
   return ep ?? null;
 }
 
+/**
+ * Alternate search titles for `anilistId` — AniList's english name plus
+ * synonyms, which is where Chinese anime usually carry the name catalogues
+ * actually use ("Zhu Xian Final" ↔ "Jade Dynasty 4"). Only consulted AFTER a
+ * primary-title search already came up empty (see `getSessionForProvider`),
+ * so the normal path pays nothing. Capped at 3 to bound per-provider search
+ * volume.
+ *
+ * Memoized per AniList id: this runs once per search-provider attempt, so
+ * without a cache a single miss-title walk fires 6+ AniList fetches — a
+ * measured burst that tripped upstream 429s, and each 429 costs ~10s in
+ * proxy retries (walks collapsed to 42s). Failures memoize too, but for only
+ * 60s so a transient blip doesn't silence alternates for 10 minutes.
+ */
+const altTitleCache = new Map<number, { titles: string[]; at: number }>();
+const ALT_TTL_OK_MS = 10 * 60_000;
+const ALT_TTL_FAIL_MS = 60_000;
+
+async function searchAltTitles(anilistId: number): Promise<string[]> {
+  const now = Date.now();
+  const hit = altTitleCache.get(anilistId);
+  if (hit) {
+    const ttl = hit.titles.length > 0 ? ALT_TTL_OK_MS : ALT_TTL_FAIL_MS;
+    if (now - hit.at < ttl) return hit.titles;
+  }
+  try {
+    const full = await getAnimeFull(anilistId);
+    const seen = new Set<string>();
+    const alts: string[] = [];
+    const push = (v: unknown): void => {
+      if (typeof v !== "string" || !v.trim()) return;
+      const n = normalize(v);
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      alts.push(v.trim());
+    };
+    push(full?.title?.english);
+    for (const s of full?.synonyms ?? []) push(s);
+    const titles = alts.slice(0, 3);
+    altTitleCache.set(anilistId, { titles, at: now });
+    return titles;
+  } catch {
+    // transient AniList failure — the primary title already failed anyway
+    altTitleCache.set(anilistId, { titles: [], at: now });
+    return [];
+  }
+}
+
 async function getSessionForProvider(
   providerName: string,
   title: string,
-  doSearch: () => Promise<(string | number)[]>,
+  doSearch: (t: string) => Promise<(string | number)[]>,
   doFetchInfo: (id: string) => Promise<any>,
   episodeNumber?: number,
   anilistId?: number
@@ -626,7 +677,20 @@ async function getSessionForProvider(
   }
 
   try {
-    const ids = await doSearch();
+    let ids = await doSearch(title);
+    // Primary title empty ⇒ retry with AniList's english name/synonyms for
+    // the same media. Donghua catalogues split along pinyin↔English names
+    // (AniList romaji "Zhu Xian Final", catalogue "Jade Dynasty 4"), so a
+    // title-keyed search with only the romaji can never hit. On a miss only —
+    // a primary hit skips this entirely.
+    if (ids.length === 0 && anilistId) {
+      const primaryNorm = normalize(title);
+      for (const alt of await searchAltTitles(anilistId)) {
+        if (normalize(alt) === primaryNorm) continue; // english==romaji row
+        ids = await doSearch(alt);
+        if (ids.length > 0) break;
+      }
+    }
     if (ids.length === 0) return null;
 
     for (const id of ids) {
@@ -678,7 +742,7 @@ const PROVIDERS: ProviderDef[] = [
       getSessionForProvider(
         "kickassanime",
         title,
-        () => searchProvider("kickassanime", (q) => kickassanime.search(q), title),
+        (t) => searchProvider("kickassanime", (q) => kickassanime.search(q), t),
         (id) => kickassanime.fetchAnimeInfo(id),
         episodeNumber,
         anilistId
@@ -701,7 +765,7 @@ const PROVIDERS: ProviderDef[] = [
       getSessionForProvider(
         "anikoto",
         title,
-        () => searchProvider("anikoto", (q) => anikoto.search(q), title),
+        (t) => searchProvider("anikoto", (q) => anikoto.search(q), t),
         (id) => anikoto.fetchAnimeInfo(id),
         episodeNumber,
         anilistId
@@ -735,7 +799,7 @@ const PROVIDERS: ProviderDef[] = [
       getSessionForProvider(
         "anizone",
         title,
-        () => searchProvider("anizone", (q) => anizone.search(q), title),
+        (t) => searchProvider("anizone", (q) => anizone.search(q), t),
         (id) => anizone.fetchAnimeInfo(id),
         episodeNumber,
         anilistId
@@ -753,11 +817,11 @@ const PROVIDERS: ProviderDef[] = [
       getSessionForProvider(
         "allmanga",
         title,
-        () =>
+        (t) =>
           searchProvider(
             "allmanga",
             (q) => allmanga.search(q),
-            title,
+            t,
             // fetchAnimeInfo needs the numeric AniList ID (it resolves AniZip /
             // AniList media and builds `watch/allmanga/<anilistId>/<ep>` ids
             // that fetchSources parses); search hits carry their Mongo show
@@ -829,24 +893,123 @@ const PROVIDERS: ProviderDef[] = [
     getSources: async (_episodeId, _type, _ep, _server) => null,
   },
 
-  // 6. animeunity
+  // 6. anibd — Chinese-anime (donghua) catalogue keyed on the AniList id
+  // directly (no title search), on an independent stream backend. Covers
+  // established donghua megaplay sometimes lacks; sub-only in practice.
+  {
+    name: "anibd",
+    getSession: async (title, anilistId) => {
+      if (!anilistId) return null;
+      const cacheKeyStr = cacheKey("anibd", title);
+      const cached = sessionCache.get(cacheKeyStr);
+      if (cached) return cached;
+      try {
+        const episodes = await anibd.fetchEpisodes(anilistId);
+        if (!Array.isArray(episodes) || episodes.length === 0) return null;
+        const session: ProviderSession = { providerId: "anibd", animeId: String(anilistId), episodes };
+        sessionCache.set(cacheKeyStr, session);
+        if (sessionCache.size > SESSION_CACHE_MAX) {
+          const firstKey = sessionCache.keys().next().value;
+          if (firstKey) sessionCache.delete(firstKey);
+        }
+        return session;
+      } catch (err) {
+        console.warn(`[providers] anibd getSession("${title}", anilistId=${anilistId}) failed:`, err instanceof Error ? err.message : err);
+        return null;
+      }
+    },
+    getSources: async (episodeId, type) => {
+      // No dub track exists (single S-sub server) — decline instead of
+      // serving the sub for a dub request so the walk keeps looking.
+      if (type === "dub") return null;
+      const data = await anibd.fetchSources(episodeId);
+      return toStreamResult(data, "anibd");
+    },
+  },
+
+  // 7. 2dhive — MAL-keyed catalogue with the strongest donghua coverage we
+  // measured (8/8 evergreen + titles megaplay's AniList-id mapping lags on).
+  // Its session lookup converts AniList→MAL internally, so the entry is
+  // still anilist-keyed at the walk level.
+  {
+    name: "2dhive",
+    getSession: async (title, anilistId) => {
+      if (!anilistId) return null;
+      const cacheKeyStr = cacheKey("2dhive", title);
+      const cached = sessionCache.get(cacheKeyStr);
+      if (cached) return cached;
+      // "No MAL id mapped …" is UNCONDITIONAL for titles without a MAL row
+      // (brand-new airing entries) — re-paying AniList + their catalogue on
+      // every walk adds up; remember for 10 min, a success clears it.
+      const negKey = negativeCacheKey("2dhive-resolve", title, anilistId);
+      if (isNegativelyCached(negKey)) {
+        console.warn(`[providers] 2dhive getSession skipped — recent miss is negative-cached for anilistId=${anilistId}`);
+        return null;
+      }
+      try {
+        const info = await twodhive.fetchAnimeInfo(anilistId);
+        const episodes = info?.episodes ?? [];
+        if (!Array.isArray(episodes) || episodes.length === 0) return null;
+        forgetNegative(negKey);
+        const session: ProviderSession = { providerId: "2dhive", animeId: String(anilistId), episodes };
+        sessionCache.set(cacheKeyStr, session);
+        if (sessionCache.size > SESSION_CACHE_MAX) {
+          const firstKey = sessionCache.keys().next().value;
+          if (firstKey) sessionCache.delete(firstKey);
+        }
+        return session;
+      } catch (err) {
+        console.warn(`[providers] 2dhive getSession("${title}", anilistId=${anilistId}) failed:`, err instanceof Error ? err.message : err);
+        if (err instanceof Error && /No MAL id/i.test(err.message)) rememberNegative(negKey);
+        return null;
+      }
+    },
+    getSources: async (episodeId, type) => {
+      const data = await twodhive.fetchSources(episodeId, type);
+      return toStreamResult(data, "2dhive");
+    },
+  },
+
+  // 8. animesogo — gogo-style, TITLE-search keyed: measured recovering every
+  // currently-airing donghua the AniList-id-keyed backends miss (new titles
+  // are findable by name before their id mappings propagate upstream).
+  {
+    name: "animesogo",
+    getSession: (title, anilistId, episodeNumber) =>
+      getSessionForProvider(
+        "animesogo",
+        title,
+        (t) => searchProvider("animesogo", (q) => animesogo.search(q), t),
+        (id) => animesogo.fetchAnimeInfo(id),
+        episodeNumber,
+        anilistId
+      ),
+    getSources: async (episodeId, type) => {
+      const data = await animesogo.fetchSources(episodeId, type);
+      return toStreamResult(data, "animesogo");
+    },
+  },
+
+  // 9. animeunity
   {
     name: "animeunity",
     getSession: (title, anilistId, episodeNumber) =>
       getSessionForProvider(
         "animeunity",
         title,
-        () =>
+        (t) =>
           searchProvider(
             "animeunity",
             (q) => animeunity.search(q),
-            title,
+            t,
             undefined,
             // animeunity's archivio answers 403 to every query from this IP
             // (bot wall) — measured ~50 identical 403s per dev session. The
             // marker skips the walk-level search for 10 min; any success
-            // clears it (see the negative cache section).
-            negativeCacheKey("animeunity-search", title, anilistId)
+            // clears it (see the negative cache section). Keyed per candidate
+            // title so an alternate-title retry isn't skipped under the
+            // primary title's marker (and vice versa).
+            negativeCacheKey("animeunity-search", t, anilistId)
           ),
         (id) => animeunity.fetchAnimeInfo(id),
         episodeNumber,
