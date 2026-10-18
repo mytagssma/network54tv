@@ -3,8 +3,13 @@ import type { Anime, AnimeRelation } from "@/types/anime";
 // client-side grouping must agree on what counts as a franchise entry (and
 // which edges count as a link). See `src/lib/franchise.ts`.
 import { IGNORED_RELATION_TYPES, isFranchiseFormat } from "@/lib/franchise";
+import { buildSiteUrl } from "@/lib/site-url";
 
 const ANILIST_API = "https://graphql.anilist.co";
+// Same-origin hardened forwarder for SERVER-side GraphQL (browser-like
+// Origin/Referer, bounded 429/network retries, stale-L1 rescue) — the route
+// kaizoku-core's provider AniList calls already use. See fetchGraphQL.
+const ANILIST_FETCH_PROXY = `${buildSiteUrl()}/api/anilist/fetch`;
 
 const TRENDING_QUERY = `
 query ($page: Int, $perPage: Int) {
@@ -1228,18 +1233,63 @@ async function executeSearch(
 }
 
 async function fetchGraphQL(query: string, variables: Record<string, any>) {
-  const res = await fetch(ANILIST_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Origin: "https://anilist.co",
-      Referer: "https://anilist.co/",
-    },
-    body: JSON.stringify({ query, variables }),
-    next: { revalidate: 300 },
-  });
-  if (!res.ok) throw new Error(`AniList API error: ${res.status}`);
+  const payload = JSON.stringify({ query, variables });
+  const directHeaders = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    Origin: "https://anilist.co",
+    Referer: "https://anilist.co/",
+  };
+  // Server-side: route through the hardened same-origin forwarder instead of
+  // hitting graphql.anilist.co from this machine's IP. On Vercel, direct
+  // server-IP fetches are intermittently blocked, and every blip used to throw
+  // here → getAnimeById returned null → the detail/watch pages called
+  // notFound() → Next CACHED that 404 for `revalidate = 300`, turning a
+  // one-second hiccup into a sticky "anime not found" for minutes (the
+  // "some titles 404 by luck" bug). The proxy path passes the upstream
+  // status/body through unchanged, so parsing below is identical either way.
+  // The direct fetch stays as the fallback for the build phase (the deployed
+  // routes aren't serving while next build runs) and for self-fetch network
+  // failures.
+  let res: Response;
+  const atBuildTime = process.env.NEXT_PHASE === "phase-production-build";
+  if (atBuildTime) {
+    // During `next build` the deployment's routes aren't serving yet —
+    // self-fetch would hit a building-state response. Keep the old direct
+    // path there (build-IP AniList fetches are what always built fine).
+    res = await fetch(ANILIST_API, {
+      method: "POST",
+      headers: directHeaders,
+      body: payload,
+      next: { revalidate: 300 },
+    });
+  } else {
+    try {
+      res = await fetch(ANILIST_FETCH_PROXY, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: ANILIST_API,
+          method: "POST",
+          headers: directHeaders,
+          body: payload,
+        }),
+      });
+    } catch {
+      // Self-fetch unreachable — last resort, same as the pre-proxy path.
+      res = await fetch(ANILIST_API, {
+        method: "POST",
+        headers: directHeaders,
+        body: payload,
+        next: { revalidate: 300 },
+      });
+    }
+  }
+  if (!res.ok) {
+    const err = new Error(`AniList API error: ${res.status}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   const json = await res.json();
   if (json.errors) throw new Error(json.errors[0]?.message);
   return json.data;
@@ -1366,13 +1416,25 @@ export async function getRecentlyAired(
 }
 
 export async function getAnimeById(id: number): Promise<Anime | null> {
+  // Deliberately minimal catch: a transient AniList/proxy failure must THROW
+  // (an uncached 500 the next refresh recovers from) rather than return null.
+  // null is reserved for a CONFIRMED miss — the pages turn it into
+  // notFound(), which Next caches for `revalidate` seconds. Swallowing every
+  // error here is what turned brief upstream blips into sticky per-title
+  // 404s. An upstream 404 IS a confirmed miss though (AniList answers 404
+  // when the id exists but not as ANIME — e.g. a manga id), so it maps to
+  // null like `Media: null` does.
+  // Callers that must degrade instead of fail (resolveExpectedEpisodeCount,
+  // getAnimeFull consumers) keep their own try/catch.
+  let data: Awaited<ReturnType<typeof fetchGraphQL>>;
   try {
-    const data = await fetchGraphQL(DETAIL_QUERY, { id });
-    if (!data.Media) return null;
-    return anilistMediaToAnime(data.Media);
-  } catch {
-    return null;
+    data = await fetchGraphQL(DETAIL_QUERY, { id });
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return null;
+    throw err;
   }
+  if (!data.Media) return null;
+  return anilistMediaToAnime(data.Media);
 }
 
 export async function getAnimeFull(id: number): Promise<any | null> {

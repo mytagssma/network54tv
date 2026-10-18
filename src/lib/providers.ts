@@ -19,6 +19,7 @@ import {
 } from "kaizoku-core";
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
 import { getAnimeById } from "@/lib/anilist";
+import { buildSiteUrl } from "@/lib/site-url";
 
 // ─── Wire scrape proxy for Cloudflare-protected providers ──────────────
 // kaizoku-core reads SCRAPE_PROXY_URL/SCRAPE_PROXY_KEY from env automatically,
@@ -28,18 +29,8 @@ const scrapeProxyKey = process.env.SCRAPE_PROXY_KEY;
 
 // Point kaizoku-core's internal AniList client to our proxy (adds Origin header
 // to bypass AniList's server-IP block). The /api/anilist/fetch route forwards
-// with browser-like headers.
-// Build an absolute URL for the AniList proxy. On Vercel, VERCEL_URL is
-// host-only (e.g. "xyz.vercel.app") — we must prepend https://.
-function buildSiteUrl(): string {
-  if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/+$/, "");
-  if (process.env.VERCEL_URL) {
-    const raw = process.env.VERCEL_URL.replace(/\/+$/, "");
-    return raw.startsWith("http") ? raw : `https://${raw}`;
-  }
-  return "http://localhost:3000";
-}
-
+// with browser-like headers. buildSiteUrl lives in @/lib/site-url (shared with
+// lib/anilist's server-side GraphQL routing).
 const siteUrl = buildSiteUrl();
 const anilistProxyUrl = `${siteUrl}/api/anilist/fetch`;
 
