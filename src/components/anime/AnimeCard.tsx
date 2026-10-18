@@ -94,15 +94,18 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
         playEpisode === null ? null : (
           <Link
             href={`/anime/${anime.id}/watch/${playEpisode}`}
-            // Nested inside the card's own link on purpose: the whole card
-            // still opens /anime/{id}, while a click or Enter on the strip
-            // stops propagation so ONLY this anchor's /watch/{n} navigation
-            // runs — the outer Link's onClick (the navigating-id skeleton)
-            // never fires. It stays a real anchor, so modifier-clicks and
-            // "open in new tab" work natively; globals.css draws the ring.
-            onClick={(e) => e.stopPropagation()}
+            // A SIBLING of the card's detail link, never nested inside it:
+            // HTML forbids <a> in <a> (and React/Next flag the nesting as a
+            // hydration error). CardShell's title link is the "stretched
+            // link" — its ::after covers the whole card at z-auto while this
+            // strip sits at z-10 above it — so a click or Enter here
+            // navigates ONLY to /watch/{n} (the detail link's onClick never
+            // runs, so no stopPropagation is needed), and a click anywhere
+            // else on the card opens /anime/{id}. It stays a real anchor, so
+            // modifier-clicks and "open in new tab" work natively;
+            // globals.css draws the focus ring.
             aria-label={`Play episode ${playEpisode} of ${anime.title}`}
-            className="label-micro absolute inset-x-0 bottom-0 flex items-center gap-1.5
+            className="label-micro absolute inset-x-0 bottom-0 z-10 flex items-center gap-1.5
                        bg-gradient-to-t from-black/95 via-black/60 to-transparent
                        px-2.5 pt-8 pb-2 font-medium tabular-nums text-white
                        transition-colors group-hover:text-[var(--accent)]
