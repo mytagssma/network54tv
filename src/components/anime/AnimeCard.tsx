@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import CardShell from "./CardShell";
 import { resolveEpisodeFraction } from "@/lib/anime-meta";
 
@@ -22,10 +23,45 @@ interface AnimeCardProps {
   anime: AnimeCardAnime;
   href?: string;
   loading?: boolean;
+  /**
+   * Home's Latest Releases feed only: adds the "Play episode N" strip on the
+   * cover, deep-linking to the latest RELEASED episode (/anime/{id}/watch/{n}).
+   * Browse/search/detail grids never pass it and render exactly as before.
+   */
+  playLatest?: boolean;
   onClick?: () => void;
 }
 
-export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardProps) {
+/**
+ * Latest RELEASED episode behind the opt-in `playLatest` strip, or null when
+ * nothing has aired yet (those cards render no strip). Whenever the total is
+ * known, `resolveEpisodeFraction` owns the math so the strip and the `3/12 EP`
+ * badge can never disagree about what has aired (episode 3 in that example).
+ * The one case it can't cover: a mid-run total AniList hasn't announced yet
+ * (episodes null) — the badge then shows nothing, but the next schedule
+ * entry alone still pins down what has aired:
+ *
+ *   total known     → `resolveEpisodeFraction().released`
+ *                      (FINISHED → the full run; a next schedule entry → its
+ *                      episode − 1; NOT_YET_RELEASED → 0 → null here)
+ *   total unknown   → nextAiringEpisode.episode − 1, but only when that
+ *                      entry is ≥ 2 — episode 1 means the premiere is still
+ *                      ahead, so there is nothing to play
+ *   neither case    → null
+ */
+function latestReleasedEpisode(anime: AnimeCardAnime): number | null {
+  const fraction = resolveEpisodeFraction(anime);
+  if (fraction) {
+    return fraction.released !== null && fraction.released >= 1 ? fraction.released : null;
+  }
+  const nextEpisode = anime.nextAiringEpisode?.episode;
+  if (typeof nextEpisode === "number" && Number.isFinite(nextEpisode) && nextEpisode >= 2) {
+    return nextEpisode - 1;
+  }
+  return null;
+}
+
+export default function AnimeCard({ anime, href, loading, playLatest, onClick }: AnimeCardProps) {
   const baseHref = href ?? `/anime/${anime.id}`;
 
   // AniList averageScore is 0–100 → render as e.g. 8.5
@@ -41,6 +77,9 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
   // byte-identical to the inline version this was extracted from.
   const episodeLabel = resolveEpisodeFraction(anime)?.label ?? null;
   const hasMeta = Boolean(ratingLabel || episodeLabel);
+  // The play strip rides the REAL cover only — while a card is navigating
+  // (loading skeleton), `playLatest` yields nothing, same as the meta row.
+  const playEpisode = playLatest && !loading ? latestReleasedEpisode(anime) : null;
 
   return (
     <CardShell
@@ -51,6 +90,29 @@ export default function AnimeCard({ anime, href, loading, onClick }: AnimeCardPr
       alt={anime.title}
       title={anime.title}
       genres={anime.genres}
+      coverOverlay={
+        playEpisode === null ? null : (
+          <Link
+            href={`/anime/${anime.id}/watch/${playEpisode}`}
+            // Nested inside the card's own link on purpose: the whole card
+            // still opens /anime/{id}, while a click or Enter on the strip
+            // stops propagation so ONLY this anchor's /watch/{n} navigation
+            // runs — the outer Link's onClick (the navigating-id skeleton)
+            // never fires. It stays a real anchor, so modifier-clicks and
+            // "open in new tab" work natively; globals.css draws the ring.
+            onClick={(e) => e.stopPropagation()}
+            aria-label={`Play episode ${playEpisode} of ${anime.title}`}
+            className="label-micro absolute inset-x-0 bottom-0 flex items-center gap-1.5
+                       bg-gradient-to-t from-black/95 via-black/60 to-transparent
+                       px-2.5 pt-8 pb-2 font-medium tabular-nums text-white
+                       transition-colors group-hover:text-[var(--accent)]
+                       focus-visible:text-[var(--accent)]"
+          >
+            <span aria-hidden="true" className="text-[var(--accent)]">▶</span>
+            Play episode {playEpisode}
+          </Link>
+        )
+      }
     >
       {/* Meta row: ★ score and episode count share one baseline; pinned to
           the bottom of the card so rows line up across the grid */}

@@ -101,6 +101,10 @@ export default function Home() {
                   status: anime.status,
                   nextAiringEpisode: anime.nextAiringEpisode,
                 }}
+                // This feed IS "what just aired", so each card also offers the
+                // latest RELEASED episode straight from its cover; every other
+                // AnimeCard surface (browse/search/detail) leaves the prop off.
+                playLatest
                 loading={anime.id === navigatingId}
                 onClick={() => setNavigatingId(anime.id)}
               />

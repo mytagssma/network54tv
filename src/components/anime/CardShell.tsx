@@ -8,6 +8,8 @@ import type { ReactNode } from "react";
  *
  *   Link (panel + 10% accent border + hover lift)
  *     ├─ 3:4 cover — either the 4-section diagonal pulse skeleton or the image
+ *     │    └─ coverOverlay (optional absolute layer — e.g. the home feed's
+ *     │       play strip; overlays, never flows, so baselines can't shift)
  *     └─ info column (p-3)
  *          ├─ fixed 2-line title slot
  *          ├─ genre chips (hidden while loading)
@@ -27,6 +29,16 @@ interface CardShellProps {
   alt: string;
   title: string;
   genres?: string[];
+  /**
+   * Absolute layer over the cover (the home feed's play strip). Optional —
+   * browse/search cards pass nothing and render exactly as before. Because
+   * it overlays the cover instead of flowing in the info column, the title /
+   * genres / meta baselines and grid alignment cannot move; callers leave it
+   * out while `loading` so it never rides the skeleton. The shell's Link is
+   * the Tailwind `group` below, so the layer can light up with the card's
+   * own hover via `group-hover:`.
+   */
+  coverOverlay?: ReactNode;
   /** The meta row. Rendered between the genre chips and the loading skeleton. */
   children?: ReactNode;
 }
@@ -39,13 +51,14 @@ export default function CardShell({
   alt,
   title,
   genres,
+  coverOverlay,
   children,
 }: CardShellProps) {
   return (
     <Link
       href={href}
       onClick={() => onClick?.()}
-      className="flex flex-col bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
+      className="group flex flex-col bg-[var(--panel)] border border-[var(--accent)]/10 overflow-hidden
                  transition-all duration-200 hover:border-[var(--accent)]/50 hover:-translate-y-0.5
                  rounded-none accent-card-hover"
     >
@@ -90,6 +103,10 @@ export default function CardShell({
             loading="lazy"
           />
         )}
+
+        {/* Optional absolute layer (the home play strip) — overlays the
+            cover, so the info column's baseline math is untouched */}
+        {coverOverlay}
       </div>
 
       {/* Info — flex column so the meta row can pin to the card bottom; every
