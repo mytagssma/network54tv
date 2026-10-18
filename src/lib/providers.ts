@@ -1361,8 +1361,18 @@ function writeAvailabilityCache(
 
 function isEpisodeAvailable(ep: Episode): boolean {
   if (!ep.id) return false;
-  // Known-both-absent: the probe proved neither version exists.
-  if (ep.hasSub === false && ep.hasDub === false) return false;
+  // (The old `hasSub === false && hasDub === false → false` clause is gone:
+  // those flags describe MEGAPLAY'S EMBED MAPPING ONLY — the probe is keyed by
+  // megaplay's own URL space — while availability is a title-level question
+  // the walk answers with ANY provider. Measured on Beyond Time's Gaze 2
+  // (anilistId 213356): megaplay listed all 52 episodes but its embeds
+  // answered "Error" for every one, the audio probe recorded both-false
+  // everywhere, and the drawer went N/A + INERT for the whole title — while
+  // anikoto streamed eps 1..10+ fine and even ep 1's own row was greyed.
+  // Inert rows also block the next-episode handoff, so one provider's ingest
+  // lag silenced a fully watchable show. Audio flags stay audio information
+  // (the counts, the dub-toggle gate) — never a verdict on whether a row can
+  // play.)
   if (!ep.number || ep.number <= 0) return false;
   // If airDate is provided and is in the future, episode is not available yet
   if (ep.airDate) {
@@ -1387,8 +1397,10 @@ function isEpisodeAvailable(ep: Episode): boolean {
  * It runs in two passes:
  *
  *  1. The per-episode `isEpisodeAvailable(ep)` verdict, applied unchanged to
- *     every episode (id present, flags not both known-absent, positive number,
- *     no FUTURE airDate).
+ *     every episode (id present, positive number, no FUTURE airDate). Audio
+ *     flags deliberately play no part — they describe megaplay's embed
+ *     mapping, not whether the walk can serve the row (see the function's own
+ *     comment for the measured counter-example).
  *  2. A LIST-LEVEL un-aired sweep, because the per-episode verdict is
  *     necessarily optimistic: AniZip ships airDates only for the next couple
  *     of episodes of an airing title and then stops, so episodes 5..12 of a
@@ -1464,7 +1476,13 @@ const MEGAPLAY_EMBED_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0";
 /** Titles with more episodes than this are not probed (cost > value). */
 const AUDIO_PROBE_MAX_EPISODES = 60;
-const AUDIO_PROBE_CONCURRENCY = 12;
+// 12 → 6: the probe's burst competes with live walks for the same upstream —
+// a 52-episode title fires 104 embed requests, and at concurrency 12 that
+// tripped megaplay's per-IP rate limit, after which megaplay, anikoto and
+// animesogo (all backed by megaplay embeds) 429'd for the following ~minute.
+// Halving the burst keeps the whole set inside the 8s budget at ~3× latency
+// per request while leaving headroom for concurrent stream resolution.
+const AUDIO_PROBE_CONCURRENCY = 6;
 const AUDIO_PROBE_TIMEOUT_MS = 6000;
 const AUDIO_PROBE_BUDGET_MS = 8000;
 const AUDIO_FLAG_CACHE_MAX = 100;
@@ -1472,7 +1490,70 @@ const AUDIO_FLAG_CACHE_MAX = 100;
 type AudioFlag = { sub: boolean | null; dub: boolean | null };
 
 /** anilistId → episode number → verified audio flags. */
-const audioFlagCache = new Map<number, Map<number, AudioFlag>>();
+const audioFlagCache = new Map<number, { flags: Map<number, AudioFlag>; at: number }>();
+/**
+ * TTL is mandatory: a FALSE here only means "megaplay's embed said no AT PROBE
+ * TIME" — megaplay ingests titles gradually, and a probe that ran during an
+ * embed outage recorded both-false for an entire 52-episode title. Entries
+ * therefore expire after 30 min so the next `?audio=1` re-probes honestly;
+ * re-learning TRUEs is just as cheap as the first run.
+ */
+const AUDIO_FLAG_TTL_MS = 30 * 60 * 1000;
+
+function readAudioFlags(anilistId: number): Map<number, AudioFlag> | undefined {
+  const entry = audioFlagCache.get(anilistId);
+  if (!entry) return undefined;
+  if (Date.now() - entry.at >= AUDIO_FLAG_TTL_MS) {
+    audioFlagCache.delete(anilistId);
+    return undefined;
+  }
+  return entry.flags;
+}
+
+/** Insert-or-refresh the per-title entry, returning its flag map. */
+function audioFlagsEntry(anilistId: number): Map<number, AudioFlag> {
+  const existing = readAudioFlags(anilistId);
+  if (existing) return existing;
+  const flags = new Map<number, AudioFlag>();
+  if (audioFlagCache.size >= AUDIO_FLAG_CACHE_MAX) {
+    const oldest = audioFlagCache.keys().next().value;
+    if (oldest !== undefined) audioFlagCache.delete(oldest);
+  }
+  audioFlagCache.set(anilistId, { flags, at: Date.now() });
+  return flags;
+}
+
+/**
+ * Record one verified flag. The ONLY writers are the megaplay embed probe and
+ * `recordStreamSuccess` below — the cache can only ever hold evidence.
+ */
+function rememberAudioFlag(
+  anilistId: number,
+  episode: number,
+  version: "sub" | "dub",
+  value: boolean
+): void {
+  const flags = audioFlagsEntry(anilistId);
+  const prev = flags.get(episode) ?? { sub: null, dub: null };
+  flags.set(episode, version === "sub" ? { ...prev, sub: value } : { ...prev, dub: value });
+}
+
+/**
+ * A served megaplay stream is the strongest possible flag evidence — record it
+ * so a probe's transient "Error" verdicts (ingest lag, embed outages) heal on
+ * the first successful play instead of sticking until the TTL. Megaplay-only:
+ * the probe's URL space and this cache describe megaplay's listing, so another
+ * provider's success proves nothing here.
+ */
+function recordStreamSuccess(
+  anilistId: number | undefined,
+  episode: number | undefined,
+  version: "sub" | "dub",
+  providerId: string
+): void {
+  if (!anilistId || !episode || providerId !== "megaplay") return;
+  rememberAudioFlag(anilistId, episode, version, true);
+}
 
 export interface AudioSummary {
   /**
@@ -1535,16 +1616,7 @@ async function probeMegaPlayAudio(
   anilistId: number,
   episodes: Episode[]
 ): Promise<Map<number, AudioFlag>> {
-  let cached = audioFlagCache.get(anilistId);
-  if (!cached) {
-    cached = new Map<number, AudioFlag>();
-    if (audioFlagCache.size >= AUDIO_FLAG_CACHE_MAX) {
-      const oldest = audioFlagCache.keys().next().value;
-      if (oldest !== undefined) audioFlagCache.delete(oldest);
-    }
-    audioFlagCache.set(anilistId, cached);
-  }
-  const flags: Map<number, AudioFlag> = cached;
+  const flags = audioFlagsEntry(anilistId);
 
   const deadline = Date.now() + AUDIO_PROBE_BUDGET_MS;
   const jobs: (() => Promise<void>)[] = [];
@@ -1556,8 +1628,7 @@ async function probeMegaPlayAudio(
         if (Date.now() > deadline) return; // out of budget ⇒ stays unknown
         const result = await probeMegaPlayVersion(anilistId, ep.number, version);
         if (result === null) return; // stay unknown
-        const prev = flags.get(ep.number) ?? { sub: null, dub: null };
-        flags.set(ep.number, version === "sub" ? { ...prev, sub: result } : { ...prev, dub: result });
+        rememberAudioFlag(anilistId, ep.number, version, result);
       });
     }
   }
@@ -1640,7 +1711,7 @@ function mergeAudioFlags(list: Episode[], flags: Map<number, AudioFlag>): Episod
  * response and the probed response can no longer differ.
  */
 function withKnownFlags(episodes: Episode[], anilistId?: number): Episode[] {
-  const cached = anilistId ? audioFlagCache.get(anilistId) : undefined;
+  const cached = anilistId ? readAudioFlags(anilistId) : undefined;
   if (!cached || cached.size === 0) return episodes;
   return mergeAudioFlags(episodes, cached);
 }
@@ -2118,7 +2189,7 @@ function walkProvidersByPriority(
  * If `preferredProvider` is given, that provider is tried FIRST using its own episode mapping,
  * preventing cross-provider episode number mismatches.
  */
-export async function getStreamingSources(
+async function walkStreamingSources(
   animeTitle: string,
   episodeNumber: number,
   type: "sub" | "dub" = "sub",
@@ -2210,6 +2281,29 @@ export async function getStreamingSources(
 
   console.warn(`[providers] getStreamingSources("${animeTitle}", ep${episodeNumber}, ${type}) — all providers failed. Tried:`, tried);
   return null;
+}
+
+/**
+ * Public entry — the walk itself plus one bookkeeping step on the way out: a
+ * SUCCESSFUL megaplay serve records the played version as a verified audio
+ * flag, so a probe that ran during a megaplay embed outage (which records
+ * "no sub, no dub" for every episode it touches) heals for the played row as
+ * soon as the viewer actually plays it, instead of only at TTL expiry.
+ */
+export async function getStreamingSources(
+  animeTitle: string,
+  episodeNumber: number,
+  type: "sub" | "dub" = "sub",
+  server?: string,
+  anilistId?: number,
+  preferredProvider?: string
+): Promise<
+  { sources: StreamSource[]; subtitles: Subtitle[]; headers?: Record<string, string>; providerId: string; intro?: { start: number; end: number }; outro?: { start: number; end: number } }
+  | null
+> {
+  const result = await walkStreamingSources(animeTitle, episodeNumber, type, server, anilistId, preferredProvider);
+  if (result) recordStreamSuccess(anilistId, episodeNumber, type, result.providerId);
+  return result;
 }
 
 // `getAvailableProviders()` used to live here. It had ZERO callers, so it was

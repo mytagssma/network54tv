@@ -1416,6 +1416,29 @@ export async function getRecentlyAired(
   };
 }
 
+/**
+ * In-process memo for the single-title detail fetch. Two jobs:
+ *
+ *  - Dev has no ISR, so every page render used to hit the proxy live; a burst
+ *    of browsing (or any external AniList pressure) tripped upstream 429s and
+ *    the page crashed with a raw "AniList API error: 429" runtime error.
+ *  - One minute of reuse collapses duplicate renders (RSC + client refetch,
+ *    detail page + watch page for the same id) into a single upstream call.
+ *
+ * On an upstream ERROR (429/5xx/proxy blip) the memo serves its last-good
+ * value up to ANIME_BY_ID_STALE_MS instead of crashing the page — title data
+ * changes on a multi-day cadence, so a 10-minute-old object beats a hard 500.
+ * Nothing cached (cold id during a bad window) still throws: that is a real
+ * first-hit failure and must surface as an uncached 500 the refresh recovers
+ * from. Confirmed misses (404 / `Media: null`) are NOT memoised — caching a
+ * null is exactly the sticky-404 class of bug this file's error contract
+ * exists to prevent.
+ */
+const animeByIdMemo = new Map<number, { anime: Anime; at: number }>();
+const ANIME_BY_ID_MEMO_TTL_MS = 60_000;
+const ANIME_BY_ID_STALE_MS = 15 * 60_000;
+const ANIME_BY_ID_MEMO_MAX = 200;
+
 export async function getAnimeById(id: number): Promise<Anime | null> {
   // Deliberately minimal catch: a transient AniList/proxy failure must THROW
   // (an uncached 500 the next refresh recovers from) rather than return null.
@@ -1427,15 +1450,31 @@ export async function getAnimeById(id: number): Promise<Anime | null> {
   // null like `Media: null` does.
   // Callers that must degrade instead of fail (resolveExpectedEpisodeCount,
   // getAnimeFull consumers) keep their own try/catch.
+  const now = Date.now();
+  const hit = animeByIdMemo.get(id);
+  if (hit && now - hit.at < ANIME_BY_ID_MEMO_TTL_MS) return hit.anime;
   let data: Awaited<ReturnType<typeof fetchGraphQL>>;
   try {
     data = await fetchGraphQL(DETAIL_QUERY, { id });
   } catch (err) {
     if ((err as { status?: number }).status === 404) return null;
+    if (hit && now - hit.at < ANIME_BY_ID_STALE_MS) {
+      console.warn(
+        `[anilist] getAnimeById(${id}) serving ${Math.round((now - hit.at) / 1000)}s-stale after upstream error:`,
+        err instanceof Error ? err.message : err
+      );
+      return hit.anime;
+    }
     throw err;
   }
   if (!data.Media) return null;
-  return anilistMediaToAnime(data.Media);
+  const anime = anilistMediaToAnime(data.Media);
+  if (animeByIdMemo.size >= ANIME_BY_ID_MEMO_MAX) {
+    const oldest = animeByIdMemo.keys().next().value;
+    if (oldest !== undefined) animeByIdMemo.delete(oldest);
+  }
+  animeByIdMemo.set(id, { anime, at: now });
+  return anime;
 }
 
 export async function getAnimeFull(id: number): Promise<any | null> {
