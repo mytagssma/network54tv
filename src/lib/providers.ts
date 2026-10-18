@@ -23,6 +23,7 @@ import {
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
 import { getAnimeById, getAnimeFull } from "@/lib/anilist";
 import { buildSiteUrl } from "@/lib/site-url";
+import { extractBabaStream } from "@/lib/babastream";
 
 // ─── Wire scrape proxy for Cloudflare-protected providers ──────────────
 // kaizoku-core reads SCRAPE_PROXY_URL/SCRAPE_PROXY_KEY from env automatically,
@@ -732,6 +733,15 @@ interface ProviderDef {
   name: string;
   getSession: (title: string, anilistId?: number, episodeNumber?: number) => Promise<ProviderSession | null>;
   getSources: (episodeId: string, type: "sub" | "dub", episodeNumber: number, server?: string) => Promise<StreamResult | null>;
+  /**
+   * Optional escape hatch for providers whose LIST lags their own STREAM
+   * backends: called only when the session exists but neither an exact
+   * number match nor `normalizedEpisodeMatch` produced an episode id.
+   * Returning an id lets `getSources` run anyway (the provider decides
+   * whether that id is meaningful upstream); returning null keeps the
+   * conservative skip.
+   */
+  resolveEpisodeId?: (session: ProviderSession, episodeNumber: number) => string | null;
 }
 
 const PROVIDERS: ProviderDef[] = [
@@ -965,8 +975,53 @@ const PROVIDERS: ProviderDef[] = [
       }
     },
     getSources: async (episodeId, type) => {
-      const data = await twodhive.fetchSources(episodeId, type);
-      return toStreamResult(data, "2dhive");
+      // kaizoku-core skips BabaStream — its proof-of-work needs worker_threads,
+      // which Cloudflare Workers cannot use — but Baba is 2dhive's OWN default
+      // server (`defaultServer: "babastream"` on their episode page) and the
+      // backend that carries titles megaplay + hianime miss (measured: AiPri
+      // ep29, BTTH4 ep62 resolve there while both wired paths report "no
+      // stream"). We run on Node, so on the primary's throw, try Baba before
+      // giving the provider up. Definitive misses are negative-cached inside
+      // extractBabaStream — the proof-of-work makes re-paying for a miss
+      // absurd — while network failures stay transient and fall through to
+      // the provider error the walk already logs.
+      try {
+        const data = await twodhive.fetchSources(episodeId, type);
+        return toStreamResult(data, "2dhive");
+      } catch (primaryErr) {
+        const [malRaw, epRaw] = String(episodeId).split("/");
+        const malId = Number(malRaw);
+        const epNum = Number(epRaw);
+        if (Number.isFinite(malId) && Number.isFinite(epNum)) {
+          try {
+            const baba = await extractBabaStream(
+              `https://babastream.top/embed/${malId}/${epNum}/${type}`
+            );
+            if (baba) return toStreamResult(baba, "2dhive");
+          } catch (babaErr) {
+            console.warn(
+              `[providers] 2dhive baba fallback (MAL ${malId} ep${epNum} ${type}) failed:`,
+              babaErr instanceof Error ? babaErr.message : babaErr
+            );
+          }
+        }
+        throw primaryErr;
+      }
+    },
+    // 2dhive's list is the SERIES PAGE's `totalEpisodes`, which lags its own
+    // stream backends (measured: page said 60 while BabaStream served ep62 of
+    // BTTH4). Ids are "<malId>/<ep>", so a TAIL miss — a request beyond the
+    // listed maximum — is synthesised from any listed id's prefix rather than
+    // skipping the provider before the BabaStream fallback can even run.
+    // In-range misses keep the normal match verdict: those are numbering
+    // questions, not lag.
+    resolveEpisodeId: (session, episodeNumber) => {
+      const first = session.episodes[0]?.id;
+      if (!first || !first.includes("/")) return null;
+      const maxListed = session.episodes.reduce((max, ep) => Math.max(max, ep.number), 0);
+      if (episodeNumber <= maxListed) return null;
+      const prefix = first.slice(0, first.indexOf("/"));
+      return `${prefix}/${episodeNumber}`;
     },
   },
 
@@ -2017,6 +2072,19 @@ export async function getEpisodes(
 const PROVIDER_TIMEOUT_MS = 12_000;
 
 /**
+ * Per-provider budget overrides. The 2dhive attempt now carries the
+ * BabaStream fallback — its own doomed megaplay+hianime tries PLUS a
+ * proof-of-work (80 sha256 proofs over workers) and four round trips — which
+ * measured 4–14s on top of the primary. The flat 12s budget killed the
+ * fallback mid-solve (`2dhive phase3 exceeded 12000ms` while AiPri ep29 was
+ * demonstrably resolvable), so 2dhive gets a budget that covers its real
+ * chain; everything else keeps the measured 12s.
+ */
+const PROVIDER_TIMEOUT_OVERRIDES: Readonly<Record<string, number>> = {
+  "2dhive": 30_000,
+};
+
+/**
  * Phase 2 used to run strictly serially, so its cost was the *sum* of every
  * provider's search + info + sources. It now overlaps a small batch at a time.
  * Three rather than "all of them" is deliberate: it collapses a 6-provider
@@ -2064,10 +2132,14 @@ async function attemptProvider(
         logReject: true,
       });
     }
-    if (!targetEp?.id) return null;
+    // List miss → the provider may still know the episode by its own keying
+    // (2dhive's series-page total lags its backends — see resolveEpisodeId).
+    const fallbackId = targetEp?.id ? null : provider.resolveEpisodeId?.(session, episodeNumber) ?? null;
+    const sourceId = targetEp?.id ?? fallbackId;
+    if (!sourceId) return null;
     // Sources are requested under the PROVIDER'S number: anizone/animeunity
     // pass it back upstream, and for exact matches it equals `episodeNumber`.
-    const result = await provider.getSources(targetEp.id, type, targetEp.number, server);
+    const result = await provider.getSources(sourceId, type, targetEp?.number ?? episodeNumber, server);
     return result ? { ...result, providerId: provider.name } : null;
   } catch (err) {
     console.warn(`[providers] ${provider.name} attempt failed:`, err instanceof Error ? err.message : err);
@@ -2226,7 +2298,7 @@ async function walkStreamingSources(
       try {
         const result = await withTimeout(
           attemptProvider(provider, animeTitle, episodeNumber, type, server, anilistId),
-          PROVIDER_TIMEOUT_MS,
+          PROVIDER_TIMEOUT_OVERRIDES[provider.name] ?? PROVIDER_TIMEOUT_MS,
           `${provider.name} phase1`
         );
         if (result) return result;
@@ -2272,7 +2344,7 @@ async function walkStreamingSources(
     const winner = await walkProvidersByPriority(phase3, (provider) =>
       withTimeout(
         attemptProvider(provider, animeTitle, episodeNumber, type, server, anilistId),
-        PROVIDER_TIMEOUT_MS,
+        PROVIDER_TIMEOUT_OVERRIDES[provider.name] ?? PROVIDER_TIMEOUT_MS,
         `${provider.name} phase3`
       )
     );
