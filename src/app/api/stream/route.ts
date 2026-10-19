@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStreamingSources } from "@/lib/providers";
+import { getAnimeById } from "@/lib/anilist";
+import { formatAirsDelta, resolveEpisodeFraction } from "@/lib/anime-meta";
 import type { StreamSource, Subtitle } from "@/types/anime";
 
 export const dynamic = "force-dynamic";
@@ -119,6 +121,80 @@ export async function GET(req: NextRequest) {
   // skips the READS only; a fresh walk still writes its outcome to the cache,
   // so the next ordinary request benefits from the re-walk either way.
   const fresh = searchParams.get("fresh") === "1";
+
+  // ── Aired-ness gate (refuse BEFORE any provider walk) ────────────────
+  // Incident (title 196613, "Dou Po Cangqiong: Nian Fan 4"): AniList's
+  // schedule is fully concrete — ep 57 aired 2026-10-18, ep 58 airs
+  // 2026-10-25, … ep 62 airs 2026-11-22 — but `/api/stream?episode=62`
+  // walked the provider chain and returned a REAL stream, sourced from a
+  // DIFFERENT (a-year-old) numbering space of the same franchise. The
+  // plausibility gate in providers.ts only scores episode-list LENGTH
+  // against AniList's TOTAL, and providers happily resolve any episode
+  // NUMBER they are asked for — so nothing could stop a not-yet-aired
+  // episode from streaming. This gate refuses whenever AniList says the
+  // requested episode exceeds what has aired, for EVERY request shape
+  // (any `server` / `providerId` / `type`), before the cache read, the
+  // single-flight, or the walk.
+  //
+  // FAIL-OPEN by design: `getAnimeById` throws on transient AniList
+  // failure (it reserves `null` for confirmed misses), so the whole gate
+  // is wrapped — on throw OR null the gate SKIPS entirely. A working
+  // stream lookup must never be 500'd (or blocked) by the very data that
+  // guards it; when the gate can't know, it lets the walk decide, exactly
+  // as before.
+  //
+  // The refusal body is the SAME 200 JSON shape as the exhausted path
+  // (`sources: []` + error) and its error STARTS WITH the Player's
+  // definitive-miss prefix — `EXHAUSTED_SOURCES_ERROR` in
+  // src/components/player/Player.tsx is a `startsWith` check on "No
+  // streaming sources available for this episode" — so the watch page's
+  // mount handoff hops to the newest playable lower episode with ZERO
+  // Player changes. The Player cannot tell a gated refusal from an
+  // exhausted walk, which is exactly right: both mean "this episode is
+  // not playable, try lower".
+  if (anilistId) {
+    try {
+      const anime = await getAnimeById(anilistId);
+      // Confirmed-miss null → no schedule data → no verdict → skip gate.
+      const fraction = anime ? resolveEpisodeFraction(anime) : null;
+      // `released == null` (HIATUS/CANCELLED/unknown schedule) → we cannot
+      // know what has aired → skip gate.
+      if (
+        anime &&
+        fraction &&
+        fraction.released !== null &&
+        episodeNumber > fraction.released
+      ) {
+        const released = fraction.released;
+        // Honest, status-aware explanation appended after the shared prefix.
+        const explanation =
+          anime.status === "RELEASING"
+            ? ` — episode ${episode} hasn't aired yet. Episode ${released} is the latest; next episode airs ${formatAirsDelta(anime.nextAiringEpisode?.airingAt) ?? "soon"}.`
+            : ` — only ${released} episodes have been released.`;
+        // One line when the gate fires — consistent with the walk logs below.
+        console.debug(
+          `[stream] gate: "${title}" anilistId=${anilistId} ep${episodeNumber} > released ${released} — refusing before provider walk`
+        );
+        // Deliberately NOT written to the stream cache (the early return
+        // happens before any cache/single-flight code): no provider walk
+        // ran, so this is not a provider miss and must not occupy the 90s
+        // failure-cache slot. It also keeps the gate self-healing — the
+        // moment the episode actually airs, the very next request re-runs
+        // the walk instead of replaying a stale "hasn't aired" verdict.
+        return NextResponse.json({
+          sources: [],
+          subtitles: [],
+          error: `No streaming sources available for this episode${explanation}`,
+          providerId,
+        });
+      }
+    } catch (e) {
+      // Fail-open: never take down a working path because GATE data failed.
+      console.debug(
+        `[stream] gate: anilist lookup failed for ${anilistId} (${e instanceof Error ? e.message : e}) — skipping aired-ness gate`
+      );
+    }
+  }
 
   // ── Key consolidation ─────────────────────────────────────────────────
   // Investigation of which params actually change the RESULT SET:

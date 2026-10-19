@@ -22,6 +22,7 @@ import {
 } from "kaizoku-core";
 import type { Episode, StreamSource, Subtitle } from "@/types/anime";
 import { getAnimeById, getAnimeFull } from "@/lib/anilist";
+import { resolveEpisodeFraction } from "@/lib/anime-meta";
 import { buildSiteUrl } from "@/lib/site-url";
 import { extractBabaStream } from "@/lib/babastream";
 
@@ -1800,6 +1801,14 @@ export async function getAudioFlags(
   }
 
   resolved = applyAvailability(resolved);
+  // Aired-ness sweep AFTER the single availability definition: this function
+  // re-derives `available` from scratch on every read (that is
+  // `applyAvailability`'s contract), so a mark set by `getEpisodes`'s return
+  // would be ERASED here before reaching every composed caller — the
+  // /api/episodes route, the detail page and the watch page all run
+  // getEpisodes → getAudioFlags. Re-applying the (memoized, fail-open) sweep
+  // keeps the final value gated; rationale and incident in `withAiredGate`.
+  resolved = await withAiredGate(resolved, anilistId);
 
   // Per-audio-type tallies under the shared contract (see
   // `audioCountSummary`): rules are independent per type, and an
@@ -1876,6 +1885,65 @@ export async function resolveExpectedEpisodeCount(anilistId?: number): Promise<n
   }
 }
 
+/**
+ * ─── Aired-ness sweep ─────────────────────────────────────────────────
+ *
+ * Force `available: false` on every episode AniList says has NOT aired yet
+ * (`number > released`, where `released` comes from the SAME
+ * `resolveEpisodeFraction` the cards and badges use — one vocabulary).
+ *
+ * WHY (concrete incident, title 196613 "Dou Po Cangqiong: Nian Fan 4"):
+ * AniList's schedule is fully concrete — ep 57 aired 2026-10-18, ep 58 airs
+ * 2026-10-25, … ep 62 airs 2026-11-22 — but the SYNTHETIC provider lists
+ * (the ones built from the AniList total rather than a real listing) enumerate
+ * ALL 62 episodes and mark every row playable, because a row with an id and a
+ * positive number passes `isEpisodeAvailable` and AniZip ships airDates only
+ * for the next couple of episodes (so pass 2 of `applyAvailability` has no
+ * evidence for the tail either). The result: not-yet-aired episodes rendered
+ * as watchable on detail + watch, and — far worse — the /api/stream walk then
+ * "resolved" a real stream for them from a DIFFERENT, year-old numbering
+ * space of the same franchise (episode 62 served content the real episode 62
+ * won't have until Nov 22). The plausibility gate (`scoreEpisodeList`) cannot
+ * catch this: it only scores list LENGTH against AniList's TOTAL, and a
+ * synthetic list of the right length still ends in episodes that haven't
+ * aired. Only AniList's schedule knows where "released" ends — so this sweep
+ * consults it (same memoized `getAnimeById` the expected-count gate already
+ * resolves, so in the composed getEpisodes → getAudioFlags path there is no
+ * extra upstream cost) and greys out the tail. Rows stay LISTED (renumbering
+ * or dropping them would desync provider numbering and the next-episode
+ * handoff) — they render as upcoming/unplayable via the existing
+ * `available === false` UI.
+ *
+ * Applied on the VALUE RETURNED TO CALLERS only — never inside the
+ * availability cache entry: the cache key already encodes `expectedCount`
+ * and holds the raw selected list, and the cached shape must stay identical
+ * for every reader regardless of when the sweep last ran (an episode that
+ * airs mid-TTL must flip to available without a provider re-walk).
+ *
+ * FAIL-OPEN by design: AniList data failure (throw — `getAnimeById`
+ * deliberately throws on transient upstream errors and returns `null` only
+ * for confirmed misses) or an unknown `released` (HIATUS / CANCELLED /
+ * no-schedule statuses resolve to `null`) → the list comes back UNMARKED,
+ * exactly as before this sweep existed. A working listing must never be
+ * taken down by the data that guards it.
+ */
+async function withAiredGate(episodes: Episode[], anilistId?: number): Promise<Episode[]> {
+  if (!anilistId || episodes.length === 0) return episodes;
+  let released: number | null = null;
+  try {
+    const anime = await getAnimeById(anilistId);
+    // `resolveEpisodeFraction` yields null when the total is unknown — that
+    // too is "no verdict", handled by the `released === null` check below.
+    released = anime ? (resolveEpisodeFraction(anime)?.released ?? null) : null;
+  } catch {
+    return episodes; // fail-open: gate data failure never changes the list
+  }
+  if (released === null) return episodes; // unknown schedule → no verdict
+  return episodes.map((ep) =>
+    Number.isFinite(ep.number) && ep.number > released ? { ...ep, available: false } : ep
+  );
+}
+
 /** Map a provider session's raw episodes onto the shared `Episode` shape. */
 function sessionToEpisodes(session: ProviderSession, providerId: string): Episode[] {
   return session.episodes
@@ -1930,9 +1998,15 @@ export async function getEpisodes(
   const cached = readAvailabilityCache(cacheKey);
   if (cached) {
     // Same two functions the uncached branch below runs — flags first, then
-    // the single availability definition.
+    // the single availability definition — plus the aired-ness sweep on the
+    // RETURNED value only (the cache entry itself stays raw/ungated; see
+    // `withAiredGate` for why, and note `getAudioFlags` re-applies the same
+    // sweep after its own `applyAvailability` re-derivation).
     return {
-      episodes: applyAvailability(withKnownFlags(cached.list, anilistId)),
+      episodes: await withAiredGate(
+        applyAvailability(withKnownFlags(cached.list, anilistId)),
+        anilistId
+      ),
       listStatus: cached.listStatus,
     };
   }
@@ -2045,9 +2119,18 @@ export async function getEpisodes(
 
   listStatus = "ok";
   writeAvailabilityCache(cacheKey, candidateEpisodes, listStatus);
-  // Raw in, derived out — see `applyAvailability`.
+  // Raw in, derived out — see `applyAvailability`. The cache entry above
+  // keeps the RAW selected list; only this returned value carries
+  // availability, and it is additionally swept for not-yet-aired episodes
+  // (see `withAiredGate` — the concrete failure it prevents: synthetic
+  // lists enumerate the AniList TOTAL and mark everything playable, which
+  // shipped not-yet-aired episodes of title 196613 as watchable while
+  // providers then served wrong-numbering-space content for them).
   return {
-    episodes: applyAvailability(withKnownFlags(candidateEpisodes, anilistId)),
+    episodes: await withAiredGate(
+      applyAvailability(withKnownFlags(candidateEpisodes, anilistId)),
+      anilistId
+    ),
     listStatus,
   };
 }
