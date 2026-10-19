@@ -17,6 +17,8 @@ interface AnimeCardAnime {
   status?: string;
   /** AniList next schedule entry — the next NOT-yet-aired episode. */
   nextAiringEpisode?: { airingAt?: number; episode?: number };
+  /** The exact episode that just aired (home feed's schedule row). */
+  latestAiredEpisode?: number;
 }
 
 interface AnimeCardProps {
@@ -26,12 +28,11 @@ interface AnimeCardProps {
   /**
    * Home's Latest Releases feed only: adds the play strip on the cover,
    * deep-linking to the latest RELEASED episode (/anime/{id}/watch/{n}).
-   * The strip NAMES the episode ("Play episode N") only when N is settled
-   * fact — a FINISHED, fully released run, whose number can't lag the
-   * providers. For anything still airing the number is AniList-schedule-
-   * derived and routinely leads the uploads around air time, so the strip
-   * promises no number ("Play latest") and the watch page's mount-time
-   * stream handoff resolves the newest actually-playable episode.
+   * The strip always names that episode number — it is AniList schedule
+   * truth (the home feed supplies the EXACT aired episode from its
+   * airing-schedule row; browse/search fall back to nextAiringEpisode − 1).
+   * When a provider hasn't uploaded the newest episode yet, the watch page's
+   * mount-time stream handoff plays the newest one that actually streams.
    * Browse/search/detail grids never pass it and render exactly as before.
    */
   playLatest?: boolean;
@@ -40,22 +41,38 @@ interface AnimeCardProps {
 
 /**
  * Latest RELEASED episode behind the opt-in `playLatest` strip, or null when
- * nothing has aired yet (those cards render no strip). Whenever the total is
- * known, `resolveEpisodeFraction` owns the math so the strip and the `3/12 EP`
- * badge can never disagree about what has aired (episode 3 in that example).
- * The one case it can't cover: a mid-run total AniList hasn't announced yet
- * (episodes null) — the badge then shows nothing, but the next schedule
- * entry alone still pins down what has aired:
+ * nothing has aired yet (those cards render no strip).
  *
- *   total known     → `resolveEpisodeFraction().released`
- *                      (FINISHED → the full run; a next schedule entry → its
- *                      episode − 1; NOT_YET_RELEASED → 0 → null here)
- *   total unknown   → nextAiringEpisode.episode − 1, but only when that
- *                      entry is ≥ 2 — episode 1 means the premiere is still
- *                      ahead, so there is nothing to play
- *   neither case    → null
+ * AniList already knows the exact aired episode; the only job here is to pick
+ * the most precise source and read it. The home feed is the most precise: its
+ * card carries `latestAiredEpisode`, the `episode` field of the very
+ * airing-schedule row that put the title in "Latest Releases" (TIME_DESC), so
+ * it is the number that just aired. Surfaces without it (browse/search) fall
+ * back to `resolveEpisodeFraction`, which reads `nextAiringEpisode − 1`. These
+ * are all AniList SCHEDULE truth — the strip promises that number, and the
+ * watch page's mount-time stream handoff covers the transient case where a
+ * provider hasn't uploaded it yet.
+ *
+ *   latestAiredEpisode present → that exact number
+ *   total known                → `resolveEpisodeFraction().released`
+ *                                 (FINISHED → the full run; a next schedule
+ *                                 entry → its episode − 1; NOT_YET_RELEASED →
+ *                                 0 → null here)
+ *   total unknown              → nextAiringEpisode.episode − 1, but only when
+ *                                 that entry is ≥ 2 — episode 1 means the
+ *                                 premiere is still ahead, nothing to play
+ *   neither case               → null
  */
 function latestReleasedEpisode(anime: AnimeCardAnime): number | null {
+  // The home feed's exact aired episode — the number that actually just
+  // aired — wins over any re-derivation.
+  if (
+    typeof anime.latestAiredEpisode === "number" &&
+    Number.isFinite(anime.latestAiredEpisode) &&
+    anime.latestAiredEpisode >= 1
+  ) {
+    return anime.latestAiredEpisode;
+  }
   const fraction = resolveEpisodeFraction(anime);
   if (fraction) {
     return fraction.released !== null && fraction.released >= 1 ? fraction.released : null;
@@ -65,29 +82,6 @@ function latestReleasedEpisode(anime: AnimeCardAnime): number | null {
     return nextEpisode - 1;
   }
   return null;
-}
-
-/**
- * May the strip PROMISE the derived episode number ("Play episode 57")?
- *
- * The number above is AniList schedule truth, not provider truth: for a
- * still-airing run the newest "released" episode routinely has no stream
- * yet (the classic latest-episode lag — the card can't cheaply know; a
- * stream walk per home card is infeasible). So the strip only names a
- * number when the run is over: FINISHED with the total fully released,
- * where every episode is as streamable as it will ever be. Everything
- * else says "Play latest" and lets the watch page's mount-time stream
- * handoff pick the newest episode that actually plays. The LINK still
- * targets the derived episode either way — the handoff is what saves it.
- */
-function stripNamesEpisode(anime: AnimeCardAnime): boolean {
-  const fraction = resolveEpisodeFraction(anime);
-  return (
-    anime.status === "FINISHED" &&
-    fraction !== null &&
-    fraction.released !== null &&
-    fraction.released >= fraction.total
-  );
 }
 
 export default function AnimeCard({ anime, href, loading, playLatest, onClick }: AnimeCardProps) {
@@ -109,13 +103,6 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
   // The play strip rides the REAL cover only — while a card is navigating
   // (loading skeleton), `playLatest` yields nothing, same as the meta row.
   const playEpisode = playLatest && !loading ? latestReleasedEpisode(anime) : null;
-  // …and it only NAMES that episode when the number is settled fact
-  // (FINISHED run, fully released). Schedule-derived numbers for still-
-  // airing runs can lead the providers, so those strips say "Play latest"
-  // — see `stripNamesEpisode`. The link target is the same derived
-  // episode in both cases; the watch page's mount-time stream handoff
-  // corrects it if providers haven't caught up.
-  const stripSaysNumber = playEpisode !== null && stripNamesEpisode(anime);
 
   return (
     <CardShell
@@ -140,11 +127,7 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
             // else on the card opens /anime/{id}. It stays a real anchor, so
             // modifier-clicks and "open in new tab" work natively;
             // globals.css draws the focus ring.
-            aria-label={
-              stripSaysNumber
-                ? `Play episode ${playEpisode} of ${anime.title}`
-                : `Play the latest episode of ${anime.title}`
-            }
+            aria-label={`Play episode ${playEpisode} of ${anime.title}`}
             className="label-micro absolute inset-x-0 bottom-0 z-10 flex items-center gap-1.5
                        bg-gradient-to-t from-black/95 via-black/60 to-transparent
                        px-2.5 pt-8 pb-2 font-medium tabular-nums text-white
@@ -152,7 +135,7 @@ export default function AnimeCard({ anime, href, loading, playLatest, onClick }:
                        focus-visible:text-[var(--accent)]"
           >
             <span aria-hidden="true" className="text-[var(--accent)]">▶</span>
-            {stripSaysNumber ? <>Play episode {playEpisode}</> : "Play latest"}
+            Play episode {playEpisode}
           </Link>
         )
       }

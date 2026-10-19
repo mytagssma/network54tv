@@ -1406,18 +1406,27 @@ export async function getRecentlyAired(
 
   const schedules = data.Page.airingSchedules || [];
 
-  // Deduplicate by media ID — keep first (most recently aired) entry per anime
+  // Deduplicate by media ID — keep first (most recently aired) entry per anime.
+  // TIME_DESC makes that row the media's latest aired episode, and its
+  // `episode` is the exact number that just aired — AniList schedule truth.
+  // We keep it (previously discarded) so the home strip can offer THIS exact
+  // episode instead of a looser `nextAiringEpisode − 1` re-derivation that can
+  // disagree with it.
   const seen = new Set<number>();
   const unique: any[] = [];
   for (const s of schedules) {
     if (s?.media?.id && !seen.has(s.media.id) && !s.media.isAdult) {
       seen.add(s.media.id);
-      unique.push(s.media);
+      unique.push({ media: s.media, airedEpisode: s.episode });
     }
   }
 
   return {
-    media: unique.map(anilistMediaToAnime),
+    media: unique.map(({ media, airedEpisode }) => {
+      const anime = anilistMediaToAnime(media);
+      if (typeof airedEpisode === "number") anime.latestAiredEpisode = airedEpisode;
+      return anime;
+    }),
     hasNextPage: data.Page.pageInfo.hasNextPage,
   };
 }
@@ -1602,17 +1611,27 @@ export async function getRecentlyAiredClient(
 
   const schedules = data.Page.airingSchedules || [];
 
+  // Deduplicate by media ID — keep first (most recently aired) entry per anime.
+  // TIME_DESC makes that row the media's latest aired episode, and its
+  // `episode` is the exact number that just aired — AniList schedule truth.
+  // Carried onto the anime (previously discarded) so the home strip can offer
+  // THIS exact episode instead of a looser `nextAiringEpisode − 1` that can
+  // disagree with it. This is the client twin of `getRecentlyAired`.
   const seen = new Set<number>();
   const unique: any[] = [];
   for (const s of schedules) {
     if (s?.media?.id && !seen.has(s.media.id) && !s.media.isAdult) {
       seen.add(s.media.id);
-      unique.push(s.media);
+      unique.push({ media: s.media, airedEpisode: s.episode });
     }
   }
 
   return {
-    media: unique.map(anilistMediaToAnime),
+    media: unique.map(({ media, airedEpisode }) => {
+      const anime = anilistMediaToAnime(media);
+      if (typeof airedEpisode === "number") anime.latestAiredEpisode = airedEpisode;
+      return anime;
+    }),
     hasNextPage: data.Page.pageInfo.hasNextPage,
   };
 }

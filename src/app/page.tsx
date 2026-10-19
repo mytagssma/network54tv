@@ -100,6 +100,10 @@ export default function Home() {
                   episodes: anime.episodes,
                   status: anime.status,
                   nextAiringEpisode: anime.nextAiringEpisode,
+                  // The EXACT episode that just aired — the episode field of the
+                  // airing-schedule row that ordered this feed. The strip offers
+                  // this precise AniList number rather than a re-derived one.
+                  latestAiredEpisode: anime.latestAiredEpisode,
                 }}
                 // This feed IS "what just aired", so each card also offers the
                 // latest RELEASED episode straight from its cover; every other

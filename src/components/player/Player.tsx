@@ -99,7 +99,7 @@ const PROVIDER_OPTIONS = [
 
 /* ─── Mount-only stream handoff (schedule → provider reality) ─────────
  * The watch URL's episode number is AniList SCHEDULE truth (the home
- * strip's "Play latest", a shared link, a bookmark), but the providers
+ * strip's "Play episode N", a shared link, a bookmark), but the providers
  * can lag it: the newest aired episode often has no uploaded stream yet
  * (the classic latest-episode lag), and for some titles no episode
  * streams at all. A card can't know any of this — walking 10 providers

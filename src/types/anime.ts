@@ -147,6 +147,14 @@ export interface Anime {
     airingAt: number;
     episode: number;
   };
+  /**
+   * The episode that actually just aired, from the airing-schedule row the
+   * home "Latest Releases" feed fetched. AniList schedule truth (the same
+   * row that orders the feed) — NOT provider truth. Set only by
+   * `getRecentlyAired`, which sees the real schedule row; other surfaces
+   * leave it undefined and the card falls back to `nextAiringEpisode − 1`.
+   */
+  latestAiredEpisode?: number;
 }
 
 export interface Episode {
