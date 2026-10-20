@@ -131,12 +131,14 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
     <div className="min-h-screen bg-[var(--background)] text-white">
       <div className="max-w-6xl mx-auto px-4 py-8">
         {/* ── Anime Info Section ── */}
-        {/* Mobile: compact poster beside title, synopsis full-width below.
-            Desktop (md+): poster left, one flow column right — title → badges →
-            synopsis stack contiguously (no separate grid row = no dead gap). */}
-        <div className="grid grid-cols-[7.5rem_1fr] md:grid-cols-3 gap-x-4 gap-y-5 md:gap-8 items-start mb-12">
-          {/* Cover Image */}
-          <div className="md:col-span-1">
+        {/* Mobile: single column — poster on top (left-aligned, ~11rem so it
+            keeps its poster shape), then title → badges → synopsis flow
+            full-width beneath it. Desktop (md+): poster left, one flow column
+            right — title → badges → synopsis stack contiguously (no separate
+            grid row = no dead gap). */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-x-4 gap-y-5 md:gap-8 items-start mb-12">
+          {/* Cover Image — poster-shaped block on mobile, grid column from md up */}
+          <div className="w-44 md:w-auto md:col-span-1">
             <div className="overflow-hidden border border-[var(--accent)]/10 rounded-none">
               <img
                 src={anime.coverImage}
@@ -146,9 +148,9 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
             </div>
           </div>
 
-          {/* Details — `contents` on mobile (children are grid items, synopsis
-              spans full width); a single block column from md up */}
-          <div className="contents md:col-span-2 md:col-start-2 md:block md:min-w-0 md:space-y-5">
+          {/* Details — a full-width block beneath the poster on mobile; from md
+              up it becomes the right-hand column (col-start-2) beside it */}
+          <div className="md:col-span-2 md:col-start-2 md:block md:min-w-0 space-y-5">
             {/* Title(s) + status badges */}
             <div className="min-w-0 space-y-3">
               {/* Title(s) */}
@@ -219,8 +221,9 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
               </div>
             </div>
 
-            {/* Synopsis + Genres — full width on mobile, same column as title on desktop */}
-            <div className="col-span-2 min-w-0 space-y-5">
+            {/* Synopsis + Genres — full width beneath the poster on mobile, same
+                column as title on desktop */}
+            <div className="min-w-0 space-y-5">
               {/* Description */}
               <div>
                 <h2 className="text-lg font-semibold mb-2 text-[var(--accent)] uppercase tracking-wider">
