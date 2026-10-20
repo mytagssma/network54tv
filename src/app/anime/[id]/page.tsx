@@ -131,14 +131,17 @@ export default async function AnimeDetailPage({ params, searchParams }: Props) {
     <div className="min-h-screen bg-[var(--background)] text-white">
       <div className="max-w-6xl mx-auto px-4 py-8">
         {/* ── Anime Info Section ── */}
-        {/* Mobile: single column — poster on top (left-aligned, ~11rem so it
-            keeps its poster shape), then title → badges → synopsis flow
-            full-width beneath it. Desktop (md+): poster left, one flow column
-            right — title → badges → synopsis stack contiguously (no separate
-            grid row = no dead gap). */}
+        {/* Mobile: single column — cover art spans the FULL row on top (tall,
+            ~2:3 poster ratio — the accepted tradeoff for zero wasted space),
+            then title → badges → synopsis flow full-width beneath it. The img
+            scales to the cell at its natural ratio (w-full, no crop/letterbox).
+            Desktop (md+): poster left at natural width, one flow column right —
+            title → badges → synopsis stack contiguously (no separate grid row
+            = no dead gap). */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-x-4 gap-y-5 md:gap-8 items-start mb-12">
-          {/* Cover Image — poster-shaped block on mobile, grid column from md up */}
-          <div className="w-44 md:w-auto md:col-span-1">
+          {/* Cover Image — full-row art on mobile (natural aspect ratio), natural
+              grid column width from md up */}
+          <div className="md:col-span-1 md:w-auto">
             <div className="overflow-hidden border border-[var(--accent)]/10 rounded-none">
               <img
                 src={anime.coverImage}
