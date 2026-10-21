@@ -2352,8 +2352,8 @@ function walkProvidersByPriority(
 // quarantines from upstream day-0 batch drops don't silently rot.
 const PROVIDER_QUARANTINE: Record<string, { providers: string[]; note: string; since: string; reviewAfter: string }> = {
   "195539": {
-    providers: ["megaplay", "kickassanime", "animesogo", "2dhive", "animeunity", "anikoto"],
-    note: "Day-0 batch drop mislabeled upstream: nexabloom (megaplay/animesogo/2dhive/anikoto) and krussdomi (kickassanime) both map AniList 195539 to a wrong-series file; animeunity unverifiable (0 subs). anikoto is a further nexabloom facade serving a DIFFERENT wrong file (a Tokyo 'Mejiro' train scene). Verified via subtitle VTT 2026-10-21.",
+    providers: ["megaplay", "kickassanime", "animesogo", "2dhive", "anikoto"],
+    note: "Day-0 batch drop mislabeled upstream: nexabloom (megaplay/animesogo/2dhive/anikoto) and krussdomi (kickassanime) both map AniList 195539 to a wrong-series file; anikoto is a further nexabloom facade serving a DIFFERENT wrong file (a Tokyo 'Mejiro' train scene). Verified via subtitle VTT 2026-10-21. animeunity (vixcloud) verified CORRECT on 2026-10-21 and un-quarantined: it ingested independently, and its ep1 record's file name 'Cyberpunk.Edgerunners.S02E01...NF.WEB-DL' matches the served playlist id (scws_id 795545), with a 28.5-min HLS runtime equal to the catalogue's episode_length — Cyberpunk content, not the corrupt nexabloom/krussdomi file.",
     since: "2026-10-21",
     reviewAfter: "2026-11-04",
   },
