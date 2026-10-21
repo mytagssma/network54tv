@@ -2339,6 +2339,37 @@ function walkProvidersByPriority(
   });
 }
 
+// ─── Per-title provider quarantine ────────────────────────────────────
+// Some backends serve a *mislabeled* file for a given AniList ID: the request
+// succeeds and returns playable sources, but the video is a DIFFERENT series'
+// episode (content-identity corruption). Because the stream walk stops at the
+// first provider that returns any `sources`, a corrupt catalogue entry always
+// wins over later providers that would serve the correct episode — so the only
+// safe remedy is to refuse the corrupt (or unverifiable) provider for that
+// specific title before any network call is made. This map is data, not
+// code: add/remove entries after manual verification (subtitle VTT text is the
+// preferred verification method), and honor `reviewAfter` so temporary
+// quarantines from upstream day-0 batch drops don't silently rot.
+const PROVIDER_QUARANTINE: Record<string, { providers: string[]; note: string; since: string; reviewAfter: string }> = {
+  "195539": {
+    providers: ["megaplay", "kickassanime", "animesogo", "2dhive", "animeunity", "anikoto"],
+    note: "Day-0 batch drop mislabeled upstream: nexabloom (megaplay/animesogo/2dhive/anikoto) and krussdomi (kickassanime) both map AniList 195539 to a wrong-series file; animeunity unverifiable (0 subs). anikoto is a further nexabloom facade serving a DIFFERENT wrong file (a Tokyo 'Mejiro' train scene). Verified via subtitle VTT 2026-10-21.",
+    since: "2026-10-21",
+    reviewAfter: "2026-11-04",
+  },
+};
+
+/**
+ * True when `providerId` is barred from serving `anilistId` because its
+ * catalogue is known (or suspected) to map that ID to the wrong series' video.
+ * Callers must check this BEFORE any provider network call.
+ */
+function isProviderQuarantined(anilistId: number | undefined, providerId: string): boolean {
+  if (anilistId === undefined) return false;
+  const entry = PROVIDER_QUARANTINE[String(anilistId)];
+  return entry ? entry.providers.includes(providerId) : false;
+}
+
 /**
  * Fetch streaming sources for a specific episode by chaining through all providers.
  * If `preferredProvider` is given, that provider is tried FIRST using its own episode mapping,
@@ -2360,23 +2391,33 @@ async function walkStreamingSources(
   // ── Phase 1: Try the preferred provider first (matches episode list source) ──
   if (preferredProvider) {
     // Try megaplay if preferred
+    // (Quarantined provider short-circuits here, before any network call.)
     if (preferredProvider === "megaplay" && anilistId) {
-      tried.push("megaplay");
-      try {
-        const result = await withTimeout(
-          attemptMegaPlay(anilistId, animeTitle, episodeNumber, type),
-          PROVIDER_TIMEOUT_MS,
-          "megaplay phase1"
-        );
-        if (result) return result;
-      } catch (err) {
-        console.warn(`[providers] megaplay phase1 failed:`, err instanceof Error ? err.message : err);
+      if (isProviderQuarantined(anilistId, "megaplay")) {
+        console.warn(`[providers] skipping megaplay phase1 for anilist ${anilistId}: provider quarantined`);
+      } else {
+        tried.push("megaplay");
+        try {
+          const result = await withTimeout(
+            attemptMegaPlay(anilistId, animeTitle, episodeNumber, type),
+            PROVIDER_TIMEOUT_MS,
+            "megaplay phase1"
+          );
+          if (result) return result;
+        } catch (err) {
+          console.warn(`[providers] megaplay phase1 failed:`, err instanceof Error ? err.message : err);
+        }
       }
     }
 
     // Try the named provider from PROVIDERS list
     for (const provider of PROVIDERS) {
       if (provider.name !== preferredProvider) continue;
+      // Quarantined for this title — skip before any network call.
+      if (isProviderQuarantined(anilistId, provider.name)) {
+        console.warn(`[providers] skipping ${provider.name} phase1 for anilist ${anilistId}: provider quarantined`);
+        continue;
+      }
       tried.push(provider.name);
       try {
         const result = await withTimeout(
@@ -2400,7 +2441,7 @@ async function walkStreamingSources(
   // index 5 of PROVIDERS and only run in a Phase 3 AFTER the search-based
   // walk, so every lookup burned up to ~25s of provider timeouts before
   // reaching the one provider most likely to answer. Moved ahead of the walk.
-  if (anilistId && preferredProvider !== "megaplay") {
+  if (anilistId && preferredProvider !== "megaplay" && !isProviderQuarantined(anilistId, "megaplay")) {
     tried.push("megaplay");
     try {
       const result = await withTimeout(
@@ -2412,15 +2453,30 @@ async function walkStreamingSources(
     } catch (err) {
       console.warn(`[providers] megaplay phase2 failed:`, err instanceof Error ? err.message : err);
     }
+  } else if (anilistId && preferredProvider !== "megaplay") {
+    // Quarantined for this title — skip before any network call.
+    console.warn(`[providers] skipping megaplay phase2 for anilist ${anilistId}: provider quarantined`);
   }
 
   // ── Phase 3: every remaining search-based provider, overlapped, first success by priority ──
   // megaplay is excluded: it has no search path (its PROVIDERS entry is a
   // null stub) and was already tried above by AniList ID.
+  // Quarantined providers are also excluded, before any of them enter `tried`.
+  for (const provider of PROVIDERS) {
+    if (
+      provider.name !== "megaplay" &&
+      !(preferredProvider && provider.name === preferredProvider) &&
+      isProviderQuarantined(anilistId, provider.name)
+    ) {
+      console.warn(`[providers] skipping ${provider.name} phase3 for anilist ${anilistId}: provider quarantined`);
+    }
+  }
   const phase3 = PROVIDERS.filter(
     (provider) =>
       provider.name !== "megaplay" &&
-      !(preferredProvider && provider.name === preferredProvider)
+      !(preferredProvider && provider.name === preferredProvider) &&
+      // Quarantined for this title — never enter `tried` or the walk.
+      !isProviderQuarantined(anilistId, provider.name)
   );
   if (phase3.length > 0) {
     tried.push(...phase3.map((p) => p.name));
