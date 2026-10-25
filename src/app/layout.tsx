@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "@fontsource/iosevka/latin.css";
 import "./globals.css";
 import Navbar from "@/components/layout/Navbar";
@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: "n54tv // network54tv",
   description: "Stream anime — sub & dub, subtitles, any episode.",
   keywords: ["anime", "streaming", "subtitles", "dub", "sub"],
+  manifest: "/manifest.json",
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml", sizes: "any" },
@@ -26,6 +27,15 @@ export const metadata: Metadata = {
     description: "Stream anime — sub & dub, subtitles, any episode.",
     type: "website",
   },
+};
+
+// PWA chrome follows the APP's theme (dark-only), not the OS light/dark
+// setting — a single theme-color keeps the status bar / splash seamless with
+// --background (#0a0a0f) instead of flashing a light bar over the dark page.
+// This emits <meta name="theme-color">; the manifest's own theme_color is the
+// fallback for browsers that read it there.
+export const viewport: Viewport = {
+  themeColor: "#0a0a0f",
 };
 
 // Script to apply accent color from localStorage before paint
