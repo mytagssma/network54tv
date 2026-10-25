@@ -1,15 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { ACCENT_COLORS, DEFAULT_ACCENT, applyFaviconAccent } from "@/lib/n54-icon";
 
-const ACCENT_COLORS = [
-  { name: "Yellow", value: "#e8ff00" },
-  { name: "Red", value: "#ff3333" },
-  { name: "Green", value: "#00ff88" },
-  { name: "Cyan", value: "#00ddff" },
-  { name: "Purple", value: "#bb66ff" },
-  { name: "Orange", value: "#ff8800" },
-] as const;
+export { ACCENT_COLORS };
 
 const STORAGE_KEY = "n54tv-accent";
 
@@ -24,20 +18,14 @@ export default function AccentColorSelector() {
   const [activeColor, setActiveColor] = useState<string>(ACCENT_COLORS[0].value);
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && ACCENT_COLORS.some((c) => c.value === stored)) {
-      setActiveColor(stored);
-      applyAccent(stored);
-    }
-  }, []);
-
   function applyAccent(hex: string) {
     const root = document.documentElement;
     root.style.setProperty("--accent", hex);
     // Also update any inline rgba references via CSS custom properties
     root.style.setProperty("--accent-rgb", hexToRgb(hex));
+    // eslint-disable-next-line react-hooks/immutability
+    document.cookie = `accent=${hex}; path=/; max-age=31536000; samesite=lax`;
+    applyFaviconAccent(hex);
   }
 
   function handleSelect(hex: string) {
@@ -45,6 +33,17 @@ export default function AccentColorSelector() {
     localStorage.setItem(STORAGE_KEY, hex);
     applyAccent(hex);
   }
+
+  useEffect(() => {
+    setMounted(true);
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored && ACCENT_COLORS.some((c) => c.value === stored)) {
+      setActiveColor(stored);
+      applyAccent(stored);
+    } else {
+      applyFaviconAccent(DEFAULT_ACCENT);
+    }
+  }, []);
 
   if (!mounted) return null;
 

@@ -9,17 +9,14 @@ export const metadata: Metadata = {
   keywords: ["anime", "streaming", "subtitles", "dub", "sub"],
   manifest: "/manifest.json",
   icons: {
-    icon: [
-      { url: "/favicon.svg", type: "image/svg+xml", sizes: "any" },
-      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
-      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
-    ],
+    // The ONLY tab favicon: the dynamic /icon.svg route, which renders the
+    // N54 mark in the user's accent (read from the `accent` cookie). Declared
+    // explicitly — Next does NOT merge the app/icon.svg file-convention link
+    // once `metadata.icons` is user-provided, so without this the head falls
+    // back to a static favicon.ico and the android PNGs.
+    icon: [{ url: "/icon.svg", type: "image/svg+xml", sizes: "any" }],
     apple: [
       { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
-    ],
-    other: [
-      { url: "/android-chrome-192x192.png", sizes: "192x192", type: "image/png" },
-      { url: "/android-chrome-512x512.png", sizes: "512x512", type: "image/png" },
     ],
   },
   openGraph: {
@@ -50,6 +47,7 @@ const accentScript = `
         var g = parseInt(stored.slice(3, 5), 16);
         var b = parseInt(stored.slice(5, 7), 16);
         document.documentElement.style.setProperty('--accent-rgb', r + ', ' + g + ', ' + b);
+        document.cookie = 'accent=' + stored + '; path=/; max-age=31536000; samesite=lax';
       }
     } catch(e) {}
   })();
