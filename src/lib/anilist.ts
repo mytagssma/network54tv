@@ -4,6 +4,10 @@ import type { Anime, AnimeRelation } from "@/types/anime";
 // which edges count as a link). See `src/lib/franchise.ts`.
 import { IGNORED_RELATION_TYPES, isFranchiseFormat } from "@/lib/franchise";
 import { buildSiteUrl } from "@/lib/site-url";
+import { passesCompoundGate, scoreCompoundTitle } from "@/lib/search/comparator";
+import { generateRomajiVariants } from "@/lib/search/romaji";
+import { qwertyNeighborProbes } from "@/lib/search/qwerty";
+import { analyzeQueryTokens } from "@/lib/search/tokens";
 
 const ANILIST_API = "https://graphql.anilist.co";
 // Same-origin hardened forwarder for SERVER-side GraphQL (browser-like
@@ -504,13 +508,16 @@ function mediaTitleScore(
   queryWords: string[],
   media: SearchableTitle
 ): number {
+  const compound = scoreCompoundTitle(queryNorm, media);
+  if (compound >= 0.95) return compound;
+
   const fields = [
     media.title?.romaji,
     media.title?.english,
     media.title?.native,
     ...(media.synonyms || []),
   ];
-  let best = 0;
+  let best = compound;
   for (const field of fields) {
     if (!field) continue;
     const normalized = normalizeTitle(field);
@@ -834,6 +841,10 @@ function commonPrefixLength(a: string, b: string): number {
 
 /** Significant query words, longest (most distinctive) first. */
 function retryQueryWords(query: string): string[] {
+  const { contentTokens } = analyzeQueryTokens(query);
+  if (contentTokens.length > 0) {
+    return [...contentTokens].sort((a, b) => b.length - a.length);
+  }
   return normalizeTitle(query)
     .split(" ")
     .filter((word) => word.length >= 3 && !RETRY_STOPWORDS.has(word))
@@ -868,6 +879,7 @@ function retryWordMatches(queryWord: string, titleWord: string): boolean {
  * so a candidate that only accounts for one word of a longer phrase fails.
  */
 function passesQueryGate(query: string, media: SearchableTitle): boolean {
+  if (passesCompoundGate(query, media)) return true;
   const queryWords = retryQueryWords(query);
   // A phrase of only stop/short words has nothing to prove — the gate stays
   // open and AniList's primary answer is used untouched.
@@ -1088,7 +1100,13 @@ async function retrySparseSearch(
   const plans = zeroWords.map((word) => {
     const seenProbe = new Set<string>();
     const plan: string[] = [];
-    for (const probe of [...retryGluedProbes(word), ...retryTruncationVariants(word)]) {
+    const probes = [
+      ...generateRomajiVariants(word),
+      ...retryGluedProbes(word),
+      ...retryTruncationVariants(word),
+      ...qwertyNeighborProbes(word, 3),
+    ];
+    for (const probe of probes) {
       if (seenProbe.has(probe)) continue;
       seenProbe.add(probe);
       plan.push(probe);
