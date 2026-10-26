@@ -7,7 +7,7 @@ import { buildSiteUrl } from "@/lib/site-url";
 import { passesCompoundGate, scoreCompoundTitle } from "@/lib/search/comparator";
 import { generateRomajiVariants } from "@/lib/search/romaji";
 import { qwertyNeighborProbes } from "@/lib/search/qwerty";
-import { analyzeQueryTokens } from "@/lib/search/tokens";
+import { analyzeQueryTokens, cleanSymbols, extractSeasonNumber } from "@/lib/search/tokens";
 
 const ANILIST_API = "https://graphql.anilist.co";
 // Same-origin hardened forwarder for SERVER-side GraphQL (browser-like
@@ -1739,6 +1739,8 @@ export interface FranchiseGroupOptions {
    * ordering, items are sorted by franchise season (then air date) instead.
    */
   preserveOrder?: boolean;
+  /** Active user search query, if any, to highlight specific requested seasons. */
+  query?: string;
 }
 
 /** Formats that can be a genuine new TV season of the same source material. */
@@ -1938,6 +1940,18 @@ function buildSeasonChain(members: Anime[]): FranchiseChain {
         }
         const [early, late] =
           startDateKey(animeA) <= startDateKey(animeB) ? [idA, idB] : [idB, idA];
+        // Don't add a shortcut edge if early can already reach late through existing season edges
+        const canReach = (from: number, to: number, visited = new Set<number>()): boolean => {
+          if (from === to) return true;
+          visited.add(from);
+          for (const [child, parents] of prequelsOf) {
+            if (parents.has(from) && !visited.has(child)) {
+              if (canReach(child, to, visited)) return true;
+            }
+          }
+          return false;
+        };
+        if (canReach(early, late)) continue;
         addPrequel(late, early);
       }
     }
@@ -2063,7 +2077,10 @@ function buildFranchiseGroup(members: Anime[], options?: FranchiseGroupOptions):
 
   const indexed = members.map((anime, index) => ({ anime, index, season: seasonOf.get(anime.id) }));
   if (!options?.preserveOrder) {
-    indexed.sort((a, b) => {
+    const canonicalSort = (
+      a: { anime: Anime; index: number; season: number | undefined },
+      b: { anime: Anime; index: number; season: number | undefined }
+    ) => {
       // 0 = main chain seasons (S1, S2, …), 1 = prequels, 2 = unlinked extras.
       const bucketOf = (s: number | undefined) => (s === undefined ? 2 : s >= 1 ? 0 : 1);
       const ba = bucketOf(a.season);
@@ -2072,11 +2089,40 @@ function buildFranchiseGroup(members: Anime[], options?: FranchiseGroupOptions):
       if (a.season !== b.season && a.season !== undefined && b.season !== undefined) {
         return a.season - b.season;
       }
+      // TV format before OVA/ONA/Special
+      const isTvA = a.anime.format === "TV" ? 0 : 1;
+      const isTvB = b.anime.format === "TV" ? 0 : 1;
+      if (isTvA !== isTvB) return isTvA - isTvB;
+
       const da = startDateKey(a.anime);
       const db = startDateKey(b.anime);
       if (da !== db) return da - db;
       return a.index - b.index;
-    });
+    };
+
+    const { season: requestedSeason } = options?.query
+      ? analyzeQueryTokens(options.query)
+      : { season: undefined };
+
+    if (requestedSeason) {
+      const targetNum = parseInt(requestedSeason, 10);
+      const matchesSeason = (entry: { anime: Anime; season: number | undefined }) => {
+        const titleSeason = extractSeasonNumber(cleanSymbols(entry.anime.title)).season;
+        if (titleSeason !== undefined) {
+          return titleSeason === requestedSeason;
+        }
+        return entry.season === targetNum;
+      };
+
+      const matchedEntries = indexed.filter(matchesSeason);
+      const otherEntries = indexed.filter((e) => !matchesSeason(e));
+
+      matchedEntries.sort(canonicalSort);
+      otherEntries.sort(canonicalSort);
+      indexed.splice(0, indexed.length, ...matchedEntries, ...otherEntries);
+    } else {
+      indexed.sort(canonicalSort);
+    }
   }
 
   const items = indexed.map((entry) => entry.anime);

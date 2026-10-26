@@ -468,6 +468,7 @@ function BrowseContent({ initialSearch = null }: BrowseContentProps) {
           items={results}
           groupFranchise={groupFranchise}
           preserveOrder={Boolean(sort)}
+          query={query}
           navigatingId={navigatingId}
           onNavigate={setNavigatingId}
         />

@@ -11,6 +11,8 @@ interface GroupedResultsProps {
   groupFranchise: boolean;
   /** Keep the fetched order inside each group (an explicit sort is active). */
   preserveOrder: boolean;
+  /** User search query if active. */
+  query?: string;
   navigatingId: number | null;
   onNavigate: (id: number) => void;
 }
@@ -29,6 +31,7 @@ export default function GroupedResults({
   items,
   groupFranchise,
   preserveOrder,
+  query,
   navigatingId,
   onNavigate,
 }: GroupedResultsProps) {
@@ -51,7 +54,7 @@ export default function GroupedResults({
   );
 
   const groupedResults = groupFranchise
-    ? groupByFranchise(items, { preserveOrder })
+    ? groupByFranchise(items, { preserveOrder, query })
     : [];
   const franchiseGroups = groupedResults.filter((group) => group.items.length > 1);
   const standaloneItems = groupedResults

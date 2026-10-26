@@ -203,7 +203,7 @@ export function scoreCompoundTitle(
   media: SearchableTitle
 ): number {
   const queryClean = cleanSymbols(query);
-  const { contentTokens } = analyzeQueryTokens(query);
+  const { contentTokens, season } = analyzeQueryTokens(query);
 
   const fields = [
     media.title?.romaji,
@@ -219,19 +219,40 @@ export function scoreCompoundTitle(
     const fieldClean = cleanSymbols(field);
     if (!fieldClean) continue;
 
+    const { cleaned: cleanedField, season: fieldSeason } = extractSeasonNumber(fieldClean);
+
     // 1. Exact match
-    if (fieldClean === queryClean) return 1.0;
+    if (fieldClean === queryClean) {
+      if (season) {
+        if (fieldSeason === season) return 1.0;
+        if (fieldSeason && fieldSeason !== season) return 0.6;
+        return 0.85;
+      }
+      return 1.0;
+    }
 
     // 2. Exact substring match with word boundary
     const idx = fieldClean.indexOf(queryClean);
     if (idx === 0) {
-      maxScore = Math.max(maxScore, 0.95);
+      let sub = 0.95;
+      if (season) {
+        if (fieldSeason === season) sub = 1.0;
+        else if (fieldSeason && fieldSeason !== season) sub = 0.6;
+        else sub = 0.8;
+      }
+      maxScore = Math.max(maxScore, sub);
     } else if (idx > 0) {
-      maxScore = Math.max(maxScore, 0.88);
+      let sub = 0.88;
+      if (season) {
+        if (fieldSeason === season) sub = 0.96;
+        else if (fieldSeason && fieldSeason !== season) sub = 0.55;
+        else sub = 0.75;
+      }
+      maxScore = Math.max(maxScore, sub);
     }
 
     // 3. Content tokens coverage and alignment
-    const titleWords = fieldClean.split(" ").filter(Boolean);
+    const titleWords = cleanedField.split(" ").filter(Boolean);
     if (contentTokens.length > 0 && titleWords.length > 0) {
       let sumSim = 0;
       let matchedCount = 0;
@@ -250,7 +271,18 @@ export function scoreCompoundTitle(
       if (matchedCount === contentTokens.length) {
         const coverage = sumSim / contentTokens.length;
         const lengthRatio = Math.min(1.0, queryClean.length / fieldClean.length);
-        const score = 0.65 + 0.2 * coverage + 0.1 * lengthRatio;
+        let score = 0.65 + 0.2 * coverage + 0.1 * lengthRatio;
+
+        if (season) {
+          if (fieldSeason === season) {
+            score = Math.min(1.0, score + 0.2);
+          } else if (fieldSeason && fieldSeason !== season) {
+            score = Math.max(0.1, score - 0.35);
+          } else {
+            score = Math.max(0.1, score - 0.12);
+          }
+        }
+
         maxScore = Math.max(maxScore, score);
       }
     }

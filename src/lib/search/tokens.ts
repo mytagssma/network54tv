@@ -50,6 +50,8 @@ const SEASON_PATTERNS: [RegExp, string][] = [
   [/\bsecond\s+(?:season|ssn|part)\b/i, "2"],
   [/\bthird\s+(?:season|ssn|part)\b/i, "3"],
   [/\bfourth\s+(?:season|ssn|part)\b/i, "4"],
+  // Trailing standalone digit preceded by a title word (e.g. "one punch 2", "mob psycho 100 2", "fate zero 2")
+  [/(?<=\S+\s+)([1-9])\s*$/i, "$1"],
 ];
 
 /**
