@@ -173,24 +173,17 @@ export default function Navbar() {
               justify-between pins them to the edges while the field below
               is absolutely dead-centered. */}
           <div className="relative flex h-12 items-center justify-between sm:contents">
-            {/* Brand mark. <sm: a FRAMED 40×40 box EQUAL to the globe's
-                (frame tokens at the base breakpoint — no sm: gate), mark
-                centered — the two boxes are row 1's symmetric edges (and the
-                swatch band's centering reference) and now read [boxed logo]
-                … [boxed globe] like the field's outline language. No
-                negative margin: the box sits flush on the px-4 gutter like
-                everything else. ≥sm: the same frame scaled to a 36×36 badge
-                — h-9 outer height, matching the field and the globe's box,
-                1px accent/45% edge over the inset --background fill (the
-                .header-search frame tokens as utilities). The old hug +
-                p-1/-m-1 bleed goes away WITH the fixed box: border boxes
-                don't reflow on hover (glow/wash only paint), so there is
-                nothing left to bleed-compensate, and the target only grows. */}
+            {/* Brand mark. <sm: a FRAMED 40×40 box equal to the globe's,
+                mark centered — preserves row 1's symmetric edges and the
+                swatch band's centering reference. Sits flush on the px-4
+                gutter. ≥sm: 36×36 badge matching the h-9 row rhythm.
+                Carries the 1px accent frame with transparent fill (no opaque
+                background rect) so only the crisp outline and glyph paint. */}
             <div className="flex shrink-0 items-center gap-2 sm:gap-3">
               <Link
                 href="/"
                 aria-label="n54tv"
-                className="flex h-10 w-10 items-center justify-center rounded-none border border-[var(--accent)]/45 bg-[var(--background)] text-[var(--accent)] transition-all hover:bg-[var(--accent)]/10 hover:accent-shadow-sm sm:h-9 sm:w-9"
+                className="flex h-10 w-10 items-center justify-center rounded-none border border-[var(--accent)]/45 text-[var(--accent)] transition-all hover:bg-[var(--accent)]/10 hover:accent-shadow-sm sm:h-9 sm:w-9"
               >
                 <N54Mark />
               </Link>
@@ -766,7 +759,6 @@ function N54Mark({ size = 22 }: { size?: number }) {
       aria-hidden="true"
       focusable="false"
     >
-      <rect width="32" height="32" fill="var(--background)" />
       <g fill="var(--accent)">
         {/* N */}
         <rect x="2" y="6" width="3" height="20" />
